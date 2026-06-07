@@ -1,0 +1,27 @@
+name: warehouse-monthly
+
+on:
+  schedule:
+    # Ngày 1 hàng tháng lúc 09:00 UTC
+    - cron: "0 9 1 * *"
+  workflow_dispatch: {}
+
+jobs:
+  warehouse-monthly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Warehouse monthly (giá + financials + company info)
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+        run: python build_warehouse.py --mode monthly

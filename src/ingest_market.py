@@ -15,6 +15,8 @@ import pandas as pd
 from vnstock.api.listing import Listing
 from vnstock.api.trading import Trading
 from vnstock.api.quote import Quote
+from vnstock.api.financial import Finance
+from vnstock.api.company import Company
 from . import ingest  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
@@ -122,6 +124,8 @@ def _col(df, name):
 
 
 _printed_hist_cols = False
+_printed_fin_cols = False
+_printed_info_cols = False
 
 
 def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") -> pd.DataFrame:
@@ -166,3 +170,105 @@ def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") ->
         "value":      _col(df, val_col),
     })
     return out.dropna(subset=["close"]).drop_duplicates(["symbol", "trade_date"]).reset_index(drop=True)
+
+
+def fetch_financials(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
+    global _printed_fin_cols
+    frames = []
+    for symbol in symbols:
+        ingest._throttle()
+        try:
+            df = Finance(symbol=symbol, source=source, period="year").ratio()
+        except Exception as e:
+            print(f"[financials] {symbol}: {e}")
+            continue
+        if df is None or len(df) == 0:
+            continue
+        df.columns = [
+            '.'.join(map(str, c)).lower() if isinstance(c, tuple) else str(c).lower()
+            for c in df.columns
+        ]
+        if not _printed_fin_cols:
+            print(f"[financials] cột thật ({symbol}): {list(df.columns)}")
+            _printed_fin_cols = True
+        row = _normalize_financials(df, symbol)
+        if row is not None and not row.empty:
+            frames.append(row)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _normalize_financials(df, symbol) -> pd.DataFrame:
+    cols = list(df.columns)
+    period_col = _find(cols, "yearreport", "year", "period", "quarter", "reportdate")
+    pe_col = _find(cols, "pe", "p/e", "price_to_earn")
+    pb_col = _find(cols, "pb", "p/b", "price_to_book")
+    roe_col = _find(cols, "roe")
+    roa_col = _find(cols, "roa")
+    eps_col = _find(cols, "eps")
+
+    if period_col is None:
+        print(f"[financials] {symbol}: không tìm thấy cột period. Cột có: {cols}")
+        return pd.DataFrame()
+
+    out = pd.DataFrame({
+        "symbol":      symbol.upper().strip(),
+        "period":      df[period_col].astype(str),
+        "period_type": "year",
+        "pe":          pd.to_numeric(df[pe_col],  errors="coerce") if pe_col  else None,
+        "pb":          pd.to_numeric(df[pb_col],  errors="coerce") if pb_col  else None,
+        "roe":         pd.to_numeric(df[roe_col], errors="coerce") if roe_col else None,
+        "roa":         pd.to_numeric(df[roa_col], errors="coerce") if roa_col else None,
+        "eps":         pd.to_numeric(df[eps_col], errors="coerce") if eps_col else None,
+    })
+    return out.dropna(subset=["period"]).reset_index(drop=True)
+
+
+def fetch_company_info(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
+    global _printed_info_cols
+    frames = []
+    for symbol in symbols:
+        ingest._throttle()
+        try:
+            df = Company(symbol=symbol, source=source).overview()
+        except Exception as e:
+            print(f"[company_info] {symbol}: {e}")
+            continue
+        if df is None or len(df) == 0:
+            continue
+        df.columns = [str(c).lower() for c in df.columns]
+        if not _printed_info_cols:
+            print(f"[company_info] cột thật ({symbol}): {list(df.columns)}")
+            _printed_info_cols = True
+        row = _normalize_company(df, symbol)
+        if row is not None and not row.empty:
+            frames.append(row)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _normalize_company(df, symbol) -> pd.DataFrame:
+    cols = list(df.columns)
+    name_col     = _find(cols, "organ_name", "company_name", "short_name", "company")
+    exch_col     = _find(cols, "exchange", "comgroupcode", "board")
+    industry_col = _find(cols, "industry_icb", "industry", "icb_name", "ngành")
+    sector_col   = _find(cols, "sector", "sector_name")
+    listed_col   = _find(cols, "listing_date", "listed_date", "ipo")
+
+    if df.empty:
+        return pd.DataFrame()
+    row = df.iloc[0]
+
+    listed_val = None
+    if listed_col and pd.notna(row[listed_col]):
+        try:
+            listed_val = pd.to_datetime(row[listed_col]).date().isoformat()
+        except Exception:
+            listed_val = None
+
+    return pd.DataFrame([{
+        "symbol":       symbol.upper().strip(),
+        "company_name": str(row[name_col]).strip()     if name_col     else None,
+        "exchange":     str(row[exch_col]).upper()     if exch_col     else None,
+        "industry_icb": str(row[industry_col]).strip() if industry_col else None,
+        "sector":       str(row[sector_col]).strip()   if sector_col   else None,
+        "listed_date":  listed_val,
+    }])

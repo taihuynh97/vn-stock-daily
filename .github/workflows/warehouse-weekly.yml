@@ -1,0 +1,27 @@
+name: warehouse-weekly
+
+on:
+  schedule:
+    # Thứ 7 hàng tuần lúc 08:30 UTC (15:30 ICT)
+    - cron: "30 8 * * 6"
+  workflow_dispatch: {}
+
+jobs:
+  warehouse-weekly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Warehouse weekly (giá + financial ratios)
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+        run: python build_warehouse.py --mode weekly

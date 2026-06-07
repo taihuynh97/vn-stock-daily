@@ -27,11 +27,23 @@ from vnstock.api.financial import Finance
 from vnstock.api.company import Company
 from vnstock.api.listing import Listing
 from vnstock.api.trading import Trading
+from . import warehouse
 
 
 def fetch_history(symbol: str, source: str = "VCI", days: int = 120) -> pd.DataFrame:
-    """OHLCV ngày trong `days` phiên gần nhất. Cột chuẩn hoá về lowercase."""
-    start = (date.today() - timedelta(days=days * 2)).isoformat()  # *2 để bù ngày nghỉ
+    """OHLCV ngày trong `days` phiên gần nhất. Đọc warehouse trước, gọi API nếu thiếu."""
+    # 1) Thử warehouse
+    try:
+        con = warehouse.get_conn()
+        df = warehouse.read_price_history(con, symbol, days)
+        con.close()
+        if len(df) >= max(days // 2, 10):
+            return df
+    except Exception:
+        pass
+
+    # 2) Fallback: gọi API
+    start = (date.today() - timedelta(days=days * 2)).isoformat()
     end = date.today().isoformat()
     _throttle()
     try:

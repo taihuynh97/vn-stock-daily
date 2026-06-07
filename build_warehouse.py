@@ -23,6 +23,16 @@ ROOT = Path(__file__).resolve().parent
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Warehouse ingestion job")
+    parser.add_argument(
+        "--mode",
+        choices=["daily", "weekly", "monthly"],
+        default="daily",
+        help="daily=giá EOD+universe; weekly=+financials; monthly=+company_info",
+    )
+    args = parser.parse_args()
+
     key = os.getenv("VNSTOCK_API_KEY")
     if key:
         from vnstock import vnai
@@ -35,30 +45,48 @@ def main():
     con = warehouse.get_conn()
     warehouse.init_warehouse(con)
 
-    # 1) Refresh danh sách mã (Phase 1: chạy mỗi lần; sau có thể tách job monthly)
+    # 1) Refresh danh sách mã
     uni = ingest_market.refresh_universe(cfg["exchanges"], source)
     n_sym = warehouse.upsert_symbols(con, uni, run_date)
-    warehouse.log_load(con, "warehouse_daily", "dim_symbols", n_sym,
+    warehouse.log_load(con, f"warehouse_{args.mode}", "dim_symbols", n_sym,
                        "ok" if n_sym else "empty")
     print(f"dim_symbols: {n_sym} mã ({', '.join(cfg['exchanges'])})")
 
-    # 2) Giá EOD toàn thị trường (bulk)
+    # 2) Giá EOD toàn thị trường (bulk) — mọi mode đều có
     symbols = warehouse.get_active_symbols(con)
     if not symbols:
         print("Chưa có mã nào trong dim_symbols — dừng.")
-        warehouse.log_load(con, "warehouse_daily", "raw_price_daily", 0, "skipped",
-                           notes="no symbols")
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", 0,
+                           "skipped", notes="no symbols")
         con.close()
         return
 
     prices = ingest_market.fetch_eod_prices(symbols, source, cfg.get("price_board_batch", 50))
     n_px = warehouse.upsert_prices(con, prices)
-    warehouse.log_load(con, "warehouse_daily", "raw_price_daily", n_px,
+    warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", n_px,
                        "ok" if n_px else "empty", watermark=run_date)
     print(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
 
+    # 3) Financial ratios — weekly và monthly
+    if args.mode in ("weekly", "monthly"):
+        print(f"Bắt đầu fetch financials ({len(symbols)} mã)...")
+        fin = ingest_market.fetch_financials(symbols, source)
+        n_fin = warehouse.upsert_financial_ratios(con, fin)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_ratio", n_fin,
+                           "ok" if n_fin else "empty", watermark=run_date)
+        print(f"raw_financial_ratio: {n_fin} dòng")
+
+    # 4) Company info — monthly only
+    if args.mode == "monthly":
+        print(f"Bắt đầu fetch company info ({len(symbols)} mã)...")
+        info = ingest_market.fetch_company_info(symbols, source)
+        n_info = warehouse.upsert_company_info(con, info)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_company_info", n_info,
+                           "ok" if n_info else "empty", watermark=run_date)
+        print(f"raw_company_info: {n_info} mã")
+
     con.close()
-    print("Xong warehouse job.")
+    print(f"Xong warehouse job ({args.mode}).")
 
 
 if __name__ == "__main__":
