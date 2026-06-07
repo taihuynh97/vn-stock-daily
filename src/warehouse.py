@@ -110,3 +110,58 @@ def log_load(con, job_name, table, rows, status, watermark="", notes=""):
         "INSERT INTO etl_load_log VALUES (?,?,?,?,?,?,?)",
         [job_name, table, datetime.now(timezone.utc), rows, status, watermark, notes],
     )
+
+
+def init_backfill_status(con):
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS backfill_status (
+            symbol     VARCHAR PRIMARY KEY,
+            status     VARCHAR DEFAULT 'pending',
+            last_date  DATE,
+            notes      VARCHAR,
+            updated_at TIMESTAMP
+        );
+        """
+    )
+
+
+def get_pending_symbols(con) -> list[str]:
+    """Trả danh sách mã chưa backfill xong (không có trong backfill_status hoặc status != done)."""
+    return [r[0] for r in con.execute(
+        """
+        SELECT d.symbol
+        FROM dim_symbols d
+        LEFT JOIN backfill_status b ON d.symbol = b.symbol
+        WHERE d.is_active AND (b.symbol IS NULL OR b.status != 'done')
+        ORDER BY d.symbol
+        """
+    ).fetchall()]
+
+
+def mark_backfill_done(con, symbol: str, last_date: str):
+    con.execute(
+        """
+        INSERT INTO backfill_status (symbol, status, last_date, updated_at)
+        VALUES (?, 'done', ?, now())
+        ON CONFLICT (symbol) DO UPDATE SET
+            status     = 'done',
+            last_date  = excluded.last_date,
+            updated_at = excluded.updated_at
+        """,
+        [symbol, last_date],
+    )
+
+
+def mark_backfill_error(con, symbol: str, note: str):
+    con.execute(
+        """
+        INSERT INTO backfill_status (symbol, status, notes, updated_at)
+        VALUES (?, 'error', ?, now())
+        ON CONFLICT (symbol) DO UPDATE SET
+            status     = 'error',
+            notes      = excluded.notes,
+            updated_at = excluded.updated_at
+        """,
+        [symbol, note],
+    )
