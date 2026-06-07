@@ -143,7 +143,7 @@ def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") ->
         _printed_hist_cols = True
 
     cols = list(df.columns)
-    date_col  = _find(cols, "time", "date", "trading_date")
+    date_col  = _find(cols, "trading_date", "time", "date")
     close_col = _find(cols, "close")
     open_col  = _find(cols, "open")
     high_col  = _find(cols, "high")
@@ -156,8 +156,8 @@ def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") ->
         return pd.DataFrame()
 
     out = pd.DataFrame({
-        "symbol":     symbol,
-        "trade_date": pd.to_datetime(df[date_col]).dt.date,
+        "symbol":     symbol.upper().strip(),
+        "trade_date": pd.to_datetime(df[date_col]).dt.strftime("%Y-%m-%d"),
         "open":       _col(df, open_col),
         "high":       _col(df, high_col),
         "low":        _col(df, low_col),

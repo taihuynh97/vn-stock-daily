@@ -5,6 +5,14 @@ from unittest.mock import patch, MagicMock
 from src import ingest_market
 
 
+@pytest.fixture(autouse=True)
+def reset_module_state():
+    import src.ingest_market as m
+    m._printed_hist_cols = False
+    yield
+    m._printed_hist_cols = False
+
+
 def _make_history_df():
     return pd.DataFrame({
         'time':   ['2024-01-02', '2024-01-03', '2024-01-04'],
@@ -50,5 +58,27 @@ def test_fetch_history_one_returns_empty_on_exception():
     with patch('src.ingest_market.Quote', return_value=mock_quote):
         with patch('src.ingest_market.ingest._throttle'):
             df = ingest_market.fetch_history_one('ERR', '2024-01-01', '2024-01-31')
+
+    assert df.empty
+
+
+def test_fetch_history_one_returns_empty_on_empty_response():
+    mock_quote = MagicMock()
+    mock_quote.history.return_value = pd.DataFrame()
+
+    with patch('src.ingest_market.Quote', return_value=mock_quote):
+        with patch('src.ingest_market.ingest._throttle'):
+            df = ingest_market.fetch_history_one('VNM', '2024-01-01', '2024-01-31')
+
+    assert df.empty
+
+
+def test_fetch_history_one_returns_empty_on_missing_columns():
+    mock_quote = MagicMock()
+    mock_quote.history.return_value = pd.DataFrame({'price': [100], 'qty': [500]})
+
+    with patch('src.ingest_market.Quote', return_value=mock_quote):
+        with patch('src.ingest_market.ingest._throttle'):
+            df = ingest_market.fetch_history_one('VNM', '2024-01-01', '2024-01-31')
 
     assert df.empty
