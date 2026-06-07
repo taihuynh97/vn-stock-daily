@@ -71,10 +71,35 @@ Cú pháp cron: `minute hour day-of-month month day-of-week`
 
 | Workflow | Cron | UTC | ICT | Nội dung |
 |---|---|---|---|---|
-| `daily.yml` | `30 8 * * 1-5` | T2-T6 8:30 | 15:30 | Bản tin |
-| `warehouse.yml` | `30 8 * * 1-5` | T2-T6 8:30 | 15:30 | Giá EOD |
+| `warehouse.yml` | `30 8 * * 1-5` | T2-T6 8:30 | 15:30 | Giá EOD (chạy trước) |
+| `daily.yml` | `0 9 * * 1-5` | T2-T6 9:00 | 16:00 | Bản tin (chạy sau) |
 | `warehouse-weekly.yml` | `30 8 * * 6` | T7 8:30 | 15:30 | + Financials |
 | `warehouse-monthly.yml` | `0 9 1 * *` | Ngày 1, 9:00 | 16:00 | + Company info |
+
+---
+
+## Job Ordering — Tại sao newsletter chạy sau warehouse?
+
+Hai job `warehouse.yml` và `daily.yml` **không độc lập** về mặt dữ liệu:
+
+```
+warehouse.yml (08:30 UTC):
+  vnstock API → MotherDuck (ghi giá EOD hôm nay)
+
+daily.yml (09:00 UTC — 30 phút sau):
+  MotherDuck → ingest.fetch_history → signals → newsletter
+```
+
+**Nếu chạy đồng thời (08:30):**
+- Newsletter đọc MotherDuck ngay lúc warehouse đang ghi
+- Có thể thiếu giá hôm nay → MA/RSI tính từ dữ liệu cũ một ngày
+
+**Sau khi fix (daily.yml = 09:00 UTC):**
+- Warehouse có 30 phút để hoàn thành (bulk API call, thường <15 phút)
+- Newsletter đọc MotherDuck → có đủ lịch sử + giá hôm nay → threshold `max(days//2, 10)` đạt
+- `fetch_history` trả từ warehouse, **không gọi API** → tiết kiệm ~31 giây
+
+**Lưu ý**: `fetch_ratios`, `fetch_industry`, `fetch_news` vẫn gọi API trực tiếp (chưa có warehouse-first). Chỉ `fetch_history` (OHLCV lịch sử) là phần tốn thời gian nhất và đã được tối ưu.
 
 ---
 

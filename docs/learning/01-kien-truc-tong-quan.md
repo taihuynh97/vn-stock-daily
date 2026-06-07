@@ -29,7 +29,7 @@ Hai luồng hoạt động song song, hoàn toàn độc lập:
 **Tại sao tách hai luồng?**
 - Luồng bản tin cần nhanh (~2-3 phút) để gửi kịp sau phiên.
 - Warehouse nạp toàn thị trường (~1,500 mã), chạy riêng không ảnh hưởng bản tin.
-- Kể từ Phase 2B: luồng bản tin **ưu tiên đọc từ warehouse** (nhanh hơn nhiều) thay vì gọi API lại.
+- Kể từ Phase 2B + fix daily.yml: luồng bản tin **ưu tiên đọc từ warehouse** (nhanh hơn nhiều) thay vì gọi API lại. Yêu cầu `WAREHOUSE_DB=md:vn_market` được set trong `daily.yml`.
 
 ---
 
