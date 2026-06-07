@@ -6,7 +6,7 @@ Hai luồng hoạt động song song, hoàn toàn độc lập:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  LUỒNG 1 — BẢN TIN (main.py)              chạy T2-T6 15:30 │
+│  LUỒNG 1 — BẢN TIN (main.py)              chạy T2-T6 16:00 │
 │                                                              │
 │  vnstock API ──► signals.py ──► screener.py ──► digest.py  │
 │                                                  (Claude)    │

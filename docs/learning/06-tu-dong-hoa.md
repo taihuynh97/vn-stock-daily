@@ -97,7 +97,7 @@ daily.yml (09:00 UTC — 30 phút sau):
 **Sau khi fix (daily.yml = 09:00 UTC):**
 - Warehouse có 30 phút để hoàn thành (bulk API call, thường <15 phút)
 - Newsletter đọc MotherDuck → có đủ lịch sử + giá hôm nay → threshold `max(days//2, 10)` đạt
-- `fetch_history` trả từ warehouse, **không gọi API** → tiết kiệm ~31 giây
+- `fetch_history` trả từ warehouse, **không gọi API** → tiết kiệm ~96 giây (khoảng 31 lần gọi × 3.1s: VNINDEX + danh mục + ~27 mã screener)
 
 **Lưu ý**: `fetch_ratios`, `fetch_industry`, `fetch_news` vẫn gọi API trực tiếp (chưa có warehouse-first). Chỉ `fetch_history` (OHLCV lịch sử) là phần tốn thời gian nhất và đã được tối ưu.
 
