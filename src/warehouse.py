@@ -147,6 +147,7 @@ def mark_backfill_done(con, symbol: str, last_date: str):
         ON CONFLICT (symbol) DO UPDATE SET
             status     = 'done',
             last_date  = excluded.last_date,
+            notes      = NULL,
             updated_at = excluded.updated_at
         """,
         [symbol, last_date],

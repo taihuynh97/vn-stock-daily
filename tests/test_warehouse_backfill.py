@@ -47,3 +47,12 @@ def test_mark_done_idempotent(con):
     warehouse.mark_backfill_done(con, 'FPT', '2026-06-07')
     count = con.execute("SELECT count(*) FROM backfill_status WHERE symbol='FPT'").fetchone()[0]
     assert count == 1
+
+
+def test_error_to_done_clears_notes(con):
+    con.execute("INSERT INTO dim_symbols VALUES ('HPG','HOSE','Hoa Phat',TRUE,'2020-01-01','2026-01-01')")
+    warehouse.mark_backfill_error(con, 'HPG', 'timeout')
+    warehouse.mark_backfill_done(con, 'HPG', '2026-06-07')
+    row = con.execute("SELECT status, notes FROM backfill_status WHERE symbol='HPG'").fetchone()
+    assert row[0] == 'done'
+    assert row[1] is None
