@@ -2,9 +2,9 @@ name: daily-stock-digest
 
 on:
   schedule:
-    # VN đóng cửa 15:00 ICT = 08:00 UTC. Chạy 08:30 UTC, T2–T6.
-    # GHA dùng giờ UTC; cron có thể trễ vài phút lúc cao điểm.
-    - cron: "30 8 * * 1-5"
+    # VN đóng cửa 15:00 ICT = 08:00 UTC.
+    # Warehouse job chạy 08:30 UTC → chạy newsletter 09:00 UTC để đọc từ warehouse có đủ data hôm nay.
+    - cron: "0 9 * * 1-5"
   workflow_dispatch: {}   # cho phép chạy tay từ tab Actions
 
 jobs:
@@ -35,4 +35,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CLAUDE_MODEL: claude-sonnet-4-6
           VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: python main.py
