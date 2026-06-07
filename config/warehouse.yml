@@ -1,0 +1,11 @@
+# Cấu hình job thu thập warehouse (Phase 1).
+
+# Sàn cần thu. vnstock có thể trả mã sàn là HOSE hoặc HSX — code đã chuẩn hoá cả hai.
+# Bắt đầu HOSE + HNX (~700 mã thanh khoản); mở UPCOM sau khi pipeline ổn định.
+exchanges:
+  - HOSE
+  - HNX
+  # - UPCOM
+
+source: VCI            # nguồn dữ liệu cho price_board / listing
+price_board_batch: 50  # số mã mỗi lần gọi bulk price_board

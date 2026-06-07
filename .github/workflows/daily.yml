@@ -1,0 +1,38 @@
+name: daily-stock-digest
+
+on:
+  schedule:
+    # VN đóng cửa 15:00 ICT = 08:00 UTC. Chạy 08:30 UTC, T2–T6.
+    # GHA dùng giờ UTC; cron có thể trễ vài phút lúc cao điểm.
+    - cron: "30 8 * * 1-5"
+  workflow_dispatch: {}   # cho phép chạy tay từ tab Actions
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Khôi phục DB của lần chạy trước (best-effort, để chống lặp tin)
+      - name: Restore DB cache
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: market-db-${{ github.run_id }}
+          restore-keys: market-db-
+
+      - name: Run digest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CLAUDE_MODEL: claude-sonnet-4-6
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+        run: python main.py

@@ -1,0 +1,24 @@
+# Tiêu chí lọc "mã tiềm năng" — kết hợp định giá (value) và đà tăng (momentum).
+# Đây là CHỖ BẠN NÊN TINH CHỈNH theo triết lý đầu tư của riêng mình.
+# Một mã vào danh sách nếu vừa đạt phần lớn tiêu chí value, vừa đạt phần lớn momentum.
+
+universe:
+  # Nhóm cổ phiếu để quét. Dùng nhóm chỉ số để giới hạn về các mã thanh khoản tốt.
+  # Lựa chọn: VN30, VN100, HOSE, HNX30... (theo Listing.symbols_by_group)
+  group: VN30
+  # Bỏ qua mã có thanh khoản trung bình 20 phiên thấp hơn ngưỡng (số cổ phiếu/phiên)
+  min_avg_volume: 100000
+
+value:
+  pe_max: 15        # P/E tối đa
+  pb_max: 2.5       # P/B tối đa
+  roe_min: 0.15     # ROE tối thiểu (15%)
+
+momentum:
+  above_ma50: true  # giá đóng cửa > MA50
+  rsi_min: 50       # RSI(14) trong vùng tăng nhưng chưa quá mua
+  rsi_max: 70
+  return_1m_min: 0.0  # suất sinh lời 1 tháng tối thiểu (0% = chỉ cần không giảm)
+
+# Số mã tối đa đưa vào bản tin
+top_n: 8

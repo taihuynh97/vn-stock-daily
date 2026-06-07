@@ -1,0 +1,15 @@
+# Danh mục đang nắm giữ.
+# avg_price = giá vốn trung bình (VND/cổ phiếu), volume = số lượng cổ phiếu.
+# source: nguồn dữ liệu vnstock cho mã đó (VCI / TCBS / KBS). Để VCI là ổn cho hầu hết mã.
+holdings:
+  - symbol: FPT
+    avg_price: 95000
+    volume: 200
+  - symbol: HPG
+    avg_price: 26000
+    volume: 1000
+  - symbol: MWG
+    avg_price: 58000
+    volume: 300
+
+source: VCI

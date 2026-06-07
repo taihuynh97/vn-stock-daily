@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="vi"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VN Market Data Platform — Architecture</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0e14;color:#e6edf3;font-family:'SF Mono','Cascadia Code',monospace;padding:28px 18px}
+  h1{font-size:13px;color:#7d8590;letter-spacing:2px;text-transform:uppercase;text-align:center;margin-bottom:6px}
+  .sub{font-size:11px;color:#4b5563;text-align:center;margin-bottom:28px}
+  .wrap{max-width:760px;margin:0 auto}
+  .sec-label{font-size:10px;color:#7d8590;letter-spacing:1.5px;text-transform:uppercase;margin:0 0 10px 2px;display:flex;align-items:center;gap:8px}
+  .cad{font-size:9px;padding:1px 7px;border-radius:10px;letter-spacing:.5px}
+  .cad-d{background:#0d2818;color:#4ade80}.cad-w{background:#1a2238;color:#60a5fa}.cad-m{background:#2a1838;color:#c084fc}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .box{border:1px solid;border-radius:7px;padding:9px 12px;font-size:11px;flex:1;min-width:140px}
+  .box .n{font-weight:600;font-size:12px;margin-bottom:1px}
+  .box .m{font-size:10px;opacity:.6;font-family:monospace}
+  .box .tag{font-size:8.5px;padding:1px 6px;border-radius:8px;margin-top:5px;display:inline-block}
+  .free{background:#0d2818;color:#4ade80}.paid{background:#3a1a0d;color:#fb923c}
+  .src{background:#0d1a2e;border-color:#1e40af}.src .n{color:#60a5fa}
+  .arrow{text-align:center;color:#30363d;font-size:15px;margin:8px 0;position:relative}
+  .arrow::before{content:'';position:absolute;left:50%;top:-6px;width:1px;height:26px;background:#21262d;transform:translateX(-50%)}
+  .arrow span{background:#0a0e14;padding:0 8px;position:relative}
+  .wh{border:1px solid #1f3a26;border-radius:12px;padding:14px 12px;background:#080f0a;margin-bottom:6px}
+  .wh-t{font-size:11px;color:#4ade80;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px}
+  .raw{background:#141a0a;border-color:#4d7c0f}.raw .n{color:#a3e635}
+  .ctl{background:#1a0d0d;border-color:#7f1d1d}.ctl .n{color:#fca5a5}
+  .stg{background:#0d1f15;border-color:#065f46}.stg .n{color:#34d399}
+  .mrt{background:#0a2818;border-color:#059669}.mrt .n{color:#6ee7b7}
+  .csm{background:#1f1608;border-color:#b45309}.csm .n{color:#fbbf24}
+  .inner-arr{font-size:9px;color:#4ade80;opacity:.55;text-align:center;margin:6px 0}
+</style></head><body>
+<div class="wrap">
+<h1>VN Market Data Platform</h1>
+<div class="sub">Supply-driven warehouse · Modern Data Stack · chủ yếu Free tier</div>
+
+<!-- SOURCES by cadence -->
+<div class="sec-label">① Nguồn &amp; lịch thu thập (vnstock)</div>
+
+<div class="sec-label" style="margin-top:4px"><span class="cad cad-d">DAILY · hằng ngày</span></div>
+<div class="row">
+  <div class="box src"><div class="n">Giá EOD toàn TT</div><div class="m">Trading.price_board (bulk)</div><span class="tag free">Free · ~vài chục call</span></div>
+  <div class="box src"><div class="n">Chỉ số</div><div class="m">Quote.history (VNINDEX…)</div><span class="tag free">Free</span></div>
+  <div class="box src"><div class="n">Khối ngoại</div><div class="m">Trading.foreign_trade</div><span class="tag free">Free</span></div>
+</div>
+
+<div class="sec-label" style="margin-top:8px"><span class="cad cad-w">WEEKLY · hằng tuần</span></div>
+<div class="row">
+  <div class="box src"><div class="n">Báo cáo tài chính</div><div class="m">Finance.ratio / income_statement / balance_sheet / cash_flow</div><span class="tag free">Free · quý mới đổi</span></div>
+  <div class="box src"><div class="n">Sự kiện · cổ tức</div><div class="m">Company.events</div><span class="tag free">Free</span></div>
+</div>
+
+<div class="sec-label" style="margin-top:8px"><span class="cad cad-m">MONTHLY · hằng tháng</span></div>
+<div class="row">
+  <div class="box src"><div class="n">Danh sách mã</div><div class="m">Listing.all_symbols / symbols_by_exchange</div><span class="tag free">Free</span></div>
+  <div class="box src"><div class="n">Hồ sơ DN · ngành</div><div class="m">Company.overview / officers / shareholders</div><span class="tag free">Free</span></div>
+</div>
+
+<div class="sec-label" style="margin-top:8px"><span class="cad cad-w">ON-DEMAND · watchlist</span></div>
+<div class="row">
+  <div class="box src"><div class="n">Tin tức</div><div class="m">Company.news — chỉ mã quan tâm (không phải cả 1.600 mã)</div><span class="tag free">Free</span></div>
+  <div class="box src"><div class="n">Backfill lịch sử</div><div class="m">Quote.history — chạy 1 lần, chia nhỏ</div><span class="tag free">Free*</span></div>
+</div>
+
+<div class="arrow"><span>↓ ghi (upsert / append)</span></div>
+
+<!-- WAREHOUSE -->
+<div class="sec-label">② Warehouse — MotherDuck / DuckDB (Free 10GB)</div>
+<div class="wh">
+  <div class="wh-t">RAW — Python job ghi trực tiếp, immutable</div>
+  <div class="row">
+    <div class="box raw"><div class="n">raw_price_daily</div><div class="m">symbol,date,ohlcv · PK(symbol,date)</div></div>
+    <div class="box raw"><div class="n">raw_financial_ratio</div><div class="m">symbol,period · upsert</div></div>
+  </div>
+  <div class="row">
+    <div class="box raw"><div class="n">raw_company_info</div><div class="m">SCD · upsert</div></div>
+    <div class="box raw"><div class="n">raw_news / events / foreign</div><div class="m">append</div></div>
+    <div class="box ctl"><div class="n">CONTROL</div><div class="m">dim_symbols · etl_load_log (watermark)</div></div>
+  </div>
+
+  <div class="inner-arr">↓ dbt staging — clean, cast, dedup</div>
+  <div class="row">
+    <div class="box stg"><div class="n">stg_price_daily</div></div>
+    <div class="box stg"><div class="n">stg_financial_ratio</div></div>
+    <div class="box stg"><div class="n">stg_company_info</div></div>
+  </div>
+
+  <div class="inner-arr">↓ dbt mart — business-ready, TÁI SỬ DỤNG</div>
+  <div class="row">
+    <div class="box mrt"><div class="n">dim_stock</div><div class="m">info + ratios mới nhất</div></div>
+    <div class="box mrt"><div class="n">fct_price_daily</div><div class="m">+ MA, RSI, returns</div></div>
+  </div>
+  <div class="row">
+    <div class="box mrt"><div class="n">mart_sector_daily</div><div class="m">định giá / return theo ngành</div></div>
+    <div class="box mrt"><div class="n">mart_market_breadth</div><div class="m">% mã trên MA50…</div></div>
+    <div class="box mrt"><div class="n">mart_screener</div><div class="m">quét cả TT bằng SQL</div></div>
+  </div>
+</div>
+
+<div class="arrow"><span>↓ query (không gọi lại API)</span></div>
+
+<!-- CONSUMERS -->
+<div class="sec-label">③ Consumers — đọc từ mart, tái sử dụng chung 1 nguồn</div>
+<div class="row">
+  <div class="box csm"><div class="n">Bản tin Telegram</div><div class="m">digest hằng ngày</div><span class="tag paid">Claude API · trả phí (nhỏ)</span></div>
+  <div class="box csm"><div class="n">Streamlit Dashboard</div><div class="m">theo dõi TT / ngành</div><span class="tag free">Free</span></div>
+</div>
+<div class="row">
+  <div class="box csm"><div class="n">DBeaver / ad-hoc SQL</div><div class="m">phân tích tuỳ biến</div><span class="tag free">Free</span></div>
+  <div class="box csm"><div class="n">Báo cáo · backtest</div><div class="m">tái dùng warehouse</div><span class="tag free">Free</span></div>
+</div>
+
+<div class="arrow" style="margin-top:16px"><span>orchestration</span></div>
+<div class="row">
+  <div class="box" style="background:#12101f;border-color:#6b21a8"><div class="n" style="color:#c084fc">GitHub Actions</div><div class="m">cron theo cadence · free compute</div><span class="tag free">Free 2000'/tháng</span></div>
+  <div class="box" style="background:#12101f;border-color:#6b21a8;opacity:.8"><div class="n" style="color:#c084fc">Prefect Cloud (sau)</div><div class="m">monitoring · retry · lineage</div><span class="tag free">Free tier</span></div>
+</div>
+
+<div style="font-size:10px;color:#4b5563;margin-top:18px;text-align:center">* Backfill free với Community key (60 req/phút). Trả phí chỉ cần nếu muốn intraday hoặc backfill cực nhanh.</div>
+</div>
+</body></html>

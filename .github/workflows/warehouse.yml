@@ -1,0 +1,28 @@
+name: warehouse-daily
+
+on:
+  schedule:
+    # VN đóng cửa 15:00 ICT = 08:00 UTC. Thu giá EOD lúc 08:30 UTC, T2–T6.
+    - cron: "30 8 * * 1-5"
+  workflow_dispatch: {}   # chạy tay từ tab Actions
+
+jobs:
+  warehouse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Build warehouse (ghi lên MotherDuck)
+        env:
+          # Ghi thẳng lên MotherDuck cloud — dữ liệu bền vững, không mất khi runner tắt.
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+        run: python build_warehouse.py
