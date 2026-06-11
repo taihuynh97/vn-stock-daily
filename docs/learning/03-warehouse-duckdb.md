@@ -77,6 +77,26 @@ CREATE TABLE raw_price_daily (
 
 Đây là dữ liệu chuẩn trong mọi hệ thống phân tích chứng khoán trên thế giới.
 
+**Bài học từ một lỗi data quality thật (6/2026):** hai nguồn dữ liệu của vnstock
+trả OHLC ở hai đơn vị khác nhau — `Trading.price_board` (job daily) trả **VNĐ**,
+còn `Quote.history` (dùng cho backfill) trả **nghìn VNĐ**. Vì không nhân lại
+×1000, ~1.18 triệu dòng backfill bị lệch đơn vị 1000 lần so với dữ liệu daily
+(`open=62.4` thay vì `62400`). Đây là ví dụ kinh điển của **schema khớp nhưng
+semantics (đơn vị) không khớp** giữa hai nguồn — loại lỗi mà constraint/test ở
+schema-level không bắt được, phải kiểm tra bằng cách so sánh giá trị thực tế
+giữa các nguồn. Đã sửa ở `ingest_market.fetch_history_one` (nhân ×1000) và chạy
+migration một lần (`scripts/fix_backfill_units.py`) để sửa dữ liệu cũ.
+
+Một lỗi liên quan: cột `value` (giá trị khớp lệnh) NULL cho >99% dòng backfill —
+vì `Quote.history` của VCI **không có** field này (chỉ `price_board` có). Đây là
+giới hạn API nguồn, không phải bug, nên giữ NULL thay vì tính xấp xỉ.
+
+Lỗi thứ ba: chạy `build_warehouse.py` thủ công vào Chủ Nhật tạo ra các dòng
+`trade_date` của ngày không giao dịch, với `close` không khớp OHLV (do
+`price_board` trả dữ liệu không nhất quán vào ngày nghỉ). Đã thêm
+`ingest_market.is_trading_day()` để job daily tự bỏ qua Thứ 7/CN, và xoá dữ
+liệu phantom đã lỡ ghi (`scripts/fix_phantom_sunday.py`).
+
 ### `raw_financial_ratio` — Tỷ số tài chính (Phase 2A)
 
 ```sql

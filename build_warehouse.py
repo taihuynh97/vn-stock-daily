@@ -61,11 +61,16 @@ def main():
         con.close()
         return
 
-    prices = ingest_market.fetch_eod_prices(symbols, source, cfg.get("price_board_batch", 50))
-    n_px = warehouse.upsert_prices(con, prices)
-    warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", n_px,
-                       "ok" if n_px else "empty", watermark=run_date)
-    print(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
+    if not ingest_market.is_trading_day(date.today()):
+        print(f"{run_date} không phải ngày giao dịch (T7/CN) — bỏ qua giá EOD.")
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", 0,
+                           "skipped", notes="non-trading day (weekend)")
+    else:
+        prices = ingest_market.fetch_eod_prices(symbols, source, cfg.get("price_board_batch", 50))
+        n_px = warehouse.upsert_prices(con, prices)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", n_px,
+                           "ok" if n_px else "empty", watermark=run_date)
+        print(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
 
     # 3) Financial ratios — weekly và monthly
     if args.mode in ("weekly", "monthly"):

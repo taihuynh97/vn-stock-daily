@@ -1,15 +1,15 @@
-# Danh mục đang nắm giữ.
+# Danh mục theo dõi (watchlist) — các mã đang quan tâm/đầu tư.
 # avg_price = giá vốn trung bình (VND/cổ phiếu), volume = số lượng cổ phiếu.
+# Cả hai đều TUỲ CHỌN: bỏ trống nếu chỉ muốn theo dõi giá/tín hiệu, không tính lãi/lỗ.
 # source: nguồn dữ liệu vnstock cho mã đó (VCI / TCBS / KBS). Để VCI là ổn cho hầu hết mã.
+#
+# Ngành (industry) được tự động lấy qua ingest.fetch_industry() và đưa vào bản tin,
+# không cần khai báo ở đây.
 holdings:
-  - symbol: FPT
-    avg_price: 95000
-    volume: 200
-  - symbol: HPG
-    avg_price: 26000
-    volume: 1000
-  - symbol: MWG
-    avg_price: 58000
-    volume: 300
+  - symbol: HPG   # Hoà Phát — Thép
+  - symbol: IDV   # Phát triển Hạ tầng Vĩnh Phúc — BĐS khu công nghiệp
+  - symbol: MLS   # Chăn nuôi Mitraco — Nông nghiệp/Chăn nuôi
+  - symbol: PHP   # Cảng Hải Phòng — Cảng biển/Logistics
+  - symbol: VNR   # Tái bảo hiểm Quốc gia (Vinare) — Bảo hiểm
 
 source: VCI

@@ -24,6 +24,11 @@ _EXCH_NORM = {"HSX": "HOSE", "HOSE": "HOSE", "HNX": "HNX", "UPCOM": "UPCOM"}
 _printed_cols = False
 
 
+def is_trading_day(d: date) -> bool:
+    """True nếu d là ngày giao dịch (T2-T6). Chưa tính lịch nghỉ lễ VN."""
+    return d.weekday() < 5
+
+
 def refresh_universe(exchanges, source: str = "VCI") -> pd.DataFrame:
     """Trả DataFrame [symbol, exchange, company_name] đã lọc theo sàn & chỉ cổ phiếu."""
     ingest._throttle()
@@ -169,6 +174,12 @@ def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") ->
         "volume":     pd.to_numeric(df[vol_col], errors="coerce") if vol_col else None,
         "value":      _col(df, val_col),
     })
+    # vnstock (VCI) trả OHLC của Quote.history theo đơn vị nghìn đồng,
+    # trong khi Trading.price_board (daily ingestion) trả VND. Nhân lại 1000
+    # để raw_price_daily đồng nhất đơn vị giữa backfill và daily.
+    for col in ("open", "high", "low", "close"):
+        if pd.api.types.is_numeric_dtype(out[col]):
+            out[col] = out[col] * 1000
     return out.dropna(subset=["close"]).drop_duplicates(["symbol", "trade_date"]).reset_index(drop=True)
 
 

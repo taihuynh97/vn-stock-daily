@@ -173,6 +173,31 @@ def read_price_history(con, symbol: str, days: int) -> pd.DataFrame:
     return df.tail(days).reset_index(drop=True)
 
 
+def fix_backfill_price_units(con) -> int:
+    """Migration một lần: dữ liệu OHLC từ backfill (Quote.history, value IS NULL)
+    bị lệch đơn vị 1000 lần (nghìn VNĐ) so với price_board (VND, value NOT NULL).
+    Nhân lại 1000 để raw_price_daily đồng nhất đơn vị VND. Trả về số dòng đã sửa."""
+    n = con.execute("SELECT count(*) FROM raw_price_daily WHERE value IS NULL").fetchone()[0]
+    con.execute(
+        """
+        UPDATE raw_price_daily
+        SET open = open * 1000, high = high * 1000, low = low * 1000, close = close * 1000
+        WHERE value IS NULL
+        """
+    )
+    return n
+
+
+def delete_trade_date(con, trade_date: str) -> int:
+    """Xoá toàn bộ dòng raw_price_daily của một trade_date (vd: dữ liệu phantom
+    của ngày không phải phiên giao dịch). Trả về số dòng đã xoá."""
+    n = con.execute(
+        "SELECT count(*) FROM raw_price_daily WHERE trade_date = ?", [trade_date]
+    ).fetchone()[0]
+    con.execute("DELETE FROM raw_price_daily WHERE trade_date = ?", [trade_date])
+    return n
+
+
 def log_load(con, job_name, table, rows, status, watermark="", notes=""):
     con.execute(
         "INSERT INTO etl_load_log VALUES (?,?,?,?,?,?,?)",

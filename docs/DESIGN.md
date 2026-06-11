@@ -101,6 +101,23 @@ raw_news               news_id, symbol, title, published_date, url, source, load
                        PK (news_id)
 ```
 
+#### 5.1.1 Lưu ý chất lượng dữ liệu — `raw_price_daily`
+
+- **Đơn vị**: `open/high/low/close` luôn ở đơn vị **VNĐ** (không phải nghìn VNĐ).
+  `Trading.price_board` (daily, nguồn VCI) trả VND, còn `Quote.history` (backfill)
+  trả nghìn VNĐ — `ingest_market.fetch_history_one` nhân lại ×1000 để hai nguồn
+  đồng nhất. (Dữ liệu cũ đã được sửa qua `scripts/fix_backfill_units.py`.)
+- **`value` (giá trị khớp lệnh) thường NULL cho các dòng backfill**: endpoint
+  `Quote.history` của VCI không trả turnover/giá trị giao dịch, nên các dòng nạp
+  qua `backfill.py` có `value = NULL`. Chỉ các dòng nạp qua `price_board`
+  (job daily) mới có `value`. Đây là giới hạn của API nguồn, không phải lỗi —
+  không cố tính xấp xỉ giá trị này.
+- **Lịch giao dịch**: `ingest_market.is_trading_day()` hiện chỉ kiểm tra
+  Thứ 2–6, **chưa loại trừ ngày lễ VN**. `build_warehouse.py` bỏ qua việc nạp
+  giá EOD vào Thứ 7/CN. Một lần chạy thủ công vào Chủ Nhật 2026-06-07 (trước khi
+  có guard này) đã tạo ra 1.573 dòng `trade_date=2026-06-07` với dữ liệu không
+  nhất quán (close không khớp OHLV) — đã xoá qua `scripts/fix_phantom_sunday.py`.
+
 ### 5.2 CONTROL layer (metadata — quản trị pipeline)
 
 ```
