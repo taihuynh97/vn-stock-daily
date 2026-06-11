@@ -26,20 +26,26 @@ def test_init_creates_company_info_table(con):
     assert "raw_company_info" in tables
 
 
+def _ratio_row(**overrides):
+    row = {
+        "symbol": "AAA", "year": 2023, "quarter": 5, "period_type": "year",
+        "market_cap": 1.0e13, "pe": 10.0, "pb": 1.5, "ps": 1.2,
+        "dividend_yield": 0.03, "roe": 0.15, "roa": 0.08, "roic": 0.12,
+        "debt_to_equity": 0.5, "current_ratio": 1.8, "gross_margin": 0.2,
+        "ebit_margin": 0.18, "after_tax_profit_margin": 0.15,
+    }
+    row.update(overrides)
+    return row
+
+
 def test_upsert_financial_ratios_returns_row_count(con):
-    df = pd.DataFrame([{
-        "symbol": "AAA", "period": "2023", "period_type": "year",
-        "pe": 10.0, "pb": 1.5, "roe": 0.15, "roa": 0.08, "eps": 2000.0,
-    }])
+    df = pd.DataFrame([_ratio_row()])
     n = upsert_financial_ratios(con, df)
     assert n == 1
 
 
 def test_upsert_financial_ratios_idempotent(con):
-    df = pd.DataFrame([{
-        "symbol": "AAA", "period": "2023", "period_type": "year",
-        "pe": 10.0, "pb": 1.5, "roe": 0.15, "roa": 0.08, "eps": 2000.0,
-    }])
+    df = pd.DataFrame([_ratio_row()])
     upsert_financial_ratios(con, df)
     upsert_financial_ratios(con, df)
     count = con.execute("SELECT COUNT(*) FROM raw_financial_ratio").fetchone()[0]
@@ -47,18 +53,12 @@ def test_upsert_financial_ratios_idempotent(con):
 
 
 def test_upsert_financial_ratios_updates_pe(con):
-    df1 = pd.DataFrame([{
-        "symbol": "AAA", "period": "2023", "period_type": "year",
-        "pe": 10.0, "pb": 1.5, "roe": 0.15, "roa": 0.08, "eps": 2000.0,
-    }])
-    df2 = pd.DataFrame([{
-        "symbol": "AAA", "period": "2023", "period_type": "year",
-        "pe": 12.0, "pb": 1.5, "roe": 0.15, "roa": 0.08, "eps": 2000.0,
-    }])
+    df1 = pd.DataFrame([_ratio_row(pe=10.0)])
+    df2 = pd.DataFrame([_ratio_row(pe=12.0)])
     upsert_financial_ratios(con, df1)
     upsert_financial_ratios(con, df2)
     pe = con.execute(
-        "SELECT pe FROM raw_financial_ratio WHERE symbol='AAA' AND period='2023'"
+        "SELECT pe FROM raw_financial_ratio WHERE symbol='AAA' AND year=2023 AND quarter=5"
     ).fetchone()[0]
     assert pe == 12.0
 

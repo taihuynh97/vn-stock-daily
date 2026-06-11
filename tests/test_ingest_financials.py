@@ -13,60 +13,74 @@ def reset_module_state():
     im._printed_fin_cols = False
 
 
-def _mock_finance_ratio():
+def _mock_ratio_summary():
+    """Company(...).ratio_summary() — quarter=5/RATIO_YEAR là tổng năm,
+    quarter=1-4/RATIO_TTM là TTM kết thúc tại quý đó."""
     return pd.DataFrame([
-        {"yearreport": "2023", "pe": 10.0, "pb": 1.5,
-         "roe": 0.15, "roa": 0.08, "eps": 2000.0},
-        {"yearreport": "2022", "pe": 9.5,  "pb": 1.4,
-         "roe": 0.14, "roa": 0.07, "eps": 1800.0},
+        {"symbol": "AAA", "year": 2024, "quarter": 5, "ratio_type": "RATIO_YEAR",
+         "market_cap": 1.0e13, "pe": 10.0, "pb": 1.5, "ps": 1.2,
+         "dividend_yield": 0.03, "roe": 0.15, "roa": 0.08, "roic": 0.12,
+         "debt_to_equity": 0.5, "current_ratio": 1.8, "gross_margin": 0.2,
+         "ebit_margin": 0.18, "after_tax_profit_margin": 0.15},
+        {"symbol": "AAA", "year": 2025, "quarter": 1, "ratio_type": "RATIO_TTM",
+         "market_cap": 1.1e13, "pe": 11.0, "pb": 1.6, "ps": 1.3,
+         "dividend_yield": 0.025, "roe": 0.16, "roa": 0.085, "roic": 0.125,
+         "debt_to_equity": 0.52, "current_ratio": 1.7, "gross_margin": 0.21,
+         "ebit_margin": 0.185, "after_tax_profit_margin": 0.155},
     ])
 
 
 def test_fetch_financials_returns_expected_schema():
-    with patch("src.ingest_market.Finance") as MockFin, \
+    with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
-        MockFin.return_value.ratio.return_value = _mock_finance_ratio()
+        MockCo.return_value.ratio_summary.return_value = _mock_ratio_summary()
         result = fetch_financials(["AAA"])
-    assert set(result.columns) >= {"symbol", "period", "period_type", "pe", "pb", "roe"}
+    assert set(result.columns) >= {
+        "symbol", "year", "quarter", "period_type",
+        "market_cap", "pe", "pb", "roe", "roa", "roic", "debt_to_equity",
+    }
     assert result.iloc[0]["symbol"] == "AAA"
-    assert result.iloc[0]["period_type"] == "year"
+    year_row = result[result["quarter"] == 5].iloc[0]
+    quarter_row = result[result["quarter"] == 1].iloc[0]
+    assert year_row["period_type"] == "year"
+    assert quarter_row["period_type"] == "quarter"
 
 
 def test_fetch_financials_multiple_periods():
-    with patch("src.ingest_market.Finance") as MockFin, \
+    with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
-        MockFin.return_value.ratio.return_value = _mock_finance_ratio()
+        MockCo.return_value.ratio_summary.return_value = _mock_ratio_summary()
         result = fetch_financials(["AAA"])
     assert len(result) == 2
-    assert set(result["period"].tolist()) == {"2023", "2022"}
+    assert set(result["year"].tolist()) == {2024, 2025}
 
 
 def test_fetch_financials_empty_on_exception():
-    with patch("src.ingest_market.Finance") as MockFin, \
+    with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
-        MockFin.return_value.ratio.side_effect = Exception("API error")
+        MockCo.return_value.ratio_summary.side_effect = Exception("API error")
         result = fetch_financials(["AAA"])
     assert result.empty
 
 
 def test_fetch_financials_empty_on_empty_response():
-    with patch("src.ingest_market.Finance") as MockFin, \
+    with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
-        MockFin.return_value.ratio.return_value = pd.DataFrame()
+        MockCo.return_value.ratio_summary.return_value = pd.DataFrame()
         result = fetch_financials(["AAA"])
     assert result.empty
 
 
 def test_fetch_financials_skips_failed_symbol_continues():
-    def side_effect_factory(symbol, source, period):
+    def side_effect_factory(symbol, source):
         mock = MagicMock()
         if symbol == "BAD":
-            mock.ratio.side_effect = Exception("fail")
+            mock.ratio_summary.side_effect = Exception("fail")
         else:
-            mock.ratio.return_value = _mock_finance_ratio()
+            mock.ratio_summary.return_value = _mock_ratio_summary()
         return mock
 
-    with patch("src.ingest_market.Finance", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
          patch("src.ingest_market.ingest._throttle"):
         result = fetch_financials(["BAD", "AAA"])
     assert len(result) > 0

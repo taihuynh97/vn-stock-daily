@@ -60,16 +60,25 @@ def init_warehouse(con):
             notes        VARCHAR
         );
         CREATE TABLE IF NOT EXISTS raw_financial_ratio (
-            symbol      VARCHAR,
-            period      VARCHAR,
-            period_type VARCHAR,
-            pe          DOUBLE,
-            pb          DOUBLE,
-            roe         DOUBLE,
-            roa         DOUBLE,
-            eps         DOUBLE,
-            loaded_at   TIMESTAMP,
-            PRIMARY KEY (symbol, period, period_type)
+            symbol                   VARCHAR,
+            year                     INTEGER,
+            quarter                  INTEGER,  -- 1-4 = TTM kết thúc tại quý đó, 5 = cả năm
+            period_type              VARCHAR,  -- 'quarter' | 'year'
+            market_cap               DOUBLE,
+            pe                       DOUBLE,
+            pb                       DOUBLE,
+            ps                       DOUBLE,
+            dividend_yield           DOUBLE,
+            roe                      DOUBLE,
+            roa                      DOUBLE,
+            roic                     DOUBLE,
+            debt_to_equity           DOUBLE,
+            current_ratio            DOUBLE,
+            gross_margin             DOUBLE,
+            ebit_margin              DOUBLE,
+            after_tax_profit_margin  DOUBLE,
+            loaded_at                TIMESTAMP,
+            PRIMARY KEY (symbol, year, quarter)
         );
         CREATE TABLE IF NOT EXISTS raw_company_info (
             symbol        VARCHAR PRIMARY KEY,
@@ -128,7 +137,9 @@ def upsert_financial_ratios(con, df) -> int:
     con.execute(
         """
         INSERT OR REPLACE INTO raw_financial_ratio
-        SELECT symbol, period, period_type, pe, pb, roe, roa, eps, now()
+        SELECT symbol, year, quarter, period_type, market_cap, pe, pb, ps,
+               dividend_yield, roe, roa, roic, debt_to_equity, current_ratio,
+               gross_margin, ebit_margin, after_tax_profit_margin, now()
         FROM df_fin;
         """
     )

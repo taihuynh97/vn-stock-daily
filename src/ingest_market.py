@@ -15,7 +15,6 @@ import pandas as pd
 from vnstock.api.listing import Listing
 from vnstock.api.trading import Trading
 from vnstock.api.quote import Quote
-from vnstock.api.financial import Finance
 from vnstock.api.company import Company
 from . import ingest  # tái dùng _throttle (chung ngân sách rate limit)
 
@@ -184,21 +183,23 @@ def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") ->
 
 
 def fetch_financials(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
+    """Tỷ số tài chính theo quý (TTM) + cả năm qua Company.ratio_summary().
+
+    Company.ratio_summary() trả mỗi dòng = 1 quý, quarter 1-4 = TTM kết thúc
+    tại quý đó (ratio_type=RATIO_TTM), quarter=5 = tổng cả năm (RATIO_YEAR).
+    """
     global _printed_fin_cols
     frames = []
     for symbol in symbols:
         ingest._throttle()
         try:
-            df = Finance(symbol=symbol, source=source, period="year").ratio()
+            df = Company(symbol=symbol, source=source).ratio_summary()
         except Exception as e:
             print(f"[financials] {symbol}: {e}")
             continue
         if df is None or len(df) == 0:
             continue
-        df.columns = [
-            '.'.join(map(str, c)).lower() if isinstance(c, tuple) else str(c).lower()
-            for c in df.columns
-        ]
+        df.columns = [str(c).lower() for c in df.columns]
         if not _printed_fin_cols:
             print(f"[financials] cột thật ({symbol}): {list(df.columns)}")
             _printed_fin_cols = True
@@ -208,30 +209,28 @@ def fetch_financials(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+_RATIO_NUM_COLS = [
+    "market_cap", "pe", "pb", "ps", "dividend_yield", "roe", "roa", "roic",
+    "debt_to_equity", "current_ratio", "gross_margin", "ebit_margin",
+    "after_tax_profit_margin",
+]
+
+
 def _normalize_financials(df, symbol) -> pd.DataFrame:
     cols = list(df.columns)
-    period_col = _find(cols, "yearreport", "year", "period", "quarter", "reportdate")
-    pe_col = _find(cols, "pe", "p/e", "price_to_earn")
-    pb_col = _find(cols, "pb", "p/b", "price_to_book")
-    roe_col = _find(cols, "roe")
-    roa_col = _find(cols, "roa")
-    eps_col = _find(cols, "eps")
-
-    if period_col is None:
-        print(f"[financials] {symbol}: không tìm thấy cột period. Cột có: {cols}")
+    if "year" not in cols or "quarter" not in cols:
+        print(f"[financials] {symbol}: thiếu cột year/quarter. Cột có: {cols}")
         return pd.DataFrame()
 
     out = pd.DataFrame({
-        "symbol":      symbol.upper().strip(),
-        "period":      df[period_col].astype(str),
-        "period_type": "year",
-        "pe":          pd.to_numeric(df[pe_col],  errors="coerce") if pe_col  else None,
-        "pb":          pd.to_numeric(df[pb_col],  errors="coerce") if pb_col  else None,
-        "roe":         pd.to_numeric(df[roe_col], errors="coerce") if roe_col else None,
-        "roa":         pd.to_numeric(df[roa_col], errors="coerce") if roa_col else None,
-        "eps":         pd.to_numeric(df[eps_col], errors="coerce") if eps_col else None,
+        "symbol":  symbol.upper().strip(),
+        "year":    pd.to_numeric(df["year"], errors="coerce"),
+        "quarter": pd.to_numeric(df["quarter"], errors="coerce"),
     })
-    return out.dropna(subset=["period"]).reset_index(drop=True)
+    out["period_type"] = out["quarter"].apply(lambda q: "year" if q == 5 else "quarter")
+    for col in _RATIO_NUM_COLS:
+        out[col] = pd.to_numeric(df[col], errors="coerce") if col in cols else None
+    return out.dropna(subset=["year", "quarter"]).reset_index(drop=True)
 
 
 def fetch_company_info(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
