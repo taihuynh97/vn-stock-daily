@@ -27,6 +27,20 @@ def get_conn():
     return duckdb.connect(db)
 
 
+def _ensure_column(con, table: str, column: str, ddl_type: str) -> None:
+    """Thêm cột nếu chưa có (migration nhẹ, chạy lại an toàn)."""
+    existing = {
+        r[0]
+        for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = ?",
+            [table],
+        ).fetchall()
+    }
+    if column not in existing:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+
+
 def init_warehouse(con):
     con.execute(
         """
@@ -91,6 +105,7 @@ def init_warehouse(con):
         );
         """
     )
+    _ensure_column(con, "etl_load_log", "rows_rejected", "BIGINT")
 
 
 def upsert_symbols(con, df, run_date) -> int:
@@ -209,10 +224,17 @@ def delete_trade_date(con, trade_date: str) -> int:
     return n
 
 
-def log_load(con, job_name, table, rows, status, watermark="", notes=""):
+def log_load(con, job_name, table, rows, status, watermark="", notes="",
+             rows_rejected=0):
     con.execute(
-        "INSERT INTO etl_load_log VALUES (?,?,?,?,?,?,?)",
-        [job_name, table, datetime.now(timezone.utc), rows, status, watermark, notes],
+        """
+        INSERT INTO etl_load_log
+            (job_name, target_table, run_at, rows_loaded, status,
+             watermark, notes, rows_rejected)
+        VALUES (?,?,?,?,?,?,?,?)
+        """,
+        [job_name, table, datetime.now(timezone.utc), rows, status,
+         watermark, notes, rows_rejected],
     )
 
 
