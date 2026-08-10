@@ -7,7 +7,6 @@ không vỡ khi một mã hay một nguồn lỗi.
 from datetime import date, timedelta
 import os as _os
 import time
-import warnings
 import pandas as pd
 
 # Guest tier: 20 req/phút → cần ≥3s giữa các call.
@@ -24,23 +23,6 @@ def _throttle() -> None:
     if wait > 0:
         time.sleep(wait)
     _last_call_time = time.monotonic()
-
-# vnstock/vnai tự kiểm tra bản mới hơn qua mạng NGAY LÚC IMPORT package
-# `vnstock` và phát UserWarning ("📦 Vnstock/Vnai X.Y.Z is available...") nếu
-# PyPI có bản mới hơn — cảnh báo của thư viện ngoài, không phải của ta.
-# pytest.ini filterwarnings KHÔNG chặn được nó: ngay trước khi warn(), vnstock
-# tự gọi warnings.simplefilter("always", UserWarning) (xem
-# vnstock/core/utils/upgrade.py::_display_message), việc này chèn một filter
-# "always" bắt MỌI UserWarning lên ĐẦU danh sách filter, đè lên filter
-# `ignore` hẹp trong pytest.ini (đã xác minh: filter ignore vẫn có mặt nhưng
-# bị filter "always" mới hơn chặn trước). Cách chặn được duy nhất: "mồi"
-# import vnstock Ở ĐÂY bên trong catch_warnings(record=True) để hứng và bỏ
-# đúng 2 warning một-lần đó — các import vnstock sau (từ đây hoặc từ
-# src/ingest_market.py, file đó cũng có cùng khối phòng trường hợp nó chạy
-# trước module này) chỉ trả về module đã cache (sys.modules), không kiểm
-# tra/in lại.
-with warnings.catch_warnings(record=True):
-    import vnstock  # noqa: F401
 
 from vnstock.api.quote import Quote
 from vnstock.api.financial import Finance

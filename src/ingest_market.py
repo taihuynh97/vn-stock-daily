@@ -9,16 +9,8 @@ Vì cấu trúc cột của price_board tuỳ nguồn, phần chuẩn hoá cột
 in ra cột thật ở lần chạy đầu để dễ tinh chỉnh.
 """
 import re
-import warnings
 from datetime import date
 import pandas as pd
-
-# vnstock tự kiểm tra bản mới hơn qua mạng lúc import và phát UserWarning —
-# giải thích đầy đủ ở src/ingest.py (khối giống hệt). File này cũng import
-# thẳng vnstock.api.* nên cần khối này riêng, phòng trường hợp module này
-# được import trước src/ingest.py (khi đó khối ở ingest.py chưa kịp chạy).
-with warnings.catch_warnings(record=True):
-    import vnstock  # noqa: F401
 
 from vnstock.api.listing import Listing
 from vnstock.api.trading import Trading

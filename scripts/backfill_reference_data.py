@@ -57,14 +57,14 @@ def main():
 
     # 2) Hồ sơ doanh nghiệp
     symbols = warehouse.get_active_symbols(con)
-    if args.limit:
+    if args.limit is not None:
         symbols = symbols[:args.limit]
     print(f"Bắt đầu fetch company info ({len(symbols)} mã)...")
     info = ingest_market.fetch_company_info(symbols)
     n_info = warehouse.upsert_company_info(con, info)
     warehouse.log_load(con, JOB_NAME, "raw_company_info", n_info,
                        "ok" if n_info else "empty", watermark=run_date,
-                       notes=f"limit={args.limit}" if args.limit else "")
+                       notes=f"limit={args.limit}" if args.limit is not None else "")
     print(f"raw_company_info: {n_info} mã")
 
     # 3) Đồng bộ dim_symbols.exchange từ raw_company_info
