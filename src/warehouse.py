@@ -51,6 +51,19 @@ RATIO_ALL_COLS = [
     "symbol", "year", "quarter", "period_type", "ratio_type",
 ] + RATIO_NUM_COLS                                                  # 49
 
+# --- Cột raw_company_info (nguồn: Company.overview, 37 cột) ---
+# Không lấy: analyst, target_price, upside_to_target_percent,
+# projected_tsr_percentage, rating — là khuyến nghị của bên thứ ba, không
+# phải dữ kiện; đưa vào sẽ khiến agent trích dẫn nhầm thành phân tích riêng.
+COMPANY_COLS = [
+    "symbol", "company_name", "short_name", "exchange", "com_type_code",
+    "is_bank", "icb_code_lv2", "icb_code_lv4", "sector",
+    "market_cap", "issue_share", "free_float_percentage",
+    "foreigner_percentage", "maximum_foreign_percentage", "state_percentage",
+    "avg_match_value_1m", "avg_match_volume_1m",
+    "highest_price_1y", "lowest_price_1y", "listed_date",
+]
+
 
 def get_conn():
     db = os.getenv("WAREHOUSE_DB", DEFAULT_DB)
@@ -106,15 +119,6 @@ def init_warehouse(con):
             watermark    VARCHAR,
             notes        VARCHAR
         );
-        CREATE TABLE IF NOT EXISTS raw_company_info (
-            symbol        VARCHAR PRIMARY KEY,
-            company_name  VARCHAR,
-            exchange      VARCHAR,
-            industry_icb  VARCHAR,
-            sector        VARCHAR,
-            listed_date   DATE,
-            loaded_at     TIMESTAMP
-        );
         """
     )
     ratio_cols_ddl = ",\n            ".join(f"{c} DOUBLE" for c in RATIO_NUM_COLS)
@@ -132,6 +136,33 @@ def init_warehouse(con):
         );
         """
     )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_company_info (
+            symbol                     VARCHAR PRIMARY KEY,
+            company_name               VARCHAR,
+            short_name                 VARCHAR,
+            exchange                   VARCHAR,
+            com_type_code              VARCHAR,
+            is_bank                    BOOLEAN,
+            icb_code_lv2               VARCHAR,
+            icb_code_lv4               VARCHAR,
+            sector                     VARCHAR,
+            market_cap                 DOUBLE,
+            issue_share                DOUBLE,
+            free_float_percentage      DOUBLE,
+            foreigner_percentage       DOUBLE,
+            maximum_foreign_percentage DOUBLE,
+            state_percentage           DOUBLE,
+            avg_match_value_1m         DOUBLE,
+            avg_match_volume_1m        DOUBLE,
+            highest_price_1y           DOUBLE,
+            lowest_price_1y            DOUBLE,
+            listed_date                DATE,
+            loaded_at                  TIMESTAMP
+        );
+        """
+    )
     # Bảng raw_financial_ratio có thể đã tồn tại từ trước (schema cũ 13 cột,
     # vd. trên MotherDuck production) — CREATE TABLE IF NOT EXISTS ở trên sẽ
     # no-op trong trường hợp đó. Dùng _ensure_column để migrate thêm các cột
@@ -141,6 +172,18 @@ def init_warehouse(con):
     for col in RATIO_NUM_COLS:
         _ensure_column(con, "raw_financial_ratio", col, "DOUBLE")
     _ensure_column(con, "etl_load_log", "rows_rejected", "BIGINT")
+    # raw_company_info cũng đã tồn tại từ trước (schema cũ 7 cột trên
+    # MotherDuck) — migrate thêm các cột mới của COMPANY_COLS tương tự trên.
+    _company_ddl_types = {
+        "is_bank": "BOOLEAN", "market_cap": "DOUBLE", "issue_share": "DOUBLE",
+        "free_float_percentage": "DOUBLE", "foreigner_percentage": "DOUBLE",
+        "maximum_foreign_percentage": "DOUBLE", "state_percentage": "DOUBLE",
+        "avg_match_value_1m": "DOUBLE", "avg_match_volume_1m": "DOUBLE",
+        "highest_price_1y": "DOUBLE", "lowest_price_1y": "DOUBLE",
+        "listed_date": "DATE",
+    }
+    for col in COMPANY_COLS:
+        _ensure_column(con, "raw_company_info", col, _company_ddl_types.get(col, "VARCHAR"))
 
 
 def upsert_symbols(con, df, run_date) -> int:
@@ -198,17 +241,36 @@ def upsert_financial_ratios(con, df) -> int:
 def upsert_company_info(con, df) -> int:
     if df is None or df.empty:
         return 0
+    cols = ", ".join(COMPANY_COLS)
     con.register("df_ci", df)
     con.execute(
-        """
-        INSERT OR REPLACE INTO raw_company_info
-        SELECT symbol, company_name, exchange, industry_icb, sector,
-               TRY_CAST(listed_date AS DATE), now()
-        FROM df_ci;
+        f"""
+        INSERT OR REPLACE INTO raw_company_info ({cols}, loaded_at)
+        SELECT {cols}, now() FROM df_ci;
         """
     )
     con.unregister("df_ci")
     return len(df)
+
+
+def update_symbol_exchanges(con) -> int:
+    """Đồng bộ dim_symbols.exchange từ raw_company_info (đang NULL 100%)."""
+    n = con.execute(
+        """
+        SELECT count(*) FROM dim_symbols d JOIN raw_company_info c USING (symbol)
+        WHERE c.exchange IS NOT NULL
+          AND (d.exchange IS DISTINCT FROM c.exchange)
+        """
+    ).fetchone()[0]
+    con.execute(
+        """
+        UPDATE dim_symbols AS d
+        SET exchange = c.exchange
+        FROM raw_company_info AS c
+        WHERE d.symbol = c.symbol AND c.exchange IS NOT NULL
+        """
+    )
+    return n
 
 
 def get_active_symbols(con) -> list[str]:

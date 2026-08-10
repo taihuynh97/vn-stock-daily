@@ -89,6 +89,11 @@ def main():
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_company_info", n_info,
                            "ok" if n_info else "empty", watermark=run_date)
         print(f"raw_company_info: {n_info} mã")
+        n_exch = warehouse.update_symbol_exchanges(con)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "dim_symbols", n_exch,
+                           "ok" if n_exch else "empty", watermark=run_date,
+                           notes="sync exchange tu raw_company_info")
+        print(f"dim_symbols.exchange: cập nhật {n_exch} mã")
 
     con.close()
     print(f"Xong warehouse job ({args.mode}).")

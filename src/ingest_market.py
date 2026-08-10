@@ -253,30 +253,82 @@ def fetch_company_info(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def _normalize_company(df, symbol) -> pd.DataFrame:
-    cols = list(df.columns)
-    name_col     = _find(cols, "organ_name", "company_name", "short_name", "company")
-    exch_col     = _find(cols, "exchange", "comgroupcode", "board")
-    industry_col = _find(cols, "industry_icb", "industry", "icb_name", "ngành")
-    sector_col   = _find(cols, "sector", "sector_name")
-    listed_col   = _find(cols, "listing_date", "listed_date", "ipo")
+_COMPANY_REQUIRED = ["symbol", "com_group_code", "icb_code_lv2"]
 
-    if df.empty:
+# com_group_code của Company.overview() trả TÊN CHỈ SỐ ("VNINDEX", "HNXIndex",
+# "UpcomIndex"), không phải mã sàn thô — xác minh lại bằng API thật ngày
+# 2026-08-10 với HPG/VCB/SSI (đều "VNINDEX"), SHS/PVS/MBS ("HNXIndex"), VGT
+# ("UpcomIndex"), BSR ("VNINDEX", khớp việc BSR chuyển từ UPCOM sang HOSE
+# 2024). Brief giả định giá trị là "HOSE" trực tiếp — không đúng với API
+# thật. Chuẩn hoá về HOSE/HNX/UPCOM để khớp config/warehouse.yml (lọc theo
+# đúng các giá trị này), nếu không dim_symbols.exchange sẽ chứa "VNINDEX"
+# thay vì NULL — sai dữ liệu chứ không sửa được bug lọc sàn.
+_COM_GROUP_TO_EXCHANGE = {
+    "VNINDEX": "HOSE",
+    "HNXINDEX": "HNX",
+    "UPCOMINDEX": "UPCOM",
+}
+
+
+def _map_exchange(raw) -> str | None:
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    v = str(raw).strip().upper()
+    return _COM_GROUP_TO_EXCHANGE.get(v, v) or None
+
+
+def _to_bool(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return False
+    return str(v).strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
+def _to_date_str(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    try:
+        return pd.to_datetime(v).date().isoformat()
+    except Exception:
+        return None
+
+
+def _normalize_company(df, symbol) -> pd.DataFrame:
+    if df is None or df.empty:
         return pd.DataFrame()
+    dq.assert_columns(df, _COMPANY_REQUIRED, f"Company.overview({symbol})")
     row = df.iloc[0]
 
-    listed_val = None
-    if listed_col and pd.notna(row[listed_col]):
-        try:
-            listed_val = pd.to_datetime(row[listed_col]).date().isoformat()
-        except Exception:
-            listed_val = None
+    def num(col):
+        return pd.to_numeric(pd.Series([row.get(col)]), errors="coerce").iloc[0] \
+            if col in df.columns else None
+
+    def text(col):
+        v = row.get(col) if col in df.columns else None
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        return str(v).strip()
 
     return pd.DataFrame([{
-        "symbol":       symbol.upper().strip(),
-        "company_name": str(row[name_col]).strip()     if name_col     else None,
-        "exchange":     str(row[exch_col]).upper()     if exch_col     else None,
-        "industry_icb": str(row[industry_col]).strip() if industry_col else None,
-        "sector":       str(row[sector_col]).strip()   if sector_col   else None,
-        "listed_date":  listed_val,
-    }])
+        "symbol":                     symbol.upper().strip(),
+        "company_name":               text("organ_name"),
+        "short_name":                 text("organ_short_name"),
+        "exchange":                   _map_exchange(row.get("com_group_code")),
+        "com_type_code":              text("com_type_code"),
+        "is_bank":                    _to_bool(row.get("is_bank")),
+        "icb_code_lv2":               text("icb_code_lv2"),
+        "icb_code_lv4":               text("icb_code_lv4"),
+        "sector":                     text("sector"),
+        "market_cap":                 num("market_cap"),
+        "issue_share":                num("issue_share"),
+        "free_float_percentage":      num("free_float_percentage"),
+        "foreigner_percentage":       num("foreigner_percentage"),
+        "maximum_foreign_percentage": num("maximum_foreign_percentage"),
+        "state_percentage":           num("state_percentage"),
+        "avg_match_value_1m":         num("average_match_value1_month"),
+        "avg_match_volume_1m":        num("average_match_volume1_month"),
+        "highest_price_1y":           num("highest_price1_year"),
+        "lowest_price_1y":            num("lowest_price1_year"),
+        "listed_date":                _to_date_str(row.get("listing_date")),
+    }])[warehouse.COMPANY_COLS]

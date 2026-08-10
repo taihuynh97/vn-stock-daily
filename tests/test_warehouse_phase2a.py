@@ -6,6 +6,7 @@ from src.warehouse import (
     upsert_financial_ratios,
     upsert_company_info,
     RATIO_NUM_COLS,
+    COMPANY_COLS,
 )
 
 
@@ -116,27 +117,29 @@ def test_init_warehouse_migrates_old_13_col_financial_ratio_table():
     assert npl == pytest.approx(0.0115)
 
 
-def test_upsert_company_info_returns_row_count(con):
-    df = pd.DataFrame([{
+def _company_row(**overrides):
+    # Bảng raw_company_info nay có 20 cột (Task 3) — khởi tạo đủ mọi cột về
+    # None rồi override, tránh phải liệt kê thủ công cả 20 cột.
+    row = {col: None for col in COMPANY_COLS}
+    row.update({
         "symbol": "AAA", "company_name": "An Phat Bioplastics",
-        "exchange": "HOSE", "industry_icb": "Industrials",
+        "short_name": "APH", "exchange": "HOSE", "com_type_code": "CT",
+        "is_bank": False, "icb_code_lv2": "1700", "icb_code_lv4": "1757",
         "sector": "Chemicals", "listed_date": "2010-01-15",
-    }])
+    })
+    row.update(overrides)
+    return row
+
+
+def test_upsert_company_info_returns_row_count(con):
+    df = pd.DataFrame([_company_row()])
     n = upsert_company_info(con, df)
     assert n == 1
 
 
 def test_upsert_company_info_overwrites_name(con):
-    df1 = pd.DataFrame([{
-        "symbol": "AAA", "company_name": "Old Name",
-        "exchange": "HOSE", "industry_icb": "Industrials",
-        "sector": "Chemicals", "listed_date": "2010-01-15",
-    }])
-    df2 = pd.DataFrame([{
-        "symbol": "AAA", "company_name": "New Name",
-        "exchange": "HOSE", "industry_icb": "Industrials",
-        "sector": "Chemicals", "listed_date": "2010-01-15",
-    }])
+    df1 = pd.DataFrame([_company_row(company_name="Old Name")])
+    df2 = pd.DataFrame([_company_row(company_name="New Name")])
     upsert_company_info(con, df1)
     upsert_company_info(con, df2)
     name = con.execute(

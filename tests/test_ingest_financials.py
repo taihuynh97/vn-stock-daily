@@ -97,52 +97,109 @@ def reset_info_state():
     im._printed_info_cols = False
 
 
+from src import warehouse as wh
+
+
 def _mock_company_overview():
+    """Cột thật của Company.overview() — xác minh bằng HPG ngày 2026-08-09."""
     return pd.DataFrame([{
-        "organ_name": "An Phat Bioplastics",
-        "exchange": "HOSE",
-        "industry_icb_name2": "Industrials",
-        "sector": "Chemicals",
-        "listing_date": "2010-01-15",
+        "symbol": "HPG",
+        "organ_name": "Công ty Cổ phần Tập đoàn Hòa Phát",
+        "organ_short_name": "Hòa Phát",
+        "com_group_code": "HOSE",
+        "com_type_code": "CT",
+        "is_bank": False,
+        "icb_code_lv2": "1700",
+        "icb_code_lv4": "1757",
+        "sector": "Basic Resources",
+        "market_cap": 1.4e14,
+        "issue_share": 7.7e9,
+        "free_float_percentage": 0.55,
+        "foreigner_percentage": 0.22,
+        "maximum_foreign_percentage": 0.49,
+        "state_percentage": 0.0,
+        "average_match_value1_month": 3.0e11,
+        "average_match_volume1_month": 1.3e7,
+        "highest_price1_year": 29000.0,
+        "lowest_price1_year": 19500.0,
+        "listing_date": "2007-11-15",
     }])
 
 
-def test_fetch_company_info_returns_expected_schema():
+def test_fetch_company_info_maps_real_columns():
     with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
         MockCo.return_value.overview.return_value = _mock_company_overview()
-        result = fetch_company_info(["AAA"])
-    assert set(result.columns) >= {"symbol", "company_name", "exchange", "industry_icb"}
-    assert result.iloc[0]["symbol"] == "AAA"
+        result = fetch_company_info(["HPG"])
+    row = result.iloc[0]
+    assert row["symbol"] == "HPG"
+    assert row["exchange"] == "HOSE"           # từ com_group_code, KHÔNG phải NULL
+    assert row["icb_code_lv2"] == "1700"       # từ icb_code_lv2, KHÔNG phải NULL
+    assert row["icb_code_lv4"] == "1757"
+    assert row["com_type_code"] == "CT"
+    assert bool(row["is_bank"]) is False
+    assert row["free_float_percentage"] == pytest.approx(0.55)
+    assert row["avg_match_value_1m"] == pytest.approx(3.0e11)
+    assert str(row["listed_date"]) == "2007-11-15"
+
+
+def test_fetch_company_info_bank_flag_true():
+    df = _mock_company_overview()
+    df.loc[0, "symbol"] = "VCB"
+    df.loc[0, "is_bank"] = True
+    df.loc[0, "sector"] = "Banks"
+    with patch("src.ingest_market.Company") as MockCo, \
+         patch("src.ingest_market.ingest._throttle"):
+        MockCo.return_value.overview.return_value = df
+        result = fetch_company_info(["VCB"])
+    assert bool(result.iloc[0]["is_bank"]) is True
+
+
+def test_fetch_company_info_returns_all_company_cols():
+    with patch("src.ingest_market.Company") as MockCo, \
+         patch("src.ingest_market.ingest._throttle"):
+        MockCo.return_value.overview.return_value = _mock_company_overview()
+        result = fetch_company_info(["HPG"])
+    assert list(result.columns) == wh.COMPANY_COLS
+
+
+def test_fetch_company_info_missing_symbol_column_raises():
+    bad = pd.DataFrame([{"organ_name": "X"}])
+    with patch("src.ingest_market.Company") as MockCo, \
+         patch("src.ingest_market.ingest._throttle"):
+        MockCo.return_value.overview.return_value = bad
+        with pytest.raises(Exception) as exc:
+            fetch_company_info(["HPG"])
+    assert "com_group_code" in str(exc.value) or "icb_code_lv2" in str(exc.value)
 
 
 def test_fetch_company_info_empty_on_exception():
     with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
         MockCo.return_value.overview.side_effect = Exception("API down")
-        result = fetch_company_info(["AAA"])
+        result = fetch_company_info(["HPG"])
     assert result.empty
 
 
-def test_fetch_company_info_skips_failed_continues():
-    call_count = [0]
-    def factory(symbol, source):
-        mock = MagicMock()
-        call_count[0] += 1
-        if call_count[0] == 1:
-            mock.overview.side_effect = Exception("fail")
-        else:
-            mock.overview.return_value = _mock_company_overview()
-        return mock
-
-    with patch("src.ingest_market.Company", side_effect=factory), \
+def test_update_symbol_exchanges_fills_dim_symbols(tmp_path):
+    import duckdb
+    con = duckdb.connect(str(tmp_path / "ci.duckdb"))
+    wh.init_warehouse(con)
+    con.execute(
+        "INSERT INTO dim_symbols (symbol, exchange, company_name, is_active, "
+        "first_seen, last_seen) VALUES ('HPG', NULL, 'HP', TRUE, "
+        "DATE '2026-01-01', DATE '2026-08-07')"
+    )
+    with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
-        result = fetch_company_info(["BAD", "AAA"])
-    assert len(result) == 1
-    assert result.iloc[0]["symbol"] == "AAA"
-
-
-from src import warehouse as wh
+        MockCo.return_value.overview.return_value = _mock_company_overview()
+        info = fetch_company_info(["HPG"])
+    wh.upsert_company_info(con, info)
+    n = wh.update_symbol_exchanges(con)
+    got = con.execute("SELECT exchange FROM dim_symbols WHERE symbol='HPG'").fetchone()[0]
+    con.close()
+    assert n == 1
+    assert got == "HOSE"
 
 
 def _mock_bank_ratio_summary():
