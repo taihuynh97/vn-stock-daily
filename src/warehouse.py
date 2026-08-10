@@ -126,6 +126,17 @@ def init_warehouse(con):
             level       INTEGER,
             loaded_at   TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS raw_index_daily (
+            index_code VARCHAR,
+            trade_date DATE,
+            open       DOUBLE,
+            high       DOUBLE,
+            low        DOUBLE,
+            close      DOUBLE,
+            volume     BIGINT,
+            loaded_at  TIMESTAMP,
+            PRIMARY KEY (index_code, trade_date)
+        );
         """
     )
     ratio_cols_ddl = ",\n            ".join(f"{c} DOUBLE" for c in RATIO_NUM_COLS)
@@ -272,6 +283,25 @@ def upsert_industries(con, df) -> int:
         """
     )
     con.unregister("df_ind")
+    return len(df)
+
+
+def upsert_index_prices(con, df) -> int:
+    """Ghi giá chỉ số (VNINDEX/VN30/HNXINDEX). INSERT OR REPLACE theo
+    (index_code, trade_date) → chạy lại an toàn. raw_index_daily là bảng mới,
+    chưa tồn tại trên MotherDuck nên không cần _ensure_column như các bảng cũ."""
+    if df is None or df.empty:
+        return 0
+    con.register("df_idx", df)
+    con.execute(
+        """
+        INSERT OR REPLACE INTO raw_index_daily
+            (index_code, trade_date, open, high, low, close, volume, loaded_at)
+        SELECT index_code, trade_date, open, high, low, close, volume, now()
+        FROM df_idx;
+        """
+    )
+    con.unregister("df_idx")
     return len(df)
 
 

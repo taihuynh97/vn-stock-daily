@@ -9,3 +9,9 @@ exchanges:
 
 source: VCI            # nguồn dữ liệu cho price_board / listing
 price_board_batch: 50  # số mã mỗi lần gọi bulk price_board
+
+# Chỉ số thị trường thu hằng ngày. Lưu ý: giá trị chỉ số KHÔNG nhân 1000.
+indices:
+  - VNINDEX
+  - VN30
+  - HNXINDEX

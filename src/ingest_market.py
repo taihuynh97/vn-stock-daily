@@ -206,6 +206,53 @@ def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") ->
     return out.dropna(subset=["close"]).drop_duplicates(["symbol", "trade_date"]).reset_index(drop=True)
 
 
+def fetch_index_history(index_code: str, start: str, end: str,
+                        source: str = "VCI") -> pd.DataFrame:
+    """Lịch sử chỉ số (VNINDEX/VN30/HNXINDEX).
+
+    KHÁC fetch_history_one: chỉ số KHÔNG nhân ×1000. fetch_history_one nhân
+    OHLC với 1000 vì Quote.history của VCI trả giá CỔ PHIẾU theo đơn vị nghìn
+    đồng. Chỉ số thì không — xác minh 2026-08-07:
+    Quote.history('VNINDEX').close = 1768.06, đã đúng đơn vị điểm chỉ số
+    (nhân 1000 sẽ ra 1.768.060, sai hoàn toàn). Vì vậy hàm này viết riêng,
+    không tái dùng/sửa fetch_history_one.
+    """
+    ingest._throttle()
+    try:
+        df = Quote(symbol=index_code, source=source).history(
+            start=start, end=end, interval="1D"
+        )
+    except Exception as e:
+        print(f"[index] {index_code}: {e}")
+        return pd.DataFrame()
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+
+    df.columns = [str(c).lower() for c in df.columns]
+    dq.assert_columns(df, ["close"], f"Quote.history({index_code})")
+    date_col = _find(list(df.columns), "trading_date", "time", "date")
+    if date_col is None:
+        raise dq.SchemaError(
+            f"[Quote.history({index_code})] không tìm thấy cột ngày. "
+            f"Cột thật: {list(df.columns)}"
+        )
+
+    out = pd.DataFrame({
+        "index_code": index_code.upper().strip(),
+        "trade_date": pd.to_datetime(df[date_col]).dt.strftime("%Y-%m-%d"),
+        "open":   _col(df, _find(list(df.columns), "open")),
+        "high":   _col(df, _find(list(df.columns), "high")),
+        "low":    _col(df, _find(list(df.columns), "low")),
+        "close":  pd.to_numeric(df["close"], errors="coerce"),
+        "volume": _col(df, _find(list(df.columns), "volume")),
+    })
+    out = out.dropna(subset=["close"])
+    out, rejected = dq.filter_range(out, "close", 1, 100_000)
+    if rejected:
+        print(f"[index] {index_code}: loại {rejected} dòng close ngoài [1, 100.000]")
+    return out.drop_duplicates(["index_code", "trade_date"]).reset_index(drop=True)
+
+
 def fetch_financials(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
     """Tỷ số tài chính theo quý (TTM) + cả năm qua Company.ratio_summary().
 

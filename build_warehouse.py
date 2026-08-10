@@ -72,6 +72,16 @@ def main():
                            "ok" if n_px else "empty", watermark=run_date)
         print(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
 
+    # 2b) Chỉ số thị trường — mọi mode
+    if ingest_market.is_trading_day(date.today()):
+        n_idx = 0
+        for code in cfg.get("indices", []):
+            idx_df = ingest_market.fetch_index_history(code, run_date, run_date, source)
+            n_idx += warehouse.upsert_index_prices(con, idx_df)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_index_daily", n_idx,
+                           "ok" if n_idx else "empty", watermark=run_date)
+        print(f"raw_index_daily: {n_idx} dòng")
+
     # 3) Financial ratios — weekly và monthly
     if args.mode in ("weekly", "monthly"):
         print(f"Bắt đầu fetch financials ({len(symbols)} mã)...")
