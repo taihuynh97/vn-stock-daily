@@ -91,7 +91,7 @@ def main():
                            "ok" if n_fin else "empty", watermark=run_date)
         print(f"raw_financial_ratio: {n_fin} dòng")
 
-    # 4) Company info — monthly only
+    # 4) Dim_industry (phân ngành ICB) + company info — monthly only
     if args.mode == "monthly":
         ind = ingest_market.fetch_industries_icb(source)
         n_ind = warehouse.upsert_industries(con, ind)

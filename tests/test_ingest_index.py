@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 from unittest.mock import patch
 
-from src import warehouse as wh
+from src import dq, warehouse as wh
 from src.ingest_market import fetch_index_history
 
 
@@ -43,7 +43,7 @@ def test_fetch_index_history_raises_on_missing_close():
     with patch("src.ingest_market.Quote") as MockQ, \
          patch("src.ingest_market.ingest._throttle"):
         MockQ.return_value.history.return_value = bad
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(dq.SchemaError) as exc:
             fetch_index_history("VNINDEX", "2026-08-01", "2026-08-07")
     assert "close" in str(exc.value)
 

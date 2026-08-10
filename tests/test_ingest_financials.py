@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 from unittest.mock import patch, MagicMock
 
+from src import dq
 from src.ingest_market import fetch_financials
 import src.ingest_market as im
 
@@ -170,12 +171,32 @@ def test_fetch_company_info_returns_all_company_cols():
     assert list(result.columns) == wh.COMPANY_COLS
 
 
+def test_fetch_company_info_skips_failed_continues():
+    """Một mã lỗi (API raise) thì bị bỏ qua, các mã còn lại vẫn được trả về —
+    hành vi mất assertion trực tiếp sau khi test cũ bị xoá ở Task 3."""
+    def side_effect_factory(symbol, source):
+        mock = MagicMock()
+        if symbol == "BAD":
+            mock.overview.side_effect = Exception("API down")
+        else:
+            df = _mock_company_overview()
+            df.loc[0, "symbol"] = symbol
+            mock.overview.return_value = df
+        return mock
+
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+         patch("src.ingest_market.ingest._throttle"):
+        result = fetch_company_info(["BAD", "HPG"])
+    assert len(result) == 1
+    assert result.iloc[0]["symbol"] == "HPG"
+
+
 def test_fetch_company_info_missing_symbol_column_raises():
     bad = pd.DataFrame([{"organ_name": "X"}])
     with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
         MockCo.return_value.overview.return_value = bad
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(dq.SchemaError) as exc:
             fetch_company_info(["HPG"])
     assert "com_group_code" in str(exc.value) or "icb_code_lv2" in str(exc.value)
 
@@ -202,6 +223,19 @@ def test_map_exchange_unknown_value_returns_none_not_raw_string():
     chuỗi thô — chuỗi lạ ghi thẳng vào raw_company_info.exchange sẽ giả dạng
     dữ liệu hợp lệ trong khi thực ra không xác định được sàn."""
     assert im._map_exchange("SomeNewIndex") is None
+
+
+def test_map_exchange_unknown_value_warns_once(capsys):
+    """Cảnh báo cho giá trị lạ chỉ in MỘT LẦN (debounce qua _warned_unknown_exchange,
+    được reset ở fixture reset_info_state) và nội dung nêu đúng giá trị lạ đầu
+    tiên gặp phải, không lặp lại cho giá trị lạ thứ hai."""
+    assert im._map_exchange("WeirdExchangeA") is None
+    assert im._map_exchange("WeirdExchangeB") is None
+    out = capsys.readouterr().out
+    warning_lines = [ln for ln in out.splitlines() if "com_group_code lạ" in ln]
+    assert len(warning_lines) == 1
+    assert "WEIRDEXCHANGEA" in warning_lines[0]
+    assert "WEIRDEXCHANGEB" not in warning_lines[0]
 
 
 def test_update_symbol_exchanges_fills_dim_symbols(tmp_path):
@@ -296,7 +330,7 @@ def test_fetch_financials_missing_year_column_raises():
     with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
         MockCo.return_value.ratio_summary.return_value = bad
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(dq.SchemaError) as exc:
             fetch_financials(["AAA"])
     assert "year" in str(exc.value)
 

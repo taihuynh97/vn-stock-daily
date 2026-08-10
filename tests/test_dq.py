@@ -1,7 +1,8 @@
+import duckdb
 import pandas as pd
 import pytest
 
-from src import dq
+from src import dq, warehouse
 
 
 def test_assert_columns_passes_when_all_present():
@@ -47,11 +48,6 @@ def test_status_for_ok_degraded_empty():
     assert dq.status_for(0, 0) == "empty"
 
 
-import duckdb
-
-from src import warehouse
-
-
 def test_log_load_records_rows_rejected(tmp_path):
     con = duckdb.connect(str(tmp_path / "t.duckdb"))
     warehouse.init_warehouse(con)
@@ -78,3 +74,20 @@ def test_init_warehouse_is_rerunnable_and_adds_column(tmp_path):
     }
     con.close()
     assert "rows_rejected" in cols
+
+
+def test_ensure_columns_adds_missing_only_and_is_idempotent(tmp_path):
+    con = duckdb.connect(str(tmp_path / "t3.duckdb"))
+    con.execute("CREATE TABLE t (a INTEGER)")
+    added_first = warehouse._ensure_columns(con, "t", {"a": "INTEGER", "b": "DOUBLE", "c": "VARCHAR"})
+    added_second = warehouse._ensure_columns(con, "t", {"a": "INTEGER", "b": "DOUBLE", "c": "VARCHAR"})
+    cols = {
+        r[0]
+        for r in con.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 't'"
+        ).fetchall()
+    }
+    con.close()
+    assert added_first == 2      # chỉ b và c là cột mới, a đã có sẵn
+    assert added_second == 0     # chạy lại không thêm gì nữa
+    assert cols == {"a", "b", "c"}

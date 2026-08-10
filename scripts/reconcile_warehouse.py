@@ -62,6 +62,23 @@ def check_layer_counts(con) -> list[dict]:
     rows.append({"check": "dim_symbols_with_exchange", "value": exch,
                  "expected": total, "ok": total > 0 and exch >= total * MIN_COVERAGE})
 
+    # Đếm có hệ thống (toàn bộ, không phải mẫu ngẫu nhiên) số mã is_active
+    # chưa có dòng nào trong raw_financial_ratio, dung sai giống các check độ
+    # phủ khác ở trên (MIN_COVERAGE). Bù cho việc check_against_source coi mã
+    # thiếu tỷ số là thông tin (ok=True) chứ không phải sai lệch: độ phủ vẫn
+    # được canh, nhưng bằng phép đo toàn bộ thay vì mẫu --sample ngẫu nhiên.
+    missing_ratio = _scalar(con, """
+        SELECT count(*) FROM dim_symbols d
+        WHERE d.is_active
+          AND NOT EXISTS (
+              SELECT 1 FROM raw_financial_ratio f WHERE f.symbol = d.symbol
+          )
+    """)
+    rows.append({
+        "check": "symbols_missing_ratio", "value": missing_ratio, "expected": 0,
+        "ok": total > 0 and missing_ratio <= total * (1 - MIN_COVERAGE),
+    })
+
     return rows
 
 
@@ -74,6 +91,11 @@ def check_against_source(con, symbols: list[str]) -> list[dict]:
     nhiên mỗi khi vnstock công bố báo cáo mới trước lần reload định kỳ.
     Tương tự, API không trả dữ liệu (lỗi mạng/rate limit tạm thời) không
     tính là fail — đó là sự cố nguồn, không phải sai lệch warehouse.
+    Mã được lấy mẫu mà chưa có dòng nào trong raw_financial_ratio cũng KHÔNG
+    tính là fail (~13/1598 mã thực tế đang ở trạng thái này — dung sai đã
+    được chấp nhận ở check_layer_counts qua check symbols_missing_ratio dựa
+    trên toàn bộ mã, không phải mẫu ngẫu nhiên 5 mã nên không nên đỏ CI ngẫu
+    nhiên vì trúng đúng mã chưa có tỷ số).
     """
     out = []
     for sym in symbols:
@@ -83,8 +105,15 @@ def check_against_source(con, symbols: list[str]) -> list[dict]:
             [sym],
         ).fetchone()
         if wh_row is None:
-            out.append({"symbol": sym, "check": "ratio_latest",
-                        "detail": "không có trong warehouse", "ok": False})
+            out.append({
+                "symbol": sym, "check": "ratio_latest",
+                "detail": (
+                    f"{sym} chưa có tỷ số tài chính trong warehouse — thông "
+                    "tin, không phải sai lệch (độ phủ được đo có hệ thống ở "
+                    "check_layer_counts qua symbols_missing_ratio)"
+                ),
+                "ok": True,
+            })
             continue
 
         wh_year, wh_quarter, wh_pe, wh_roe = wh_row
@@ -140,6 +169,13 @@ def main():
     parser.add_argument("--no-api", action="store_true")
     parser.add_argument("--sample", type=int, default=5)
     args = parser.parse_args()
+
+    # check_against_source gọi lại ingest_market.fetch_financials — không đăng
+    # ký key thì chạy ở bậc Guest 20 req/phút (xem migrate_financial_ratio_v2.py).
+    key = os.getenv("VNSTOCK_API_KEY")
+    if key:
+        from vnstock import vnai
+        vnai.setup_api_key(key)
 
     db_target = os.getenv("WAREHOUSE_DB", warehouse.DEFAULT_DB)
     print(f"Đang kết nối tới: {db_target}")

@@ -10,6 +10,7 @@ trong trường hợp đó để không mất dữ liệu 10 năm một cách â
 
     export WAREHOUSE_DB=md:vn_market
     export motherduck_token=<token>
+    export VNSTOCK_API_KEY=<key>          # nếu có, nâng rate limit lên 60 req/phút
     export VNSTOCK_MIN_INTERVAL=1.05      # nếu có key Community
     python -m scripts.migrate_financial_ratio_v2 --step rename
     python -m scripts.migrate_financial_ratio_v2 --step reload
@@ -72,14 +73,23 @@ def step_reload(con):
             print(f"  {i + len(chunk)}/{len(symbols)} mã — CHUNK LỖI (0 dòng "
                   f"trả về), tổng vẫn {total} dòng")
             continue
+        # Một chunk có thể trả dữ liệu cho MỘT PHẦN số mã (API lỗi/rate-limit
+        # giữa chừng) — nếu chỉ đếm chunk rỗng hoàn toàn thì các mã hụt trong
+        # chunk "thành công" bị bỏ sót khỏi thống kê, status vẫn ghi "ok".
+        got = df["symbol"].nunique()
+        missing = len(chunk) - got
+        if missing > 0:
+            failed_symbols += missing
+            print(f"  {i + len(chunk)}/{len(symbols)} mã — chunk thiếu "
+                  f"{missing}/{len(chunk)} mã (trả {got}/{len(chunk)})")
         total += warehouse.upsert_financial_ratios(con, df)
         print(f"  {i + len(chunk)}/{len(symbols)} mã — tổng {total} dòng")
 
-    if failed_chunks:
+    if failed_symbols:
         status = "partial"
         notes = (
-            f"reload 50 cot tu ratio_summary; {failed_chunks} batch loi "
-            f"(~{failed_symbols} ma khong nap duoc trong lan chay nay)"
+            f"reload 50 cot tu ratio_summary; {failed_chunks} batch loi hoan "
+            f"toan, tong {failed_symbols} ma khong nap duoc trong lan chay nay"
         )
     else:
         status = "ok" if total else "empty"
@@ -87,7 +97,8 @@ def step_reload(con):
 
     warehouse.log_load(con, JOB_NAME, "raw_financial_ratio", total, status,
                        notes=notes)
-    print(f"Xong: {total} dòng. Batch lỗi: {failed_chunks}.")
+    print(f"Xong: {total} dòng. Batch lỗi hoàn toàn: {failed_chunks}. "
+          f"Mã hụt: {failed_symbols}.")
 
 
 def step_verify(con) -> bool:
@@ -192,6 +203,14 @@ def main():
                         choices=["rename", "reload", "verify", "cleanup"],
                         required=True)
     args = parser.parse_args()
+
+    # Không đăng ký key thì chạy ở bậc Guest 20 req/phút — đặt
+    # VNSTOCK_MIN_INTERVAL=1.05 (khuyến nghị ở docstring trên) mà thiếu khối
+    # này sẽ vượt rate limit ngay (step_reload gọi fetch_financials rất nhiều).
+    key = os.getenv("VNSTOCK_API_KEY")
+    if key:
+        from vnstock import vnai
+        vnai.setup_api_key(key)
 
     db_target = os.getenv("WAREHOUSE_DB", warehouse.DEFAULT_DB)
     print(f"Đang kết nối tới: {db_target}")

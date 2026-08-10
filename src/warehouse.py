@@ -87,6 +87,30 @@ def _ensure_column(con, table: str, column: str, ddl_type: str) -> None:
         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
 
 
+def _ensure_columns(con, table: str, columns: dict[str, str]) -> int:
+    """Thêm các cột còn thiếu trong `columns` ({tên: kiểu_ddl}).
+
+    Khác _ensure_column (số ít): tra information_schema MỘT LẦN cho cả batch
+    thay vì một truy vấn riêng cho từng cột — init_warehouse gọi tới 45 lần
+    cho raw_financial_ratio + 20 lần cho raw_company_info, tức hàng chục
+    round-trip mạng tới MotherDuck mỗi lần khởi động warehouse nếu dùng
+    _ensure_column cho từng cột. Trả về số cột đã thêm."""
+    existing = {
+        r[0]
+        for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = ?",
+            [table],
+        ).fetchall()
+    }
+    added = 0
+    for column, ddl_type in columns.items():
+        if column not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+            added += 1
+    return added
+
+
 def init_warehouse(con):
     con.execute(
         """
@@ -183,12 +207,13 @@ def init_warehouse(con):
     )
     # Bảng raw_financial_ratio có thể đã tồn tại từ trước (schema cũ 13 cột,
     # vd. trên MotherDuck production) — CREATE TABLE IF NOT EXISTS ở trên sẽ
-    # no-op trong trường hợp đó. Dùng _ensure_column để migrate thêm các cột
-    # mới (an toàn, chạy lại nhiều lần được), tránh BinderException khi
+    # no-op trong trường hợp đó. Dùng _ensure_columns (tra information_schema
+    # một lần cho cả batch, không phải 45 lần) để migrate thêm các cột mới
+    # (an toàn, chạy lại nhiều lần được), tránh BinderException khi
     # upsert_financial_ratios ghi vào cột chưa tồn tại trên bảng cũ.
-    _ensure_column(con, "raw_financial_ratio", "ratio_type", "VARCHAR")
-    for col in RATIO_NUM_COLS:
-        _ensure_column(con, "raw_financial_ratio", col, "DOUBLE")
+    _ratio_ddl_types = {"ratio_type": "VARCHAR"}
+    _ratio_ddl_types.update({col: "DOUBLE" for col in RATIO_NUM_COLS})
+    _ensure_columns(con, "raw_financial_ratio", _ratio_ddl_types)
     _ensure_column(con, "etl_load_log", "rows_rejected", "BIGINT")
     # raw_company_info cũng đã tồn tại từ trước (schema cũ 7 cột trên
     # MotherDuck) — migrate thêm các cột mới của COMPANY_COLS tương tự trên.
@@ -200,8 +225,10 @@ def init_warehouse(con):
         "highest_price_1y": "DOUBLE", "lowest_price_1y": "DOUBLE",
         "listed_date": "DATE",
     }
-    for col in COMPANY_COLS:
-        _ensure_column(con, "raw_company_info", col, _company_ddl_types.get(col, "VARCHAR"))
+    _ensure_columns(
+        con, "raw_company_info",
+        {col: _company_ddl_types.get(col, "VARCHAR") for col in COMPANY_COLS},
+    )
 
 
 def upsert_symbols(con, df, run_date) -> int:

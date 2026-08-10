@@ -9,8 +9,16 @@ Vì cấu trúc cột của price_board tuỳ nguồn, phần chuẩn hoá cột
 in ra cột thật ở lần chạy đầu để dễ tinh chỉnh.
 """
 import re
+import warnings
 from datetime import date
 import pandas as pd
+
+# vnstock tự kiểm tra bản mới hơn qua mạng lúc import và phát UserWarning —
+# giải thích đầy đủ ở src/ingest.py (khối giống hệt). File này cũng import
+# thẳng vnstock.api.* nên cần khối này riêng, phòng trường hợp module này
+# được import trước src/ingest.py (khi đó khối ở ingest.py chưa kịp chạy).
+with warnings.catch_warnings(record=True):
+    import vnstock  # noqa: F401
 
 from vnstock.api.listing import Listing
 from vnstock.api.trading import Trading
@@ -206,8 +214,9 @@ def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") ->
     return out.dropna(subset=["close"]).drop_duplicates(["symbol", "trade_date"]).reset_index(drop=True)
 
 
-def fetch_index_history(index_code: str, start: str, end: str,
-                        source: str = "VCI") -> pd.DataFrame:
+def fetch_index_history(
+    index_code: str, start: str, end: str, source: str = "VCI"
+) -> pd.DataFrame:
     """Lịch sử chỉ số (VNINDEX/VN30/HNXINDEX).
 
     KHÁC fetch_history_one: chỉ số KHÔNG nhân ×1000. fetch_history_one nhân
@@ -296,7 +305,9 @@ def _normalize_financials(df, symbol) -> pd.DataFrame:
             lambda q: "RATIO_YEAR" if q == 5 else "RATIO_TTM"
         )
     for col in warehouse.RATIO_NUM_COLS:
-        out[col] = pd.to_numeric(df[col], errors="coerce") if col in df.columns else None
+        # float("nan") thay vì None: gán None cho cả cột tạo dtype object chứa
+        # Python None thay vì cột số có NaN — áp cho 44 cột nên đáng sửa.
+        out[col] = pd.to_numeric(df[col], errors="coerce") if col in df.columns else float("nan")
 
     out = out.dropna(subset=["year", "quarter"]).reset_index(drop=True)
     return out[warehouse.RATIO_ALL_COLS]
@@ -394,8 +405,10 @@ def _normalize_company(df, symbol) -> pd.DataFrame:
     row = df.iloc[0]
 
     def num(col):
+        # float("nan") thay vì None khi cột vắng mặt, cùng lý do như
+        # _normalize_financials — giữ dtype số thay vì object.
         return pd.to_numeric(pd.Series([row.get(col)]), errors="coerce").iloc[0] \
-            if col in df.columns else None
+            if col in df.columns else float("nan")
 
     def text(col):
         v = row.get(col) if col in df.columns else None
