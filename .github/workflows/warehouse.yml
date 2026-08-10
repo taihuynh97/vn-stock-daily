@@ -25,4 +25,5 @@ jobs:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
           VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+          VNSTOCK_MIN_INTERVAL: "1.05"
         run: python build_warehouse.py
