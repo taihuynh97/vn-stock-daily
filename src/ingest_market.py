@@ -270,11 +270,33 @@ _COM_GROUP_TO_EXCHANGE = {
 }
 
 
+_warned_unknown_exchange = False
+
+
 def _map_exchange(raw) -> str | None:
+    """Map com_group_code -> exchange canonical (HOSE/HNX/UPCOM).
+
+    Giá trị lạ (không có trong _COM_GROUP_TO_EXCHANGE) trả None thay vì trả
+    nguyên chuỗi thô: chuỗi lạ ghi thẳng vào raw_company_info.exchange rồi
+    lan qua dim_symbols.exchange sẽ giả dạng dữ liệu hợp lệ trong khi thực ra
+    không xác định được sàn — hiệu ứng lọc downstream giống hệt None (bị loại
+    khỏi exchanges: [HOSE, HNX]), nhưng None nói thật "không biết", chuỗi lạ
+    thì không. In cảnh báo một lần (theo pattern _printed_info_cols cùng
+    file) để không spam khi chạy toàn bộ ~1.598 mã.
+    """
+    global _warned_unknown_exchange
     if raw is None or (isinstance(raw, float) and pd.isna(raw)):
         return None
     v = str(raw).strip().upper()
-    return _COM_GROUP_TO_EXCHANGE.get(v, v) or None
+    if not v:
+        return None
+    mapped = _COM_GROUP_TO_EXCHANGE.get(v)
+    if mapped is not None:
+        return mapped
+    if not _warned_unknown_exchange:
+        print(f"[company_info] com_group_code lạ, không map được sàn: {v!r}")
+        _warned_unknown_exchange = True
+    return None
 
 
 def _to_bool(v) -> bool:

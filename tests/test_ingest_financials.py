@@ -93,20 +93,27 @@ from src.ingest_market import fetch_company_info
 @pytest.fixture(autouse=True)
 def reset_info_state():
     im._printed_info_cols = False
+    im._warned_unknown_exchange = False
     yield
     im._printed_info_cols = False
+    im._warned_unknown_exchange = False
 
 
 from src import warehouse as wh
 
 
 def _mock_company_overview():
-    """Cột thật của Company.overview() — xác minh bằng HPG ngày 2026-08-09."""
+    """Cột thật của Company.overview() — xác minh bằng HPG ngày 2026-08-09.
+
+    com_group_code = "VNINDEX" (giá trị API thật trả cho HPG, KHÔNG phải
+    "HOSE" trực tiếp — xem _COM_GROUP_TO_EXCHANGE). Dùng đúng giá trị thô
+    này để test cấp cao đi qua đường ánh xạ thật của _map_exchange, không
+    chỉ đi qua nhánh identity fallthrough."""
     return pd.DataFrame([{
         "symbol": "HPG",
         "organ_name": "Công ty Cổ phần Tập đoàn Hòa Phát",
         "organ_short_name": "Hòa Phát",
-        "com_group_code": "HOSE",
+        "com_group_code": "VNINDEX",
         "com_type_code": "CT",
         "is_bank": False,
         "icb_code_lv2": "1700",
@@ -133,7 +140,7 @@ def test_fetch_company_info_maps_real_columns():
         result = fetch_company_info(["HPG"])
     row = result.iloc[0]
     assert row["symbol"] == "HPG"
-    assert row["exchange"] == "HOSE"           # từ com_group_code, KHÔNG phải NULL
+    assert row["exchange"] == "HOSE"           # com_group_code="VNINDEX" -> map thật -> HOSE
     assert row["icb_code_lv2"] == "1700"       # từ icb_code_lv2, KHÔNG phải NULL
     assert row["icb_code_lv4"] == "1757"
     assert row["com_type_code"] == "CT"
@@ -179,6 +186,22 @@ def test_fetch_company_info_empty_on_exception():
         MockCo.return_value.overview.side_effect = Exception("API down")
         result = fetch_company_info(["HPG"])
     assert result.empty
+
+
+def test_map_exchange_translates_real_api_index_names():
+    """Giá trị thô thật mà Company.overview() trả cho com_group_code — xác
+    minh trực tiếp với API cho HPG/VCB/VNM/BSR (HOSE), IDV/VNR/SHS (HNX),
+    PHP/MLS (UPCOM)."""
+    assert im._map_exchange("VNINDEX") == "HOSE"
+    assert im._map_exchange("HNXIndex") == "HNX"
+    assert im._map_exchange("UpcomIndex") == "UPCOM"
+
+
+def test_map_exchange_unknown_value_returns_none_not_raw_string():
+    """Giá trị lạ (sàn mới, mã huỷ niêm yết,...) phải trả None, KHÔNG phải
+    chuỗi thô — chuỗi lạ ghi thẳng vào raw_company_info.exchange sẽ giả dạng
+    dữ liệu hợp lệ trong khi thực ra không xác định được sàn."""
+    assert im._map_exchange("SomeNewIndex") is None
 
 
 def test_update_symbol_exchanges_fills_dim_symbols(tmp_path):
