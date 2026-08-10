@@ -1745,9 +1745,20 @@ export VNSTOCK_MIN_INTERVAL=1.05        # bỏ dòng này nếu không có key C
 .venv/bin/python -m scripts.migrate_financial_ratio_v2 --step verify
 ```
 
-Expected ở bước `verify`: `mới` ≥ 1.500 mã, số dòng ≥ 48.103, và `dòng ngân hàng có net_interest_margin thật` > 0 → in `ĐẠT`.
+Expected ở bước `verify`: `mới` ≥ 1.500 mã và số dòng ≥ 48.103.
 
-**Nếu KHÔNG ĐẠT: dừng lại, không chạy `cleanup`.** Bảng `raw_financial_ratio_v1_backup` vẫn còn nguyên để khôi phục.
+**Cách đọc kết quả `verify` — hai ca đều bình thường:**
+
+| Kết quả | Nghĩa là gì | Làm gì tiếp |
+|---|---|---|
+| `ĐẠT` | Mọi mã trong backup đều đã nạp lại được | Tiếp Steps 10–12. `cleanup` ở Step 13 sẽ xoá backup |
+| `KHÔNG ĐẠT` **kèm danh sách mã mồ côi** | Backup có mã mà `get_active_symbols` không trả về (mã đã hủy niêm yết). Đây là **kết quả mong đợi, không phải lỗi** | Vẫn tiếp Steps 10–12, **bỏ Step 13**. Backup giữ lại vĩnh viễn theo thiết kế |
+
+**Dấu hiệu có vấn đề thật — dừng lại điều tra:** `mới` < 1.500 mã; danh sách mồ côi dài hàng trăm mã (nghĩa là reload hụt cả batch chứ không phải delist); `Batch lỗi: > 0`; hoặc `etl_load_log.status = 'partial'`. Cách xử lý duy nhất: chạy lại `--step reload` (idempotent, upsert theo khoá). **Tuyệt đối không** rename backup đè lên bảng mới — bảng mới là bảng đúng 50 cột đã nạp.
+
+Chỉ tiêu ngân hàng (`net_interest_margin`) là **kiểm tra mềm** ở bước này: `raw_company_info.is_bank` chỉ được nạp ở Step 10, nên lúc verify nó còn NULL và `verify` sẽ bỏ qua, in thông báo tương ứng. Tiêu chí nghiệm thu về số ngân hàng có NIM/NPL/CIR được kiểm ở Step 12.
+
+> **Lưu ý về tốc độ:** script này **không** gọi `vnai.setup_api_key()` (chỉ `build_warehouse.py` có), nên nó chạy ở bậc Guest 20 req/phút. **Đừng đặt `VNSTOCK_MIN_INTERVAL=1.05`** như docstring của script gợi ý — sẽ vượt rate limit. Dùng mặc định 3,1s (~82 phút).
 
 - [ ] **Step 10: Nạp hồ sơ DN + ngành + chỉ số thật**
 
@@ -1864,7 +1875,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 | # | Tiêu chí | Cách kiểm tra |
 |---|---|---|
-| 1 | 72 test pytest pass | `.venv/bin/python -m pytest tests/ -q` |
+| 1 | 82 test pytest pass | `.venv/bin/python -m pytest tests/ -q` |
 | 2 | `raw_financial_ratio` có đúng 50 cột, ≥ 1.500 mã | Task 6 Step 12 |
 | 3 | ≥ 25 ngân hàng có `net_interest_margin`, `npl`, `cir` khác NULL | Task 6 Step 12 |
 | 4 | `raw_company_info.exchange` và `.icb_code_lv2` khác NULL cho ≥ 95% mã | Task 6 Step 12 |
