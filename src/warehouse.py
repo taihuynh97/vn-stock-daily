@@ -119,6 +119,13 @@ def init_warehouse(con):
             watermark    VARCHAR,
             notes        VARCHAR
         );
+        CREATE TABLE IF NOT EXISTS dim_industry (
+            icb_code    VARCHAR PRIMARY KEY,
+            icb_name    VARCHAR,
+            en_icb_name VARCHAR,
+            level       INTEGER,
+            loaded_at   TIMESTAMP
+        );
         """
     )
     ratio_cols_ddl = ",\n            ".join(f"{c} DOUBLE" for c in RATIO_NUM_COLS)
@@ -250,6 +257,21 @@ def upsert_company_info(con, df) -> int:
         """
     )
     con.unregister("df_ci")
+    return len(df)
+
+
+def upsert_industries(con, df) -> int:
+    if df is None or df.empty:
+        return 0
+    con.register("df_ind", df)
+    con.execute(
+        """
+        INSERT OR REPLACE INTO dim_industry
+            (icb_code, icb_name, en_icb_name, level, loaded_at)
+        SELECT icb_code, icb_name, en_icb_name, level, now() FROM df_ind;
+        """
+    )
+    con.unregister("df_ind")
     return len(df)
 
 

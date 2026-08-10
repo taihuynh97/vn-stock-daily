@@ -59,6 +59,30 @@ def refresh_universe(exchanges, source: str = "VCI") -> pd.DataFrame:
     return out.drop_duplicates("symbol").reset_index(drop=True)
 
 
+def fetch_industries_icb(source: str = "VCI") -> pd.DataFrame:
+    """Bảng phân ngành ICB 4 cấp (bảng tĩnh, ~177 dòng, tên ngành tiếng Việt)."""
+    ingest._throttle()
+    try:
+        df = Listing(source=source).industries_icb()
+    except Exception as e:
+        print(f"[industries_icb] {e}")
+        return pd.DataFrame()
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+
+    df.columns = [str(c).lower() for c in df.columns]
+    dq.assert_columns(df, ["icb_code", "icb_name", "level"], "Listing.industries_icb")
+
+    out = pd.DataFrame({
+        "icb_code":    df["icb_code"].astype(str).str.strip(),
+        "icb_name":    df["icb_name"].astype(str).str.strip(),
+        "en_icb_name": (df["en_icb_name"].astype(str).str.strip()
+                        if "en_icb_name" in df.columns else None),
+        "level":       pd.to_numeric(df["level"], errors="coerce").astype("Int64"),
+    })
+    return out.drop_duplicates("icb_code").reset_index(drop=True)
+
+
 def fetch_eod_prices(symbols, source: str = "VCI", batch_size: int = 50) -> pd.DataFrame:
     """Giá EOD cho danh sách mã qua bulk price_board. Trả DataFrame raw_price_daily."""
     global _printed_cols

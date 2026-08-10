@@ -83,6 +83,12 @@ def main():
 
     # 4) Company info — monthly only
     if args.mode == "monthly":
+        ind = ingest_market.fetch_industries_icb(source)
+        n_ind = warehouse.upsert_industries(con, ind)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "dim_industry", n_ind,
+                           "ok" if n_ind else "empty", watermark=run_date)
+        print(f"dim_industry: {n_ind} ngành ICB")
+
         print(f"Bắt đầu fetch company info ({len(symbols)} mã)...")
         info = ingest_market.fetch_company_info(symbols, source)
         n_info = warehouse.upsert_company_info(con, info)
