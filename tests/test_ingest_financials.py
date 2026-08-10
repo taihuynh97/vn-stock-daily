@@ -140,3 +140,103 @@ def test_fetch_company_info_skips_failed_continues():
         result = fetch_company_info(["BAD", "AAA"])
     assert len(result) == 1
     assert result.iloc[0]["symbol"] == "AAA"
+
+
+from src import warehouse as wh
+
+
+def _mock_bank_ratio_summary():
+    """VCB: cột ngân hàng có giá trị, cột phi tài chính là sentinel 0.0."""
+    return pd.DataFrame([{
+        "symbol": "VCB", "year": 2026, "quarter": 2, "ratio_type": "RATIO_TTM",
+        "market_cap": 5.0e14, "number_of_shares_mkt_cap": 5.5e9,
+        "dividend_yield": 0.008, "pe": 15.2, "pb": 2.6, "ps": 5.1,
+        "roe": 0.19, "roa": 0.017, "debt_to_equity": 9.8,
+        "gross_margin": 0.68, "pre_tax_profit_margin": 0.41,
+        "after_tax_profit_margin": 0.33,
+        # phi tài chính — sentinel 0.0 do VCI trả
+        "roic": 0.0, "current_ratio": 0.0, "ebit_margin": 0.0,
+        "quick_ratio": 0.0, "cash_ratio": 0.0, "asset_turnover": 0.0,
+        "ev_to_ebitda": 0.0, "price_to_cash_flow": 2.2,
+        "fixed_asset_turnover": 0.0, "cash_cycle": 0.0,
+        "day_sale_outstanding": 0.0, "days_inventory_outstanding": 0.0,
+        "days_payable_outstanding": 0.0, "ebit": 0.0, "ebitda": 0.0,
+        "debt_per_equity": 0.0,
+        # ngân hàng — giá trị thật
+        "net_interest_margin": 0.025, "average_yield_on_earning_assets": 0.053,
+        "average_cost_of_financing": -0.029, "non_and_interest_income": 0.33,
+        "cir": -0.41, "loans_growth": 0.049, "deposit_growth": 0.046,
+        "equity_to_liabilities": 0.064, "equity_to_loans": 0.097,
+        "total_equity_total_asset": 0.060, "ldr_loan_deposit_ratio": 0.79,
+        "npl": 0.0115, "loans_loss_reserve_to_loans": 0.016,
+        "provision_to_outstanding_loans": -0.011, "car": 0.12,
+        "casa_ratio": 0.35,
+    }])
+
+
+def test_ratio_column_constants_have_expected_sizes():
+    assert len(wh.RATIO_COMMON) == 13
+    assert len(wh.RATIO_NONFIN) == 15
+    assert len(wh.RATIO_BANK) == 16
+    assert len(wh.RATIO_NUM_COLS) == 44
+    assert len(wh.RATIO_ALL_COLS) == 49
+    # không được trùng cột giữa các nhóm
+    assert len(set(wh.RATIO_NUM_COLS)) == 44
+    # hai cột trùng lặp đã xác minh phải bị loại
+    assert "financial_leverage" not in wh.RATIO_NUM_COLS
+    assert "cost_to_income" not in wh.RATIO_NUM_COLS
+    # cột đòn bẩy thứ hai (khác debt_to_equity) phải được giữ
+    assert "debt_per_equity" in wh.RATIO_NONFIN
+
+
+def test_fetch_financials_keeps_bank_metrics():
+    with patch("src.ingest_market.Company") as MockCo, \
+         patch("src.ingest_market.ingest._throttle"):
+        MockCo.return_value.ratio_summary.return_value = _mock_bank_ratio_summary()
+        result = fetch_financials(["VCB"])
+    row = result.iloc[0]
+    assert row["net_interest_margin"] == pytest.approx(0.025)
+    assert row["npl"] == pytest.approx(0.0115)
+    assert row["cir"] == pytest.approx(-0.41)     # giữ nguyên dấu ở raw
+    assert row["casa_ratio"] == pytest.approx(0.35)
+    assert row["number_of_shares_mkt_cap"] == pytest.approx(5.5e9)
+    assert row["ratio_type"] == "RATIO_TTM"
+
+
+def test_fetch_financials_returns_all_ratio_columns():
+    with patch("src.ingest_market.Company") as MockCo, \
+         patch("src.ingest_market.ingest._throttle"):
+        MockCo.return_value.ratio_summary.return_value = _mock_bank_ratio_summary()
+        result = fetch_financials(["VCB"])
+    assert list(result.columns) == wh.RATIO_ALL_COLS
+
+
+def test_fetch_financials_missing_year_column_raises():
+    bad = pd.DataFrame([{"symbol": "AAA", "quarter": 1, "pe": 10.0}])
+    with patch("src.ingest_market.Company") as MockCo, \
+         patch("src.ingest_market.ingest._throttle"):
+        MockCo.return_value.ratio_summary.return_value = bad
+        with pytest.raises(Exception) as exc:
+            fetch_financials(["AAA"])
+    assert "year" in str(exc.value)
+
+
+def test_upsert_financial_ratios_roundtrip(tmp_path):
+    import duckdb
+    con = duckdb.connect(str(tmp_path / "fin.duckdb"))
+    wh.init_warehouse(con)
+    with patch("src.ingest_market.Company") as MockCo, \
+         patch("src.ingest_market.ingest._throttle"):
+        MockCo.return_value.ratio_summary.return_value = _mock_bank_ratio_summary()
+        df = fetch_financials(["VCB"])
+    n = wh.upsert_financial_ratios(con, df)
+    stored = con.execute(
+        "SELECT symbol, npl, car, loaded_at IS NOT NULL "
+        "FROM raw_financial_ratio"
+    ).fetchone()
+    con.close()
+    assert n == 1
+    assert stored[0] == "VCB"
+    assert stored[1] == pytest.approx(0.0115)
+    assert stored[2] == pytest.approx(0.12)
+    assert stored[3] is True

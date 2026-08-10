@@ -5,6 +5,7 @@ from src.warehouse import (
     init_warehouse,
     upsert_financial_ratios,
     upsert_company_info,
+    RATIO_NUM_COLS,
 )
 
 
@@ -27,13 +28,19 @@ def test_init_creates_company_info_table(con):
 
 
 def _ratio_row(**overrides):
+    # Bảng raw_financial_ratio nay có 44 cột số (Task 2) — khởi tạo đủ mọi
+    # cột về 0.0 rồi override, tránh phải liệt kê thủ công cả 44 cột.
     row = {
-        "symbol": "AAA", "year": 2023, "quarter": 5, "period_type": "year",
+        "symbol": "AAA", "year": 2023, "quarter": 5,
+        "period_type": "year", "ratio_type": "RATIO_YEAR",
+    }
+    row.update({col: 0.0 for col in RATIO_NUM_COLS})
+    row.update({
         "market_cap": 1.0e13, "pe": 10.0, "pb": 1.5, "ps": 1.2,
         "dividend_yield": 0.03, "roe": 0.15, "roa": 0.08, "roic": 0.12,
         "debt_to_equity": 0.5, "current_ratio": 1.8, "gross_margin": 0.2,
         "ebit_margin": 0.18, "after_tax_profit_margin": 0.15,
-    }
+    })
     row.update(overrides)
     return row
 

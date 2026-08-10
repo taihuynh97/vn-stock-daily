@@ -16,7 +16,7 @@ from vnstock.api.listing import Listing
 from vnstock.api.trading import Trading
 from vnstock.api.quote import Quote
 from vnstock.api.company import Company
-from . import ingest  # tái dùng _throttle (chung ngân sách rate limit)
+from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
 _EXCH_NORM = {"HSX": "HOSE", "HOSE": "HOSE", "HNX": "HNX", "UPCOM": "UPCOM"}
@@ -209,18 +209,8 @@ def fetch_financials(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-_RATIO_NUM_COLS = [
-    "market_cap", "pe", "pb", "ps", "dividend_yield", "roe", "roa", "roic",
-    "debt_to_equity", "current_ratio", "gross_margin", "ebit_margin",
-    "after_tax_profit_margin",
-]
-
-
 def _normalize_financials(df, symbol) -> pd.DataFrame:
-    cols = list(df.columns)
-    if "year" not in cols or "quarter" not in cols:
-        print(f"[financials] {symbol}: thiếu cột year/quarter. Cột có: {cols}")
-        return pd.DataFrame()
+    dq.assert_columns(df, ["year", "quarter"], f"ratio_summary({symbol})")
 
     out = pd.DataFrame({
         "symbol":  symbol.upper().strip(),
@@ -228,9 +218,17 @@ def _normalize_financials(df, symbol) -> pd.DataFrame:
         "quarter": pd.to_numeric(df["quarter"], errors="coerce"),
     })
     out["period_type"] = out["quarter"].apply(lambda q: "year" if q == 5 else "quarter")
-    for col in _RATIO_NUM_COLS:
-        out[col] = pd.to_numeric(df[col], errors="coerce") if col in cols else None
-    return out.dropna(subset=["year", "quarter"]).reset_index(drop=True)
+    if "ratio_type" in df.columns:
+        out["ratio_type"] = df["ratio_type"].astype(str).values
+    else:
+        out["ratio_type"] = out["quarter"].apply(
+            lambda q: "RATIO_YEAR" if q == 5 else "RATIO_TTM"
+        )
+    for col in warehouse.RATIO_NUM_COLS:
+        out[col] = pd.to_numeric(df[col], errors="coerce") if col in df.columns else None
+
+    out = out.dropna(subset=["year", "quarter"]).reset_index(drop=True)
+    return out[warehouse.RATIO_ALL_COLS]
 
 
 def fetch_company_info(symbols: list[str], source: str = "VCI") -> pd.DataFrame:

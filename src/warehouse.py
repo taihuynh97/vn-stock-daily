@@ -18,6 +18,39 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = str(ROOT / "data" / "warehouse.duckdb")
 
+# --- Cột raw_financial_ratio (nguồn: Company.ratio_summary, 61 cột) ---
+# Loại bỏ có chủ đích: financial_leverage (≡ debt_to_equity, xác minh HPG),
+# cost_to_income (≡ cir, xác minh VCB), owners_equity (ngữ nghĩa không rõ),
+# ratio_ttm_id / ratio_year_id / organ_code / year_report / equity /
+# loans_loss_reserves_to_np_ls / nob66 / nob69 / nob70 / bsb113.
+# Nhóm COMMON = có giá trị THẬT ở cả ngân hàng lẫn phi tài chính (xác minh
+# VCB vs HPG). Nhóm NONFIN/BANK = bên còn lại trả sentinel 0.0 hoặc None.
+RATIO_COMMON = [
+    "market_cap", "number_of_shares_mkt_cap", "dividend_yield",
+    "pe", "pb", "ps", "roe", "roa", "debt_to_equity",
+    "gross_margin", "pre_tax_profit_margin", "after_tax_profit_margin",
+    "price_to_cash_flow",   # VCB 2,20 — giá trị thật, KHÔNG phải sentinel
+]
+RATIO_NONFIN = [
+    "roic", "ev_to_ebitda",
+    "current_ratio", "quick_ratio", "cash_ratio", "ebit_margin",
+    "asset_turnover", "fixed_asset_turnover", "cash_cycle",
+    "day_sale_outstanding", "days_inventory_outstanding",
+    "days_payable_outstanding", "ebit", "ebitda", "debt_per_equity",
+]
+RATIO_BANK = [
+    "net_interest_margin", "average_yield_on_earning_assets",
+    "average_cost_of_financing", "non_and_interest_income", "cir",
+    "loans_growth", "deposit_growth", "equity_to_liabilities",
+    "equity_to_loans", "total_equity_total_asset", "ldr_loan_deposit_ratio",
+    "npl", "loans_loss_reserve_to_loans", "provision_to_outstanding_loans",
+    "car", "casa_ratio",
+]
+RATIO_NUM_COLS = RATIO_COMMON + RATIO_NONFIN + RATIO_BANK          # 44
+RATIO_ALL_COLS = [
+    "symbol", "year", "quarter", "period_type", "ratio_type",
+] + RATIO_NUM_COLS                                                  # 49
+
 
 def get_conn():
     db = os.getenv("WAREHOUSE_DB", DEFAULT_DB)
@@ -73,27 +106,6 @@ def init_warehouse(con):
             watermark    VARCHAR,
             notes        VARCHAR
         );
-        CREATE TABLE IF NOT EXISTS raw_financial_ratio (
-            symbol                   VARCHAR,
-            year                     INTEGER,
-            quarter                  INTEGER,  -- 1-4 = TTM kết thúc tại quý đó, 5 = cả năm
-            period_type              VARCHAR,  -- 'quarter' | 'year'
-            market_cap               DOUBLE,
-            pe                       DOUBLE,
-            pb                       DOUBLE,
-            ps                       DOUBLE,
-            dividend_yield           DOUBLE,
-            roe                      DOUBLE,
-            roa                      DOUBLE,
-            roic                     DOUBLE,
-            debt_to_equity           DOUBLE,
-            current_ratio            DOUBLE,
-            gross_margin             DOUBLE,
-            ebit_margin              DOUBLE,
-            after_tax_profit_margin  DOUBLE,
-            loaded_at                TIMESTAMP,
-            PRIMARY KEY (symbol, year, quarter)
-        );
         CREATE TABLE IF NOT EXISTS raw_company_info (
             symbol        VARCHAR PRIMARY KEY,
             company_name  VARCHAR,
@@ -102,6 +114,21 @@ def init_warehouse(con):
             sector        VARCHAR,
             listed_date   DATE,
             loaded_at     TIMESTAMP
+        );
+        """
+    )
+    ratio_cols_ddl = ",\n            ".join(f"{c} DOUBLE" for c in RATIO_NUM_COLS)
+    con.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS raw_financial_ratio (
+            symbol      VARCHAR,
+            year        INTEGER,
+            quarter     INTEGER,
+            period_type VARCHAR,
+            ratio_type  VARCHAR,
+            {ratio_cols_ddl},
+            loaded_at   TIMESTAMP,
+            PRIMARY KEY (symbol, year, quarter)
         );
         """
     )
@@ -148,14 +175,12 @@ def upsert_prices(con, df) -> int:
 def upsert_financial_ratios(con, df) -> int:
     if df is None or df.empty:
         return 0
+    cols = ", ".join(RATIO_ALL_COLS)
     con.register("df_fin", df)
     con.execute(
-        """
-        INSERT OR REPLACE INTO raw_financial_ratio
-        SELECT symbol, year, quarter, period_type, market_cap, pe, pb, ps,
-               dividend_yield, roe, roa, roic, debt_to_equity, current_ratio,
-               gross_margin, ebit_margin, after_tax_profit_margin, now()
-        FROM df_fin;
+        f"""
+        INSERT OR REPLACE INTO raw_financial_ratio ({cols}, loaded_at)
+        SELECT {cols}, now() FROM df_fin;
         """
     )
     con.unregister("df_fin")
