@@ -17,7 +17,7 @@
 - Mọi lời gọi vnstock đi qua `src.ingest._throttle()`.
 - Đơn vị: giá cổ phiếu **VNĐ**; `raw_price_daily.value` **triệu VNĐ**; chỉ số **không** nhân ×1000.
 - Không đụng `main.py`, `digest.py`, `signals.py`, `screener.py`, `storage.py`, `notify.py`, `.github/workflows/daily.yml`.
-- Chạy test: `.venv/bin/python -m pytest tests/ -q`. Toàn bộ 43 test hiện có phải tiếp tục pass.
+- Chạy test: `.venv/bin/python -m pytest tests/ -q`. Không được làm fail test hiện có, **trừ một ngoại lệ đã được phê duyệt**: Task 3 thay 3 test `fetch_company_info` trong `tests/test_ingest_financials.py`. Ba test đó mock các tên cột (`exchange`, `industry_icb_name2`) **không tồn tại** trong `Company.overview()` thật, nên chúng luôn xanh trong khi code sản xuất trả NULL 100% — tức là chúng đang khẳng định chính cái bug cần sửa. Giữ lại là giữ một cái bẫy. Mọi test khác phải tiếp tục pass.
 - Branch làm việc: `feat/fundamental-analysis-platform`.
 
 ---
