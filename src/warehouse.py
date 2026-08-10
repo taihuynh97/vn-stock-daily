@@ -132,6 +132,14 @@ def init_warehouse(con):
         );
         """
     )
+    # Bảng raw_financial_ratio có thể đã tồn tại từ trước (schema cũ 13 cột,
+    # vd. trên MotherDuck production) — CREATE TABLE IF NOT EXISTS ở trên sẽ
+    # no-op trong trường hợp đó. Dùng _ensure_column để migrate thêm các cột
+    # mới (an toàn, chạy lại nhiều lần được), tránh BinderException khi
+    # upsert_financial_ratios ghi vào cột chưa tồn tại trên bảng cũ.
+    _ensure_column(con, "raw_financial_ratio", "ratio_type", "VARCHAR")
+    for col in RATIO_NUM_COLS:
+        _ensure_column(con, "raw_financial_ratio", col, "DOUBLE")
     _ensure_column(con, "etl_load_log", "rows_rejected", "BIGINT")
 
 

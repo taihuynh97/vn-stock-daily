@@ -70,6 +70,52 @@ def test_upsert_financial_ratios_updates_pe(con):
     assert pe == 12.0
 
 
+def test_init_warehouse_migrates_old_13_col_financial_ratio_table():
+    """Production (MotherDuck) có thể đã có raw_financial_ratio với schema cũ
+    13 cột từ trước Task 2. CREATE TABLE IF NOT EXISTS no-op trên bảng đã tồn
+    tại — init_warehouse phải tự bổ sung các cột mới qua _ensure_column, nếu
+    không upsert_financial_ratios sẽ vỡ với BinderException ngay lần chạy kế
+    tiếp trên production."""
+    c = duckdb.connect(":memory:")
+    c.execute(
+        """
+        CREATE TABLE raw_financial_ratio (
+            symbol                   VARCHAR,
+            year                     INTEGER,
+            quarter                  INTEGER,
+            period_type              VARCHAR,
+            market_cap               DOUBLE,
+            pe                       DOUBLE,
+            pb                       DOUBLE,
+            ps                       DOUBLE,
+            dividend_yield           DOUBLE,
+            roe                      DOUBLE,
+            roa                      DOUBLE,
+            roic                     DOUBLE,
+            debt_to_equity           DOUBLE,
+            current_ratio            DOUBLE,
+            gross_margin             DOUBLE,
+            ebit_margin              DOUBLE,
+            after_tax_profit_margin  DOUBLE,
+            loaded_at                TIMESTAMP,
+            PRIMARY KEY (symbol, year, quarter)
+        );
+        """
+    )
+
+    init_warehouse(c)  # không được raise; phải migrate thêm cột thiếu
+
+    df = pd.DataFrame([_ratio_row(npl=0.0115)])
+    n = upsert_financial_ratios(c, df)
+    npl = c.execute(
+        "SELECT npl FROM raw_financial_ratio WHERE symbol='AAA' AND year=2023 AND quarter=5"
+    ).fetchone()[0]
+    c.close()
+
+    assert n == 1
+    assert npl == pytest.approx(0.0115)
+
+
 def test_upsert_company_info_returns_row_count(con):
     df = pd.DataFrame([{
         "symbol": "AAA", "company_name": "An Phat Bioplastics",
