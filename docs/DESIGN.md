@@ -87,14 +87,40 @@ raw_index_daily        index_code, trade_date, open, high, low, close, volume
 raw_foreign_trade      symbol, trade_date, buy_vol, sell_vol, net_value
                        PK (symbol, trade_date)
 
-raw_financial_ratio    symbol, period, period_type, pe, pb, roe, roa, eps, ...
-                       PK (symbol, period, period_type)     -- upsert weekly
+raw_financial_ratio    symbol, year, quarter, period_type, ratio_type + 44 chỉ tiêu
+                       PK (symbol, year, quarter)           -- upsert weekly
+                       50 cột. quarter 1-4 = TTM kết thúc tại quý đó;
+                       quarter = 5 = cả năm.
+                       Ba nhóm chỉ tiêu theo khả dụng (xem warehouse.RATIO_*):
+                         COMMON (13) — cả ngân hàng lẫn phi tài chính đều có thật
+                         NONFIN (15) — ngân hàng trả sentinel 0.0, phải NULL hoá
+                         BANK   (16) — phi tài chính trả sentinel 0.0/None
+                       LƯU Ý: sentinel 0.0 được GIỮ NGUYÊN ở raw. Việc NULL hoá
+                       theo com_class diễn ra ở tầng staging (mảng A2).
 
 raw_financial_stmt     symbol, period, period_type, stmt_type, line_item, value
                        PK (symbol, period, period_type, stmt_type, line_item)
 
-raw_company_info       symbol, company_name, exchange, industry_icb, sector,
-                       listed_date, charter_capital, loaded_at   -- upsert monthly
+raw_company_info       symbol, company_name, short_name, exchange, com_type_code,
+                       is_bank, icb_code_lv2, icb_code_lv4, sector, market_cap,
+                       issue_share, free_float_percentage, foreigner_percentage,
+                       maximum_foreign_percentage, state_percentage,
+                       avg_match_value_1m, avg_match_volume_1m,
+                       highest_price_1y, lowest_price_1y, listed_date, loaded_at
+                       PK (symbol)                          -- upsert monthly
+                       com_type_code phân loại CT/NH/BH/CK (thường/ngân hàng/
+                       bảo hiểm/chứng khoán) — nguồn chính suy ra com_class.
+                       exchange lấy từ com_group_code qua _map_exchange():
+                       VNINDEX→HOSE, HNXIndex→HNX, UpcomIndex→UPCOM, OTC→OTC.
+
+dim_industry           icb_code, icb_name (tiếng Việt), en_icb_name, level (1-4),
+                       loaded_at    PK (icb_code)           -- refresh monthly
+
+raw_index_daily        index_code, trade_date, open, high, low, close, volume
+                       PK (index_code, trade_date)          -- append daily
+                       VNINDEX, VN30, HNXINDEX. LƯU Ý: giá trị chỉ số KHÔNG
+                       nhân ×1000 như giá cổ phiếu — dùng fetch_index_history()
+                       chứ không phải fetch_history_one().
 
 raw_corporate_event    symbol, event_type, ex_date, record_date, ratio, description
 raw_news               news_id, symbol, title, published_date, url, source, loaded_at

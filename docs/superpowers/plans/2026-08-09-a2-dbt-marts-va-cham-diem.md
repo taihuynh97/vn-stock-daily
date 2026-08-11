@@ -437,6 +437,22 @@ where com_class = 'NONFIN'
   and (npl is not null or net_interest_margin is not null or cir is not null)
 ```
 
+`transforms/tests/assert_com_class_coverage.sql`:
+
+```sql
+-- Nợ N2 từ A1: hai test sentinel ở trên đều lọc theo com_class, nên một mã bị
+-- phân loại SAI sẽ trượt khỏi phạm vi của cả hai và không test nào bắt được.
+-- Test này canh đúng lỗ hổng đó: đếm mã có tỷ số nhưng thiếu hồ sơ DN.
+-- Cho phép tối đa 30 mã (≈2% của 1.585) để chịu được vài mã lỗi mạng khi nạp.
+select count(*) as n_unknown
+from (
+    select distinct symbol
+    from {{ ref('stg_financial_ratio') }}
+    where com_class = 'UNKNOWN'
+)
+having count(*) > 30
+```
+
 - [ ] **Step 2: Chạy để xác nhận fail**
 
 ```bash
@@ -552,7 +568,13 @@ where icb_code is not null
 with joined as (
     select
         f.*,
-        coalesce(c.com_class, 'NONFIN') as com_class,
+        -- KHÔNG mặc định 'NONFIN' (khoản nợ N2 từ A1). Một ngân hàng thiếu dòng
+        -- trong raw_company_info mà bị gán NONFIN sẽ giữ nguyên cụm sentinel 0.0
+        -- của nhóm NONFIN (roic=0, current_ratio=0) như GIÁ TRỊ THẬT, đồng thời
+        -- NULL hoá NIM/NPL/CAR thật của nó → bị chấm điểm chất lượng bét bảng.
+        -- Và assert_no_bank_sentinel_leak KHÔNG bắt được, vì nó lọc
+        -- `where com_class='BANK'` — mã bị phân loại nhầm đã trượt khỏi phạm vi test.
+        coalesce(c.com_class, 'UNKNOWN') as com_class,
         c.icb_code_lv2,
         c.icb_code_lv4
     from {{ source('warehouse', 'raw_financial_ratio') }} f
@@ -603,7 +625,7 @@ from cleaned
         tests:
           - not_null
           - accepted_values:
-              values: ['NONFIN', 'BANK', 'OTHERFIN']
+              values: ['NONFIN', 'BANK', 'OTHERFIN', 'UNKNOWN']
 
   - name: stg_industry
     columns:
@@ -1373,6 +1395,10 @@ with base as (
         metric,
         value
     from {{ ref('int_metric_long') }}
+    -- Loại mã chưa xác định được loại hình khỏi MỌI rổ percentile (nợ N2 từ A1).
+    -- Chúng thiếu dòng trong raw_company_info nên không biết áp bộ chỉ tiêu nào;
+    -- để lẫn vào rổ sẽ làm lệch percentile của cả nhóm.
+    where com_class <> 'UNKNOWN'
 ),
 
 sized as (
@@ -1648,7 +1674,7 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['NONFIN', 'BANK', 'OTHERFIN']
+              values: ['NONFIN', 'BANK', 'OTHERFIN', 'UNKNOWN']
 
   - name: dim_industry
     columns:
