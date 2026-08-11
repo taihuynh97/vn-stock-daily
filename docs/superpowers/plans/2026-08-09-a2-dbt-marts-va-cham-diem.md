@@ -203,24 +203,54 @@ sources:
 `transforms/tests/assert_price_in_vnd_range.sql`:
 
 ```sql
--- Giá cổ phiếu VN luôn nằm trong [100, 5.000.000] VNĐ.
--- Nếu fail: nhiều khả năng lệch đơn vị (nghìn VNĐ vs VNĐ).
-select symbol, trade_date, close
-from {{ ref('stg_price_daily') }}
-where close < 100 or close > 5000000
+-- Bắt LỆCH ĐƠN VỊ, không bắt "cổ phiếu giá thấp".
+--
+-- Bản đầu dùng sàn tuyệt đối 100 VNĐ, nhưng chạy thật trên production cho
+-- thấy nó đo sai thứ: 1.682 dòng (0,13%) bị bắt đều là cổ phiếu penny THẬT —
+-- DKC/VLP/VNX là vỏ công ty gần chết, khối lượng 1-5 cổ phiếu/phiên, giá
+-- 30-900 VNĐ suốt 828 phiên. Đó là dữ liệu đúng.
+--
+-- Dấu hiệu thật của lệch đơn vị là ĐỨT GÃY: cùng một mã có cả dòng dưới
+-- 100 VNĐ lẫn dòng trên 1.000 VNĐ. Ví dụ HPG nếu quên nhân 1000 ở phần
+-- backfill sẽ có dòng 21,85 nằm cạnh dòng 21.850 — lỗi này đã xảy ra thật,
+-- xem scripts/fix_backfill_units.py. Mã penny thật thì mọi phiên đều thấp.
+--
+-- Chặn trên vẫn giữ tuyệt đối: không cổ phiếu VN nào vượt 5 triệu VNĐ.
+with per_symbol as (
+    select
+        symbol,
+        count(*) filter (where close < 100)   as n_duoi_100,
+        count(*) filter (where close > 1000)  as n_tren_1000,
+        count(*) filter (where close > 5000000) as n_qua_lon
+    from {{ ref('stg_price_daily') }}
+    group by symbol
+)
+select symbol, n_duoi_100, n_tren_1000, n_qua_lon
+from per_symbol
+where (n_duoi_100 > 0 and n_tren_1000 > 0)   -- đứt gãy đơn vị trong cùng một mã
+   or n_qua_lon > 0                           -- vượt chặn trên tuyệt đối
 ```
 
 `transforms/tests/assert_value_matches_volume.sql`:
 
 ```sql
--- value_vnd phải xấp xỉ close * volume. Sai lệch > 30% nghĩa là lệch đơn vị.
--- Chỉ kiểm khi cả hai đều có dữ liệu và khối lượng đủ lớn để tỉ lệ có nghĩa.
+-- value_vnd phải xấp xỉ close * volume. Mục đích DUY NHẤT của test này là bắt
+-- lệch đơn vị 10⁶ — không phải bắt nhiễu giá.
+--
+-- Dung sai ban đầu 30% cho 5/27.981 dòng (0,018%) fail trên production, với
+-- mức lệch 32-40%. Đó KHÔNG phải lệch đơn vị (lệch 10⁶ tương đương 99.999.900%)
+-- mà là nhiễu bình thường: giao dịch thoả thuận, hoặc close là giá khớp cuối
+-- còn value tính theo giá bình quân cả phiên.
+--
+-- Nới lên 50%: vẫn bắt lệch đơn vị dư sức, mà không báo động sai. Một cổng
+-- báo động sai liên tục thì tệ hơn không có cổng, vì người ta học cách bỏ qua
+-- nó — bài học từ finding C4 của mảng A1.
 select symbol, trade_date, value_vnd, turnover_proxy_vnd
 from {{ ref('stg_price_daily') }}
 where has_value
   and volume > 1000
   and turnover_proxy_vnd > 0
-  and abs(value_vnd - turnover_proxy_vnd) / turnover_proxy_vnd > 0.30
+  and abs(value_vnd - turnover_proxy_vnd) / turnover_proxy_vnd > 0.50
 ```
 
 `transforms/tests/assert_no_weekend_or_future_dates.sql`:
