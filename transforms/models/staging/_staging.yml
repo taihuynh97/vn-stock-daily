@@ -24,3 +24,37 @@ models:
               values: ['VNINDEX', 'VN30', 'HNXINDEX']
       - name: trade_date
         tests: [not_null]
+
+  - name: stg_company_info
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: com_class
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['NONFIN', 'BANK', 'OTHERFIN', 'UNKNOWN']
+
+  - name: stg_industry
+    columns:
+      - name: icb_code
+        tests: [not_null, unique]
+      - name: level
+        tests:
+          - accepted_values:
+              values: [1, 2, 3, 4]
+              quote: false
+
+  - name: stg_financial_ratio
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: period_end_date
+        tests: [not_null]
+      - name: period_type
+        tests:
+          - accepted_values:
+              values: ['quarter', 'year']
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, year, quarter]
