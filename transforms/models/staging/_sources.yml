@@ -1,0 +1,29 @@
+version: 2
+
+sources:
+  - name: warehouse
+    schema: main
+    tables:
+      - name: raw_price_daily
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 2, period: day}
+          error_after: {count: 4, period: day}
+          filter: "trade_date >= current_date - interval '30 days'"
+      - name: raw_index_daily
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 2, period: day}
+          error_after: {count: 4, period: day}
+      - name: raw_financial_ratio
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 10, period: day}
+          error_after: {count: 20, period: day}
+      - name: raw_company_info
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 40, period: day}
+          error_after: {count: 70, period: day}
+      - name: dim_industry
+      - name: dim_symbols

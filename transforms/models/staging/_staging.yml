@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: stg_price_daily
+    description: "Giá EOD đã chuẩn hoá đơn vị VNĐ, khử trùng theo (symbol, trade_date)."
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: trade_date
+        tests: [not_null]
+      - name: close
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, trade_date]
+
+  - name: stg_index_daily
+    description: "Chỉ số thị trường. KHÔNG đổi đơn vị."
+    columns:
+      - name: index_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['VNINDEX', 'VN30', 'HNXINDEX']
+      - name: trade_date
+        tests: [not_null]

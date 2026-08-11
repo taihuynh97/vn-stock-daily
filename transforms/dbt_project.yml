@@ -1,0 +1,83 @@
+name: vn_market
+version: "1.0.0"
+config-version: 2
+profile: vn_market
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  vn_market:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: table
+    marts:
+      +materialized: table
+
+seeds:
+  vn_market:
+    +quote_columns: false
+
+vars:
+  # Nhóm chỉ tiêu theo khả dụng — xác minh bằng VCB (ngân hàng) vs HPG (phi tài chính).
+  # COMMON: cả hai đều có giá trị thật.
+  # NONFIN: ngân hàng trả sentinel 0.0 → phải NULL hoá.
+  # BANK:   phi tài chính trả sentinel 0.0/None → phải NULL hoá.
+  metrics_common:
+    - market_cap
+    - number_of_shares_mkt_cap
+    - dividend_yield
+    - pe
+    - pb
+    - ps
+    - roe
+    - roa
+    - debt_to_equity
+    - gross_margin
+    - pre_tax_profit_margin
+    - after_tax_profit_margin
+    - price_to_cash_flow
+  metrics_nonfin:
+    - roic
+    - ev_to_ebitda
+    - current_ratio
+    - quick_ratio
+    - cash_ratio
+    - ebit_margin
+    - asset_turnover
+    - fixed_asset_turnover
+    - cash_cycle
+    - day_sale_outstanding
+    - days_inventory_outstanding
+    - days_payable_outstanding
+    - ebit
+    - ebitda
+    - debt_per_equity
+  metrics_bank:
+    - net_interest_margin
+    - average_yield_on_earning_assets
+    - average_cost_of_financing
+    - non_and_interest_income
+    - cir
+    - loans_growth
+    - deposit_growth
+    - equity_to_liabilities
+    - equity_to_loans
+    - total_equity_total_asset
+    - ldr_loan_deposit_ratio
+    - npl
+    - loans_loss_reserve_to_loans
+    - provision_to_outstanding_loans
+    - car
+    - casa_ratio
+  # Số mã tối thiểu để một peer group được coi là đủ tin cậy.
+  peer_min_size: 15
+  # Số mã tuyệt đối tối thiểu để tính percentile.
+  peer_hard_min: 8
+  # Số quý tối thiểu để tính percentile định giá so với chính mã.
+  own_history_min_quarters: 12

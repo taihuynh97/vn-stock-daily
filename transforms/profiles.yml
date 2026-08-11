@@ -1,0 +1,9 @@
+vn_market:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('WAREHOUSE_DB', '../data/warehouse.duckdb') }}"
+      threads: 4
+      extensions:
+        - httpfs
