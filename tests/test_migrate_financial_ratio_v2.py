@@ -1,12 +1,18 @@
 """Test cho scripts/migrate_financial_ratio_v2.py — tập trung vào logic phá
 hủy (rename/cleanup) sắp chạy lên production 10 năm dữ liệu.
 
-Chỉ test step_rename/step_verify/step_cleanup (thuần SQL trên DuckDB tạm,
-không gọi API). Không test step_reload vì nó cần API thật.
+step_rename/step_verify/step_cleanup: thuần SQL trên DuckDB tạm, không gọi
+API. step_reload: mock ingest_market.fetch_financials (không gọi API thật)
+chỉ để kiểm chứng riêng hành vi bắt lỗi theo chunk (C2/review cuối) —
+KHÔNG test toàn bộ luồng reload thật (cần API).
 """
+from unittest.mock import patch
+
 import duckdb
+import pandas as pd
 import pytest
 
+from src import dq
 from src import warehouse as wh
 from scripts import migrate_financial_ratio_v2 as mig
 
@@ -15,6 +21,23 @@ def _seed(tmp_path):
     con = duckdb.connect(str(tmp_path / "mig.duckdb"))
     wh.init_warehouse(con)
     return con
+
+
+def test_table_exists_ignores_same_named_table_in_other_attached_catalog(tmp_path):
+    """I2 (review cuối) — kịch bản hỏng nguy hiểm nhất mà reviewer nêu: nếu
+    _table_exists() không lọc catalog/schema hiện tại, step_rename có thể
+    tưởng BACKUP đã tồn tại (thật ra chỉ tồn tại ở MỘT DATABASE KHÁC được
+    ATTACH, vd. sample_data mà MotherDuck tự ATTACH cho mọi kết nối) rồi bỏ
+    qua rename; sau đó step_verify truy vấn `{BACKUP}` không qualify catalog
+    có thể đọc nhầm sang bảng đó, dẫn tới quyết định DROP TABLE dựa trên số
+    liệu sai."""
+    con = _seed(tmp_path)
+    con.execute("ATTACH ':memory:' AS other_db")
+    con.execute(f"CREATE TABLE other_db.main.{mig.BACKUP} (symbol VARCHAR)")
+
+    # BACKUP KHÔNG tồn tại trong database hiện tại -- chỉ tồn tại ở other_db.
+    assert mig._table_exists(con, mig.BACKUP) is False
+    con.close()
 
 
 def test_step_rename_twice_does_not_overwrite_backup(tmp_path):
@@ -157,3 +180,89 @@ def test_main_self_heals_after_interrupted_rename(tmp_path, monkeypatch):
     ).fetchall()}
     assert "net_interest_margin" in cols   # bảng mới đúng schema 50 cột
     con2.close()
+
+
+def _ratio_df_for(symbols):
+    """DataFrame hợp lệ theo schema RATIO_ALL_COLS cho một danh sách mã —
+    dùng để mock ingest_market.fetch_financials() trong test step_reload."""
+    rows = []
+    for sym in symbols:
+        row = {
+            "symbol": sym, "year": 2025, "quarter": 1,
+            "period_type": "quarter", "ratio_type": "RATIO_TTM",
+        }
+        row.update({col: None for col in wh.RATIO_NUM_COLS})
+        rows.append(row)
+    return pd.DataFrame(rows)[wh.RATIO_ALL_COLS]
+
+
+def _seed_active_symbols(con, n):
+    for i in range(1, n + 1):
+        sym = f"S{i:03d}"
+        con.execute(
+            "INSERT INTO dim_symbols (symbol, exchange, company_name, "
+            "is_active, first_seen, last_seen) VALUES "
+            "(?, 'HOSE', ?, TRUE, DATE '2020-01-01', DATE '2026-08-07')",
+            [sym, sym],
+        )
+
+
+def test_step_reload_chunk_schema_error_does_not_abort_other_chunks(tmp_path, capsys):
+    """C2 (áp dụng cho step_reload): fetch_financials có thể raise
+    dq.SchemaError khi tỉ lệ mã sai schema trong MỘT chunk vượt ngưỡng
+    degraded. Trước bản sửa này, exception đó thoát thẳng khỏi step_reload
+    và giết cả bước reload — kể cả các chunk khác đã/sẽ nạp thành công."""
+    con = _seed(tmp_path)
+    _seed_active_symbols(con, 60)   # 2 chunk (batch=50): 50 + 10 mã
+
+    good_chunk_symbols = [f"S{i:03d}" for i in range(51, 61)]
+
+    def fake_fetch_financials(chunk, source="VCI"):
+        if len(chunk) == 50:
+            raise dq.SchemaError("[Company.ratio_summary] 40/50 mã sai schema")
+        return _ratio_df_for(chunk)
+
+    with patch(
+        "src.ingest_market.fetch_financials", side_effect=fake_fetch_financials
+    ):
+        mig.step_reload(con)
+
+    out = capsys.readouterr().out
+    stored_symbols = {
+        r[0] for r in con.execute("SELECT symbol FROM raw_financial_ratio").fetchall()
+    }
+    con.close()
+    assert "CHUNK LỖI" in out
+    assert "SchemaError" in out
+    # chunk lỗi (50 mã đầu) không được nạp, nhưng chunk tốt (10 mã sau) vẫn
+    # phải được nạp -- đây là điều quan trọng nhất: một chunk lỗi không giết
+    # cả bước reload.
+    assert stored_symbols == set(good_chunk_symbols)
+
+
+def test_step_rename_skip_prints_row_counts_of_both_tables(tmp_path, capsys):
+    """Minor đi kèm review cuối: nhánh 'bỏ qua rename' phải in số dòng của
+    CẢ HAI bảng (BACKUP và raw_financial_ratio hiện tại), để vận hành phân
+    biệt được 'đã migrate xong' (raw_financial_ratio có dữ liệu) với 'backup
+    sót lại từ lần thử trước' (raw_financial_ratio rỗng/ít dòng)."""
+    con = _seed(tmp_path)
+    con.execute(
+        "INSERT INTO raw_financial_ratio (symbol, year, quarter, period_type, "
+        "loaded_at) VALUES ('AAA', 2025, 1, 'quarter', now())"
+    )
+    mig.step_rename(con)   # backup: AAA (1 dòng), bảng mới: rỗng
+
+    con.execute(
+        "INSERT INTO raw_financial_ratio (symbol, year, quarter, period_type, "
+        "loaded_at) VALUES ('BBB', 2025, 1, 'quarter', now()), "
+        "('CCC', 2025, 1, 'quarter', now())"
+    )
+    capsys.readouterr()   # xoá output của step_rename lần 1
+
+    mig.step_rename(con)   # lần 2: bỏ qua vì backup đã tồn tại
+    out = capsys.readouterr().out
+    con.close()
+
+    assert "(1 dòng)" in out          # backup (BACKUP) có 1 dòng
+    assert "hiện có 2 dòng" in out    # raw_financial_ratio hiện có 2 dòng
+    assert "đã tồn tại" in out

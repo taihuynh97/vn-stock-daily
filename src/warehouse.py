@@ -74,17 +74,28 @@ def get_conn():
 
 
 def _ensure_column(con, table: str, column: str, ddl_type: str) -> None:
-    """Thêm cột nếu chưa có (migration nhẹ, chạy lại an toàn)."""
+    """Thêm cột nếu chưa có (migration nhẹ, chạy lại an toàn).
+
+    information_schema.columns không tự lọc theo catalog/schema hiện tại —
+    trên MotherDuck, mọi database ATTACH được (kể cả sample_data mà
+    MotherDuck tự attach cho mọi kết nối) đều hiện ra trong cùng truy vấn
+    không lọc, nên table_name trùng tên ở catalog khác có thể khiến hàm này
+    tưởng cột đã tồn tại trong khi thực ra không phải ở đúng database/schema
+    đang dùng. Lọc thêm table_catalog/table_schema để chỉ thấy bảng của kết
+    nối hiện tại. Dùng ADD COLUMN IF NOT EXISTS để tự idempotent luôn, không
+    phụ thuộc riêng vào kết quả tra existing (tránh CatalogException khi hai
+    tiến trình cùng chạy init_warehouse song song)."""
     existing = {
         r[0]
         for r in con.execute(
             "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = ?",
+            "WHERE table_name = ? AND table_catalog = current_database() "
+            "AND table_schema = current_schema()",
             [table],
         ).fetchall()
     }
     if column not in existing:
-        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+        con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl_type}")
 
 
 def _ensure_columns(con, table: str, columns: dict[str, str]) -> int:
@@ -94,19 +105,23 @@ def _ensure_columns(con, table: str, columns: dict[str, str]) -> int:
     thay vì một truy vấn riêng cho từng cột — init_warehouse gọi tới 45 lần
     cho raw_financial_ratio + 20 lần cho raw_company_info, tức hàng chục
     round-trip mạng tới MotherDuck mỗi lần khởi động warehouse nếu dùng
-    _ensure_column cho từng cột. Trả về số cột đã thêm."""
+    _ensure_column cho từng cột. Trả về số cột đã thêm.
+
+    Cùng lý do lọc catalog/schema và dùng ADD COLUMN IF NOT EXISTS như
+    _ensure_column ở trên."""
     existing = {
         r[0]
         for r in con.execute(
             "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = ?",
+            "WHERE table_name = ? AND table_catalog = current_database() "
+            "AND table_schema = current_schema()",
             [table],
         ).fetchall()
     }
     added = 0
     for column, ddl_type in columns.items():
         if column not in existing:
-            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+            con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl_type}")
             added += 1
     return added
 
@@ -211,12 +226,19 @@ def init_warehouse(con):
     # một lần cho cả batch, không phải 45 lần) để migrate thêm các cột mới
     # (an toàn, chạy lại nhiều lần được), tránh BinderException khi
     # upsert_financial_ratios ghi vào cột chưa tồn tại trên bảng cũ.
-    _ratio_ddl_types = {"ratio_type": "VARCHAR"}
+    # loaded_at thêm vào bộ cột được đảm bảo (không chỉ các cột của
+    # RATIO_NUM_COLS): nếu một bảng cũ trên production thiếu hẳn cột này,
+    # upsert_financial_ratios sẽ chết bằng InternalException của DuckDB (C++
+    # stack trace, rất khó chẩn đoán) ngay tại câu SELECT ... now() AS
+    # loaded_at khi INSERT vào cột không tồn tại.
+    _ratio_ddl_types = {"ratio_type": "VARCHAR", "loaded_at": "TIMESTAMP"}
     _ratio_ddl_types.update({col: "DOUBLE" for col in RATIO_NUM_COLS})
     _ensure_columns(con, "raw_financial_ratio", _ratio_ddl_types)
     _ensure_column(con, "etl_load_log", "rows_rejected", "BIGINT")
     # raw_company_info cũng đã tồn tại từ trước (schema cũ 7 cột trên
     # MotherDuck) — migrate thêm các cột mới của COMPANY_COLS tương tự trên.
+    # Cùng lý do loaded_at ở trên: đảm bảo cả cột này dù nó không nằm trong
+    # COMPANY_COLS (được thêm riêng lúc upsert_company_info).
     _company_ddl_types = {
         "is_bank": "BOOLEAN", "market_cap": "DOUBLE", "issue_share": "DOUBLE",
         "free_float_percentage": "DOUBLE", "foreigner_percentage": "DOUBLE",
@@ -227,12 +249,23 @@ def init_warehouse(con):
     }
     _ensure_columns(
         con, "raw_company_info",
-        {col: _company_ddl_types.get(col, "VARCHAR") for col in COMPANY_COLS},
+        {col: _company_ddl_types.get(col, "VARCHAR") for col in COMPANY_COLS}
+        | {"loaded_at": "TIMESTAMP"},
     )
 
 
 def upsert_symbols(con, df, run_date) -> int:
-    """Cập nhật dim_symbols. Giữ nguyên first_seen, cập nhật last_seen."""
+    """Cập nhật dim_symbols. Giữ nguyên first_seen, cập nhật last_seen.
+
+    COALESCE(excluded.exchange, dim_symbols.exchange) — KHÔNG ghi đè bằng
+    NULL: refresh_universe (job daily, T2-T6) chạy trên Listing.all_symbols()
+    hiện không trả cột sàn (API thật chỉ có symbol/organ_name) nên gán
+    exchange=None cho toàn bộ universe mỗi lần chạy. Trước bản sửa này, upsert
+    vô điều kiện khiến job daily xoá trắng dim_symbols.exchange mà job
+    monthly (update_symbol_exchanges, qua raw_company_info) vừa điền cho
+    ~1.587 mã — ngay lần chạy daily kế tiếp sau monthly. Cùng lý do áp cho
+    company_name (job daily cũng không có company_name đáng tin/đầy đủ hơn
+    job monthly)."""
     if df is None or df.empty:
         return 0
     con.register("df_sym", df)
@@ -242,8 +275,8 @@ def upsert_symbols(con, df, run_date) -> int:
         SELECT symbol, exchange, company_name, TRUE, DATE '{run_date}', DATE '{run_date}'
         FROM df_sym
         ON CONFLICT (symbol) DO UPDATE SET
-            exchange     = excluded.exchange,
-            company_name = excluded.company_name,
+            exchange     = COALESCE(excluded.exchange, dim_symbols.exchange),
+            company_name = COALESCE(excluded.company_name, dim_symbols.company_name),
             is_active    = TRUE,
             last_seen    = DATE '{run_date}';
         """

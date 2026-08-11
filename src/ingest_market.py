@@ -262,6 +262,7 @@ def fetch_financials(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
     """
     global _printed_fin_cols
     frames = []
+    rejected = 0
     for symbol in symbols:
         ingest._throttle()
         try:
@@ -275,9 +276,26 @@ def fetch_financials(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
         if not _printed_fin_cols:
             print(f"[financials] cột thật ({symbol}): {list(df.columns)}")
             _printed_fin_cols = True
-        row = _normalize_financials(df, symbol)
+        # dq.assert_columns (trong _normalize_financials) raise SchemaError
+        # theo TỪNG MÃ — bắt ở đây để một mã dị thường không xoá sổ cả mẻ
+        # đang chạy (trước bản sửa này, exception thoát khỏi vòng lặp, biến
+        # `frames` — kể cả phần đã fetch xong thành công — bị vứt đi). Vẫn
+        # raise to nếu TỈ LỆ mã lỗi vượt ngưỡng dq.status_for (mặc định 5%)
+        # sau khi hết vòng lặp: một vài mã lỗi là dị thường cá biệt, bỏ qua
+        # được; nhiều mã lỗi nghĩa là nguồn đã đổi schema và phải dừng to.
+        try:
+            row = _normalize_financials(df, symbol)
+        except dq.SchemaError as e:
+            print(f"[financials] {symbol}: {e}")
+            rejected += 1
+            continue
         if row is not None and not row.empty:
             frames.append(row)
+    if rejected and dq.status_for(len(frames), rejected) == "degraded":
+        raise dq.SchemaError(
+            f"[Company.ratio_summary] {rejected}/{len(symbols)} mã sai schema "
+            "— nguồn có thể đã đổi"
+        )
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
@@ -308,6 +326,7 @@ def _normalize_financials(df, symbol) -> pd.DataFrame:
 def fetch_company_info(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
     global _printed_info_cols
     frames = []
+    rejected = 0
     for symbol in symbols:
         ingest._throttle()
         try:
@@ -321,9 +340,22 @@ def fetch_company_info(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
         if not _printed_info_cols:
             print(f"[company_info] cột thật ({symbol}): {list(df.columns)}")
             _printed_info_cols = True
-        row = _normalize_company(df, symbol)
+        # Cùng lý do bắt SchemaError theo từng mã như fetch_financials: một
+        # mã trong ~1.598 mã thiếu com_group_code/icb_code_lv2 không được
+        # phép xoá sổ cả job monthly (~28 phút fetch với _throttle 1,05s/call).
+        try:
+            row = _normalize_company(df, symbol)
+        except dq.SchemaError as e:
+            print(f"[company_info] {symbol}: {e}")
+            rejected += 1
+            continue
         if row is not None and not row.empty:
             frames.append(row)
+    if rejected and dq.status_for(len(frames), rejected) == "degraded":
+        raise dq.SchemaError(
+            f"[Company.overview] {rejected}/{len(symbols)} mã sai schema — "
+            "nguồn có thể đã đổi"
+        )
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
@@ -337,10 +369,17 @@ _COMPANY_REQUIRED = ["symbol", "com_group_code", "icb_code_lv2"]
 # thật. Chuẩn hoá về HOSE/HNX/UPCOM để khớp config/warehouse.yml (lọc theo
 # đúng các giá trị này), nếu không dim_symbols.exchange sẽ chứa "VNINDEX"
 # thay vì NULL — sai dữ liệu chứ không sửa được bug lọc sàn.
+# "OTC" xác minh bằng API thật (controller dò toàn bộ 219 mã có exchange
+# NULL, 2026-08-10): 185/219 có com_group_code == "OTC" — giao dịch phi tập
+# trung, ngoài ba sàn niêm yết/UPCOM. Map thành "OTC" (không phải None):
+# OTC là một nơi giao dịch hợp lệ, riêng biệt — biết mã đó ở OTC trung thực
+# hơn NULL, và cho phép tầng phân tích lọc exchanges: [HOSE, HNX] loại các
+# mã này ra một cách có chủ đích (biết và loại) thay vì loại vì không biết.
 _COM_GROUP_TO_EXCHANGE = {
     "VNINDEX": "HOSE",
     "HNXINDEX": "HNX",
     "UPCOMINDEX": "UPCOM",
+    "OTC": "OTC",
 }
 
 

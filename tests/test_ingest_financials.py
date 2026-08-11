@@ -192,13 +192,63 @@ def test_fetch_company_info_skips_failed_continues():
 
 
 def test_fetch_company_info_missing_symbol_column_raises():
+    """1/1 mã sai schema = 100% > ngưỡng degraded (5%) -> raise. Thông báo giờ
+    là thông báo TỔNG HỢP (tỉ lệ mã lỗi), không còn lặp lại chi tiết cột thiếu
+    của một mã cụ thể — xem C2/finding review cuối: một mã lỗi bị bắt và đếm
+    riêng, chỉ raise (to, tổng hợp) khi tỉ lệ vượt ngưỡng."""
     bad = pd.DataFrame([{"organ_name": "X"}])
     with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
         MockCo.return_value.overview.return_value = bad
         with pytest.raises(dq.SchemaError) as exc:
             fetch_company_info(["HPG"])
-    assert "com_group_code" in str(exc.value) or "icb_code_lv2" in str(exc.value)
+    assert "1/1" in str(exc.value)
+    assert "sai schema" in str(exc.value)
+
+
+def test_fetch_company_info_one_bad_symbol_among_many_is_skipped_not_raised():
+    """Một mã dị thường (thiếu cột bắt buộc) giữa 20 mã tốt -> 1/21 ~ 4.76% <
+    ngưỡng degraded 5% -> mã đó bị bỏ qua (KHÔNG raise), 20 mã còn lại vẫn trả
+    về đầy đủ. Đây là kịch bản Critical đã được xác minh: trước bản sửa này,
+    một mã lẻ lỗi làm mất trắng cả job monthly (~28 phút fetch)."""
+    good_symbols = [f"S{i:03d}" for i in range(1, 21)]
+
+    def side_effect_factory(symbol, source):
+        mock = MagicMock()
+        if symbol == "BAD":
+            mock.overview.return_value = pd.DataFrame([{"organ_name": "X"}])
+        else:
+            df = _mock_company_overview()
+            df.loc[0, "symbol"] = symbol
+            mock.overview.return_value = df
+        return mock
+
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+         patch("src.ingest_market.ingest._throttle"):
+        result = fetch_company_info(["BAD"] + good_symbols)
+    assert len(result) == 20
+    assert "BAD" not in set(result["symbol"])
+    assert set(result["symbol"]) == set(good_symbols)
+
+
+def test_fetch_company_info_majority_bad_symbols_raises():
+    """Đa số mã (3/4 = 75%) sai schema -> nguồn có thể đã đổi -> raise to,
+    KHÔNG âm thầm trả về 1 mã tốt còn lại."""
+    def side_effect_factory(symbol, source):
+        mock = MagicMock()
+        if symbol == "GOOD":
+            df = _mock_company_overview()
+            df.loc[0, "symbol"] = symbol
+            mock.overview.return_value = df
+        else:
+            mock.overview.return_value = pd.DataFrame([{"organ_name": "X"}])
+        return mock
+
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+         patch("src.ingest_market.ingest._throttle"):
+        with pytest.raises(dq.SchemaError) as exc:
+            fetch_company_info(["BAD1", "BAD2", "BAD3", "GOOD"])
+    assert "3/4" in str(exc.value)
 
 
 def test_fetch_company_info_empty_on_exception():
@@ -207,6 +257,16 @@ def test_fetch_company_info_empty_on_exception():
         MockCo.return_value.overview.side_effect = Exception("API down")
         result = fetch_company_info(["HPG"])
     assert result.empty
+
+
+def test_map_exchange_maps_otc_to_otc_not_none():
+    """com_group_code == 'OTC' — xác minh bằng controller dò toàn bộ 219 mã
+    exchange NULL trên production (2026-08-10): 185/219 là 'OTC'. Đây là một
+    nơi giao dịch hợp lệ, riêng biệt (phi tập trung, ngoài 3 sàn niêm yết) —
+    map thành 'OTC' trung thực hơn None, và không được coi là giá trị lạ
+    (không được kích hoạt cảnh báo _warned_unknown_exchange)."""
+    assert im._map_exchange("OTC") == "OTC"
+    assert im._map_exchange("otc") == "OTC"   # không phân biệt hoa/thường
 
 
 def test_map_exchange_translates_real_api_index_names():
@@ -326,13 +386,62 @@ def test_fetch_financials_returns_all_ratio_columns():
 
 
 def test_fetch_financials_missing_year_column_raises():
+    """1/1 mã sai schema = 100% > ngưỡng degraded (5%) -> raise. Thông báo giờ
+    là thông báo TỔNG HỢP (tỉ lệ mã lỗi) — xem C2/finding review cuối."""
     bad = pd.DataFrame([{"symbol": "AAA", "quarter": 1, "pe": 10.0}])
     with patch("src.ingest_market.Company") as MockCo, \
          patch("src.ingest_market.ingest._throttle"):
         MockCo.return_value.ratio_summary.return_value = bad
         with pytest.raises(dq.SchemaError) as exc:
             fetch_financials(["AAA"])
-    assert "year" in str(exc.value)
+    assert "1/1" in str(exc.value)
+    assert "sai schema" in str(exc.value)
+
+
+def test_fetch_financials_one_bad_symbol_among_many_is_skipped_not_raised():
+    """Một mã dị thường giữa 20 mã tốt -> 1/21 ~ 4.76% < ngưỡng degraded 5%
+    -> mã đó bị bỏ qua (KHÔNG raise), 20 mã còn lại vẫn trả về đầy đủ."""
+    good_symbols = [f"S{i:03d}" for i in range(1, 21)]
+
+    def side_effect_factory(symbol, source):
+        mock = MagicMock()
+        if symbol == "BAD":
+            mock.ratio_summary.return_value = pd.DataFrame(
+                [{"symbol": "BAD", "quarter": 1, "pe": 10.0}]
+            )
+        else:
+            df = _mock_ratio_summary()
+            df["symbol"] = symbol
+            mock.ratio_summary.return_value = df
+        return mock
+
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+         patch("src.ingest_market.ingest._throttle"):
+        result = fetch_financials(["BAD"] + good_symbols)
+    assert "BAD" not in set(result["symbol"])
+    assert set(result["symbol"]) == set(good_symbols)
+
+
+def test_fetch_financials_majority_bad_symbols_raises():
+    """Đa số mã (3/4 = 75%) sai schema -> raise to, KHÔNG âm thầm trả về 1 mã
+    tốt còn lại."""
+    def side_effect_factory(symbol, source):
+        mock = MagicMock()
+        if symbol == "GOOD":
+            df = _mock_ratio_summary()
+            df["symbol"] = symbol
+            mock.ratio_summary.return_value = df
+        else:
+            mock.ratio_summary.return_value = pd.DataFrame(
+                [{"symbol": symbol, "quarter": 1, "pe": 10.0}]
+            )
+        return mock
+
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+         patch("src.ingest_market.ingest._throttle"):
+        with pytest.raises(dq.SchemaError) as exc:
+            fetch_financials(["BAD1", "BAD2", "BAD3", "GOOD"])
+    assert "3/4" in str(exc.value)
 
 
 def test_upsert_financial_ratios_roundtrip(tmp_path):

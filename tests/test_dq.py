@@ -91,3 +91,33 @@ def test_ensure_columns_adds_missing_only_and_is_idempotent(tmp_path):
     assert added_first == 2      # chỉ b và c là cột mới, a đã có sẵn
     assert added_second == 0     # chạy lại không thêm gì nữa
     assert cols == {"a", "b", "c"}
+
+
+def test_ensure_columns_ignores_same_named_table_in_other_attached_catalog(tmp_path):
+    """I2 (review cuối) — xác minh trực tiếp trên DuckDB: information_schema
+    .columns không tự lọc theo catalog/schema hiện tại. Trên MotherDuck,
+    MỘT database KHÁC được ATTACH (kể cả sample_data mà MotherDuck tự ATTACH
+    cho mọi kết nối) có thể có bảng CÙNG TÊN với cột 'brand_new_col' đã tồn
+    tại — nếu _ensure_columns không lọc catalog/schema, nó sẽ tưởng cột đã
+    có trong bảng của database HIỆN TẠI và bỏ qua ALTER TABLE, khiến bảng
+    thật thiếu cột và upsert sau đó chết vì BinderException."""
+    con = duckdb.connect(str(tmp_path / "t4.duckdb"))
+    con.execute("CREATE TABLE t (a INTEGER)")
+    con.execute("ATTACH ':memory:' AS other_db")
+    con.execute("CREATE TABLE other_db.main.t (a INTEGER, brand_new_col DOUBLE)")
+
+    added = warehouse._ensure_columns(con, "t", {"brand_new_col": "DOUBLE"})
+
+    own_cols = {
+        r[0]
+        for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 't' AND table_catalog = current_database() "
+            "AND table_schema = current_schema()"
+        ).fetchall()
+    }
+    con.close()
+    # Phải thêm brand_new_col vào bảng CỦA DATABASE HIỆN TẠI -- không được
+    # bị đánh lừa bởi cột cùng tên ở other_db.
+    assert added == 1
+    assert own_cols == {"a", "brand_new_col"}

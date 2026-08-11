@@ -29,22 +29,45 @@ load_dotenv()
 
 import argparse
 
-from src import ingest_market, warehouse
+from src import dq, ingest_market, warehouse
 
 JOB_NAME = "migration_financial_ratio_v3_50cols"
 BACKUP = "raw_financial_ratio_v1_backup"
 
 
 def _table_exists(con, name: str) -> bool:
+    """information_schema.tables không tự lọc theo catalog/schema hiện tại —
+    trên MotherDuck, một bảng CÙNG TÊN ở database khác (vd. sample_data mà
+    MotherDuck tự ATTACH cho mọi kết nối, hoặc một database khác được ATTACH
+    thủ công) sẽ hiện ra trong truy vấn không lọc này. Hướng hỏng nguy hiểm
+    nhất: step_rename tưởng BACKUP đã tồn tại (thật ra ở catalog khác) rồi
+    bỏ qua rename, sau đó step_verify truy vấn `{BACKUP}` không qualify catalog
+    có thể đọc nhầm bảng đó -> quyết định DROP TABLE dựa trên số liệu sai.
+    Lọc thêm current_database()/current_schema() để chỉ thấy bảng của đúng
+    kết nối hiện tại."""
     return bool(con.execute(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = ?",
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_name = ? AND table_catalog = current_database() "
+        "AND table_schema = current_schema()",
         [name],
     ).fetchone()[0])
 
 
 def step_rename(con):
     if _table_exists(con, BACKUP):
-        print(f"{BACKUP} đã tồn tại — bỏ qua bước rename.")
+        # In số dòng của CẢ HAI bảng: giúp vận hành phân biệt "đã migrate
+        # xong" (raw_financial_ratio có dữ liệu, BACKUP giữ bản cũ) với
+        # "backup sót lại từ lần thử trước" (raw_financial_ratio rỗng/ít dòng
+        # vì reload chưa chạy hoặc chạy hỏng) — chỉ in một dòng "đã tồn tại"
+        # không đủ để chẩn đoán tình huống nào đang xảy ra.
+        old_n = con.execute(f"SELECT count(*) FROM {BACKUP}").fetchone()[0]
+        new_n = con.execute(
+            "SELECT count(*) FROM raw_financial_ratio"
+        ).fetchone()[0]
+        print(
+            f"{BACKUP} đã tồn tại ({old_n} dòng) — bỏ qua bước rename. "
+            f"raw_financial_ratio hiện có {new_n} dòng."
+        )
         return
     n = con.execute("SELECT count(*) FROM raw_financial_ratio").fetchone()[0]
     con.execute(f"ALTER TABLE raw_financial_ratio RENAME TO {BACKUP}")
@@ -66,7 +89,19 @@ def step_reload(con):
     batch = 50
     for i in range(0, len(symbols), batch):
         chunk = symbols[i:i + batch]
-        df = ingest_market.fetch_financials(chunk)
+        # fetch_financials có thể raise dq.SchemaError nếu tỉ lệ mã sai schema
+        # trong CHÍNH chunk này vượt ngưỡng degraded (xem C2/review cuối) —
+        # bắt ở đây để một chunk lỗi không giết cả bước reload (10 năm dữ
+        # liệu của các chunk khác đã nạp thành công trước đó), đếm nguyên
+        # chunk vào failed_symbols giống nhánh "CHUNK LỖI" bên dưới.
+        try:
+            df = ingest_market.fetch_financials(chunk)
+        except dq.SchemaError as e:
+            failed_chunks += 1
+            failed_symbols += len(chunk)
+            print(f"  {i + len(chunk)}/{len(symbols)} mã — CHUNK LỖI (SchemaError: "
+                  f"{e}), tổng vẫn {total} dòng")
+            continue
         if df.empty:
             failed_chunks += 1
             failed_symbols += len(chunk)

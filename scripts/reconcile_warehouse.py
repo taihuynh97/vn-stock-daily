@@ -32,6 +32,10 @@ def _scalar(con, sql: str):
     return con.execute(sql).fetchone()[0]
 
 
+MIN_BANKS_WITH_METRICS = 25   # sàn tối thiểu số NH có đủ 3 chỉ tiêu ở kỳ mới nhất
+INDEX_CLOSE_MAX = 5000        # VNINDEX chưa từng vượt mốc này (2026)
+
+
 def check_layer_counts(con) -> list[dict]:
     """Đếm số mã/số dòng qua từng bảng, so với dim_symbols."""
     total = _scalar(con, "SELECT count(*) FROM dim_symbols WHERE is_active")
@@ -40,8 +44,17 @@ def check_layer_counts(con) -> list[dict]:
     for name, sql in [
         ("raw_price_daily_symbols",
          "SELECT count(DISTINCT symbol) FROM raw_price_daily"),
-        ("raw_company_info_symbols",
-         "SELECT count(*) FROM raw_company_info"),
+        # count(DISTINCT symbol) GIAO với is_active — KHÔNG count(*) đơn
+        # thuần: raw_company_info là bảng chỉ tăng (INSERT OR REPLACE theo
+        # symbol, không xoá), nên count(*) đạt ngưỡng vĩnh viễn ngay từ lần
+        # nạp đầu ngay cả khi hàng trăm mã ĐANG HOẠT ĐỘNG thiếu hồ sơ ở lần
+        # nạp sau — cổng gác này bảo vệ tính đúng đắn của việc khử sentinel
+        # ở mảng A2 (dbt đọc raw_company_info theo is_active).
+        ("raw_company_info_symbols", """
+            SELECT count(DISTINCT c.symbol) FROM raw_company_info c
+            JOIN dim_symbols d ON d.symbol = c.symbol
+            WHERE d.is_active
+        """),
         ("raw_financial_ratio_symbols",
          "SELECT count(DISTINCT symbol) FROM raw_financial_ratio"),
     ]:
@@ -56,6 +69,23 @@ def check_layer_counts(con) -> list[dict]:
     idx = _scalar(con, "SELECT count(DISTINCT index_code) FROM raw_index_daily")
     rows.append({"check": "raw_index_daily_codes", "value": idx, "expected": 3,
                  "ok": idx >= 3})
+
+    # Bất biến quan trọng nhất của I7: hàng phòng thủ tự động chống lỗi đơn
+    # vị ×1000 trên VNINDEX (đúng lớp lỗi mà fetch_index_history được tách
+    # riêng, KHÔNG nhân 1000, để phòng — xem docstring hàm đó). Trước bản sửa
+    # này, lớp lỗi này chỉ được canh bởi một unit test trên dữ liệu mock;
+    # không có gì canh dữ liệu THẬT trong warehouse. reconcile_warehouse
+    # chạy hằng tháng, mãi mãi — nên đây phải là kiểm tra tự động, không chỉ
+    # test. NULL (chưa có dữ liệu VNINDEX) không tính là fail — đã được canh
+    # riêng bởi raw_index_daily_codes ở trên.
+    vnindex_max_close = _scalar(
+        con, "SELECT max(close) FROM raw_index_daily WHERE index_code = 'VNINDEX'"
+    )
+    rows.append({
+        "check": "index_close_in_range", "value": vnindex_max_close,
+        "expected": f"< {INDEX_CLOSE_MAX}",
+        "ok": vnindex_max_close is None or vnindex_max_close < INDEX_CLOSE_MAX,
+    })
 
     exch = _scalar(con,
                    "SELECT count(*) FROM dim_symbols WHERE exchange IS NOT NULL")
@@ -79,7 +109,45 @@ def check_layer_counts(con) -> list[dict]:
         "ok": total > 0 and missing_ratio <= total * (1 - MIN_COVERAGE),
     })
 
+    # Chỉ tiêu ngân hàng: bao nhiêu mã is_bank có ĐỦ CẢ BA chỉ tiêu ngân
+    # hàng cốt lõi (net_interest_margin, npl, cir) khác NULL ở kỳ (year,
+    # quarter) MỚI NHẤT của chính mã đó trong raw_financial_ratio.
+    banks_ok = _scalar(con, """
+        WITH latest AS (
+            SELECT *, row_number() OVER (
+                PARTITION BY symbol ORDER BY year DESC, quarter DESC
+            ) AS rn
+            FROM raw_financial_ratio
+        )
+        SELECT count(*) FROM latest l
+        JOIN raw_company_info c ON c.symbol = l.symbol
+        WHERE l.rn = 1 AND c.is_bank
+          AND l.net_interest_margin IS NOT NULL
+          AND l.npl IS NOT NULL
+          AND l.cir IS NOT NULL
+    """)
+    rows.append({
+        "check": "banks_with_metrics", "value": banks_ok,
+        "expected": MIN_BANKS_WITH_METRICS,
+        "ok": banks_ok >= MIN_BANKS_WITH_METRICS,
+    })
+
     return rows
+
+
+# Chỉ tiêu dùng để đối chiếu chéo với API — CHỈ chỉ tiêu CƠ BẢN THUẦN, KHÔNG
+# phụ thuộc giá thị trường. C4 (review cuối, xác minh trên production
+# 2026-08-10): market_cap/pe/pb/ps đều TỶ LỆ VỚI market_cap, mà market_cap
+# được API tính từ giá thị trường TẠI THỜI ĐIỂM GỌI API — không phải tại
+# thời điểm warehouse nạp. Chạy `--sample 5` thật: 4/5 mã lệch cho ĐÚNG cùng
+# kỳ 2026Q2, ví dụ MTV lệch 7.41% (giá dịch chuyển một ngày, mã vốn hoá nhỏ
+# nhảy mạnh), PDR lệch 1.65% — market_cap/pe/pb/ps của MỖI mã lệch CÙNG một
+# tỉ lệ đúng đến từng chữ số vì cùng chia cho market_cap. roe/roa lệch đúng
+# 0.00% vì đây là chỉ tiêu cơ bản thuần. reconcile_warehouse chạy trong
+# workflow monthly với sys.exit(1) — so cả pe sẽ làm nó đỏ gần như mọi lần
+# chạy (hầu hết mã dịch giá >1%/ngày), và một cổng báo động sai liên tục thì
+# tệ hơn không có cổng vì người ta sẽ học cách bỏ qua nó.
+_COMPARE_COLS = ["roe", "roa"]
 
 
 def check_against_source(con, symbols: list[str]) -> list[dict]:
@@ -96,11 +164,15 @@ def check_against_source(con, symbols: list[str]) -> list[dict]:
     được chấp nhận ở check_layer_counts qua check symbols_missing_ratio dựa
     trên toàn bộ mã, không phải mẫu ngẫu nhiên 5 mã nên không nên đỏ CI ngẫu
     nhiên vì trúng đúng mã chưa có tỷ số).
+
+    Chỉ so `_COMPARE_COLS` (roe, roa) — KHÔNG so pe/pb/ps/market_cap, các
+    chỉ tiêu phụ thuộc giá thị trường tại thời điểm gọi API (xem C4/review
+    cuối ở comment trên _COMPARE_COLS).
     """
     out = []
     for sym in symbols:
         wh_row = con.execute(
-            "SELECT year, quarter, pe, roe FROM raw_financial_ratio "
+            "SELECT year, quarter, roe, roa FROM raw_financial_ratio "
             "WHERE symbol = ? ORDER BY year DESC, quarter DESC LIMIT 1",
             [sym],
         ).fetchone()
@@ -116,7 +188,7 @@ def check_against_source(con, symbols: list[str]) -> list[dict]:
             })
             continue
 
-        wh_year, wh_quarter, wh_pe, wh_roe = wh_row
+        wh_year, wh_quarter, wh_roe, wh_roa = wh_row
         api = ingest_market.fetch_financials([sym])
         if api.empty:
             out.append({
@@ -146,7 +218,7 @@ def check_against_source(con, symbols: list[str]) -> list[dict]:
 
         api_row = match.iloc[-1]
         drift = []
-        for wh_val, col in [(wh_pe, "pe"), (wh_roe, "roe")]:
+        for wh_val, col in [(wh_roe, "roe"), (wh_roa, "roa")]:
             b = api_row[col]
             if wh_val is None or pd.isna(b):
                 continue
@@ -155,7 +227,10 @@ def check_against_source(con, symbols: list[str]) -> list[dict]:
         worst = max(drift) if drift else 0.0
         out.append({
             "symbol": sym, "check": "ratio_latest",
-            "detail": f"kỳ warehouse {wh_year}Q{wh_quarter}, lệch tối đa {worst:.4f}",
+            "detail": (
+                f"kỳ warehouse {wh_year}Q{wh_quarter}, so {', '.join(_COMPARE_COLS)} "
+                f"(bỏ pe/pb/ps/market_cap — phụ thuộc giá, xem C4), lệch tối đa {worst:.4f}"
+            ),
             # bool(...): worst có thể là numpy.float64 (đọc từ pandas Series),
             # so sánh sẽ ra numpy.bool_ — ép về Python bool để nhất quán với
             # kiểu dữ liệu của check_layer_counts() và an toàn khi so `is True/False`.
