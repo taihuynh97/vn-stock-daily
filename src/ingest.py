@@ -5,13 +5,15 @@ sửa 1 file. Mọi hàm đều bọc try/except và trả về giá trị an to
 không vỡ khi một mã hay một nguồn lỗi.
 """
 from datetime import date, timedelta
+import os as _os
 import time
 import pandas as pd
 
 # Guest tier: 20 req/phút → cần ≥3s giữa các call.
-# Community (API key): 60 req/phút → ~1s, nhưng 3s vẫn an toàn cho cả hai.
+# Community (API key): 60 req/phút → ~1,05s.
+# Đặt VNSTOCK_MIN_INTERVAL=1.05 khi có key Community để nạp lại nhanh hơn 3 lần.
 _last_call_time: float = 0.0
-_MIN_CALL_INTERVAL = 3.1  # giây
+_MIN_CALL_INTERVAL = float(_os.getenv("VNSTOCK_MIN_INTERVAL", "3.1"))
 
 
 def _throttle() -> None:

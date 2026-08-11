@@ -72,6 +72,16 @@ def main():
                            "ok" if n_px else "empty", watermark=run_date)
         print(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
 
+    # 2b) Chỉ số thị trường — mọi mode
+    if ingest_market.is_trading_day(date.today()):
+        n_idx = 0
+        for code in cfg.get("indices", []):
+            idx_df = ingest_market.fetch_index_history(code, run_date, run_date, source)
+            n_idx += warehouse.upsert_index_prices(con, idx_df)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_index_daily", n_idx,
+                           "ok" if n_idx else "empty", watermark=run_date)
+        print(f"raw_index_daily: {n_idx} dòng")
+
     # 3) Financial ratios — weekly và monthly
     if args.mode in ("weekly", "monthly"):
         print(f"Bắt đầu fetch financials ({len(symbols)} mã)...")
@@ -81,14 +91,25 @@ def main():
                            "ok" if n_fin else "empty", watermark=run_date)
         print(f"raw_financial_ratio: {n_fin} dòng")
 
-    # 4) Company info — monthly only
+    # 4) Dim_industry (phân ngành ICB) + company info — monthly only
     if args.mode == "monthly":
+        ind = ingest_market.fetch_industries_icb(source)
+        n_ind = warehouse.upsert_industries(con, ind)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "dim_industry", n_ind,
+                           "ok" if n_ind else "empty", watermark=run_date)
+        print(f"dim_industry: {n_ind} ngành ICB")
+
         print(f"Bắt đầu fetch company info ({len(symbols)} mã)...")
         info = ingest_market.fetch_company_info(symbols, source)
         n_info = warehouse.upsert_company_info(con, info)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_company_info", n_info,
                            "ok" if n_info else "empty", watermark=run_date)
         print(f"raw_company_info: {n_info} mã")
+        n_exch = warehouse.update_symbol_exchanges(con)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "dim_symbols", n_exch,
+                           "ok" if n_exch else "empty", watermark=run_date,
+                           notes="sync exchange tu raw_company_info")
+        print(f"dim_symbols.exchange: cập nhật {n_exch} mã")
 
     con.close()
     print(f"Xong warehouse job ({args.mode}).")

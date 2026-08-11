@@ -18,6 +18,52 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = str(ROOT / "data" / "warehouse.duckdb")
 
+# --- Cột raw_financial_ratio (nguồn: Company.ratio_summary, 61 cột) ---
+# Loại bỏ có chủ đích: financial_leverage (≡ debt_to_equity, xác minh HPG),
+# cost_to_income (≡ cir, xác minh VCB), owners_equity (ngữ nghĩa không rõ),
+# ratio_ttm_id / ratio_year_id / organ_code / year_report / equity /
+# loans_loss_reserves_to_np_ls / nob66 / nob69 / nob70 / bsb113.
+# Nhóm COMMON = có giá trị THẬT ở cả ngân hàng lẫn phi tài chính (xác minh
+# VCB vs HPG). Nhóm NONFIN/BANK = bên còn lại trả sentinel 0.0 hoặc None.
+RATIO_COMMON = [
+    "market_cap", "number_of_shares_mkt_cap", "dividend_yield",
+    "pe", "pb", "ps", "roe", "roa", "debt_to_equity",
+    "gross_margin", "pre_tax_profit_margin", "after_tax_profit_margin",
+    "price_to_cash_flow",   # VCB 2,20 — giá trị thật, KHÔNG phải sentinel
+]
+RATIO_NONFIN = [
+    "roic", "ev_to_ebitda",
+    "current_ratio", "quick_ratio", "cash_ratio", "ebit_margin",
+    "asset_turnover", "fixed_asset_turnover", "cash_cycle",
+    "day_sale_outstanding", "days_inventory_outstanding",
+    "days_payable_outstanding", "ebit", "ebitda", "debt_per_equity",
+]
+RATIO_BANK = [
+    "net_interest_margin", "average_yield_on_earning_assets",
+    "average_cost_of_financing", "non_and_interest_income", "cir",
+    "loans_growth", "deposit_growth", "equity_to_liabilities",
+    "equity_to_loans", "total_equity_total_asset", "ldr_loan_deposit_ratio",
+    "npl", "loans_loss_reserve_to_loans", "provision_to_outstanding_loans",
+    "car", "casa_ratio",
+]
+RATIO_NUM_COLS = RATIO_COMMON + RATIO_NONFIN + RATIO_BANK          # 44
+RATIO_ALL_COLS = [
+    "symbol", "year", "quarter", "period_type", "ratio_type",
+] + RATIO_NUM_COLS                                                  # 49
+
+# --- Cột raw_company_info (nguồn: Company.overview, 37 cột) ---
+# Không lấy: analyst, target_price, upside_to_target_percent,
+# projected_tsr_percentage, rating — là khuyến nghị của bên thứ ba, không
+# phải dữ kiện; đưa vào sẽ khiến agent trích dẫn nhầm thành phân tích riêng.
+COMPANY_COLS = [
+    "symbol", "company_name", "short_name", "exchange", "com_type_code",
+    "is_bank", "icb_code_lv2", "icb_code_lv4", "sector",
+    "market_cap", "issue_share", "free_float_percentage",
+    "foreigner_percentage", "maximum_foreign_percentage", "state_percentage",
+    "avg_match_value_1m", "avg_match_volume_1m",
+    "highest_price_1y", "lowest_price_1y", "listed_date",
+]
+
 
 def get_conn():
     db = os.getenv("WAREHOUSE_DB", DEFAULT_DB)
@@ -25,6 +71,59 @@ def get_conn():
         return duckdb.connect(db)  # MotherDuck tự đọc motherduck_token từ env
     Path(db).parent.mkdir(parents=True, exist_ok=True)
     return duckdb.connect(db)
+
+
+def _ensure_column(con, table: str, column: str, ddl_type: str) -> None:
+    """Thêm cột nếu chưa có (migration nhẹ, chạy lại an toàn).
+
+    information_schema.columns không tự lọc theo catalog/schema hiện tại —
+    trên MotherDuck, mọi database ATTACH được (kể cả sample_data mà
+    MotherDuck tự attach cho mọi kết nối) đều hiện ra trong cùng truy vấn
+    không lọc, nên table_name trùng tên ở catalog khác có thể khiến hàm này
+    tưởng cột đã tồn tại trong khi thực ra không phải ở đúng database/schema
+    đang dùng. Lọc thêm table_catalog/table_schema để chỉ thấy bảng của kết
+    nối hiện tại. Dùng ADD COLUMN IF NOT EXISTS để tự idempotent luôn, không
+    phụ thuộc riêng vào kết quả tra existing (tránh CatalogException khi hai
+    tiến trình cùng chạy init_warehouse song song)."""
+    existing = {
+        r[0]
+        for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = ? AND table_catalog = current_database() "
+            "AND table_schema = current_schema()",
+            [table],
+        ).fetchall()
+    }
+    if column not in existing:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl_type}")
+
+
+def _ensure_columns(con, table: str, columns: dict[str, str]) -> int:
+    """Thêm các cột còn thiếu trong `columns` ({tên: kiểu_ddl}).
+
+    Khác _ensure_column (số ít): tra information_schema MỘT LẦN cho cả batch
+    thay vì một truy vấn riêng cho từng cột — init_warehouse gọi tới 45 lần
+    cho raw_financial_ratio + 20 lần cho raw_company_info, tức hàng chục
+    round-trip mạng tới MotherDuck mỗi lần khởi động warehouse nếu dùng
+    _ensure_column cho từng cột. Trả về số cột đã thêm.
+
+    Cùng lý do lọc catalog/schema và dùng ADD COLUMN IF NOT EXISTS như
+    _ensure_column ở trên."""
+    existing = {
+        r[0]
+        for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = ? AND table_catalog = current_database() "
+            "AND table_schema = current_schema()",
+            [table],
+        ).fetchall()
+    }
+    added = 0
+    for column, ddl_type in columns.items():
+        if column not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl_type}")
+            added += 1
+    return added
 
 
 def init_warehouse(con):
@@ -59,42 +158,114 @@ def init_warehouse(con):
             watermark    VARCHAR,
             notes        VARCHAR
         );
-        CREATE TABLE IF NOT EXISTS raw_financial_ratio (
-            symbol                   VARCHAR,
-            year                     INTEGER,
-            quarter                  INTEGER,  -- 1-4 = TTM kết thúc tại quý đó, 5 = cả năm
-            period_type              VARCHAR,  -- 'quarter' | 'year'
-            market_cap               DOUBLE,
-            pe                       DOUBLE,
-            pb                       DOUBLE,
-            ps                       DOUBLE,
-            dividend_yield           DOUBLE,
-            roe                      DOUBLE,
-            roa                      DOUBLE,
-            roic                     DOUBLE,
-            debt_to_equity           DOUBLE,
-            current_ratio            DOUBLE,
-            gross_margin             DOUBLE,
-            ebit_margin              DOUBLE,
-            after_tax_profit_margin  DOUBLE,
-            loaded_at                TIMESTAMP,
-            PRIMARY KEY (symbol, year, quarter)
+        CREATE TABLE IF NOT EXISTS dim_industry (
+            icb_code    VARCHAR PRIMARY KEY,
+            icb_name    VARCHAR,
+            en_icb_name VARCHAR,
+            level       INTEGER,
+            loaded_at   TIMESTAMP
         );
-        CREATE TABLE IF NOT EXISTS raw_company_info (
-            symbol        VARCHAR PRIMARY KEY,
-            company_name  VARCHAR,
-            exchange      VARCHAR,
-            industry_icb  VARCHAR,
-            sector        VARCHAR,
-            listed_date   DATE,
-            loaded_at     TIMESTAMP
+        CREATE TABLE IF NOT EXISTS raw_index_daily (
+            index_code VARCHAR,
+            trade_date DATE,
+            open       DOUBLE,
+            high       DOUBLE,
+            low        DOUBLE,
+            close      DOUBLE,
+            volume     BIGINT,
+            loaded_at  TIMESTAMP,
+            PRIMARY KEY (index_code, trade_date)
         );
         """
+    )
+    ratio_cols_ddl = ",\n            ".join(f"{c} DOUBLE" for c in RATIO_NUM_COLS)
+    con.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS raw_financial_ratio (
+            symbol      VARCHAR,
+            year        INTEGER,
+            quarter     INTEGER,
+            period_type VARCHAR,
+            ratio_type  VARCHAR,
+            {ratio_cols_ddl},
+            loaded_at   TIMESTAMP,
+            PRIMARY KEY (symbol, year, quarter)
+        );
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_company_info (
+            symbol                     VARCHAR PRIMARY KEY,
+            company_name               VARCHAR,
+            short_name                 VARCHAR,
+            exchange                   VARCHAR,
+            com_type_code              VARCHAR,
+            is_bank                    BOOLEAN,
+            icb_code_lv2               VARCHAR,
+            icb_code_lv4               VARCHAR,
+            sector                     VARCHAR,
+            market_cap                 DOUBLE,
+            issue_share                DOUBLE,
+            free_float_percentage      DOUBLE,
+            foreigner_percentage       DOUBLE,
+            maximum_foreign_percentage DOUBLE,
+            state_percentage           DOUBLE,
+            avg_match_value_1m         DOUBLE,
+            avg_match_volume_1m        DOUBLE,
+            highest_price_1y           DOUBLE,
+            lowest_price_1y            DOUBLE,
+            listed_date                DATE,
+            loaded_at                  TIMESTAMP
+        );
+        """
+    )
+    # Bảng raw_financial_ratio có thể đã tồn tại từ trước (schema cũ 13 cột,
+    # vd. trên MotherDuck production) — CREATE TABLE IF NOT EXISTS ở trên sẽ
+    # no-op trong trường hợp đó. Dùng _ensure_columns (tra information_schema
+    # một lần cho cả batch, không phải 45 lần) để migrate thêm các cột mới
+    # (an toàn, chạy lại nhiều lần được), tránh BinderException khi
+    # upsert_financial_ratios ghi vào cột chưa tồn tại trên bảng cũ.
+    # loaded_at thêm vào bộ cột được đảm bảo (không chỉ các cột của
+    # RATIO_NUM_COLS): nếu một bảng cũ trên production thiếu hẳn cột này,
+    # upsert_financial_ratios sẽ chết bằng InternalException của DuckDB (C++
+    # stack trace, rất khó chẩn đoán) ngay tại câu SELECT ... now() AS
+    # loaded_at khi INSERT vào cột không tồn tại.
+    _ratio_ddl_types = {"ratio_type": "VARCHAR", "loaded_at": "TIMESTAMP"}
+    _ratio_ddl_types.update({col: "DOUBLE" for col in RATIO_NUM_COLS})
+    _ensure_columns(con, "raw_financial_ratio", _ratio_ddl_types)
+    _ensure_column(con, "etl_load_log", "rows_rejected", "BIGINT")
+    # raw_company_info cũng đã tồn tại từ trước (schema cũ 7 cột trên
+    # MotherDuck) — migrate thêm các cột mới của COMPANY_COLS tương tự trên.
+    # Cùng lý do loaded_at ở trên: đảm bảo cả cột này dù nó không nằm trong
+    # COMPANY_COLS (được thêm riêng lúc upsert_company_info).
+    _company_ddl_types = {
+        "is_bank": "BOOLEAN", "market_cap": "DOUBLE", "issue_share": "DOUBLE",
+        "free_float_percentage": "DOUBLE", "foreigner_percentage": "DOUBLE",
+        "maximum_foreign_percentage": "DOUBLE", "state_percentage": "DOUBLE",
+        "avg_match_value_1m": "DOUBLE", "avg_match_volume_1m": "DOUBLE",
+        "highest_price_1y": "DOUBLE", "lowest_price_1y": "DOUBLE",
+        "listed_date": "DATE",
+    }
+    _ensure_columns(
+        con, "raw_company_info",
+        {col: _company_ddl_types.get(col, "VARCHAR") for col in COMPANY_COLS}
+        | {"loaded_at": "TIMESTAMP"},
     )
 
 
 def upsert_symbols(con, df, run_date) -> int:
-    """Cập nhật dim_symbols. Giữ nguyên first_seen, cập nhật last_seen."""
+    """Cập nhật dim_symbols. Giữ nguyên first_seen, cập nhật last_seen.
+
+    COALESCE(excluded.exchange, dim_symbols.exchange) — KHÔNG ghi đè bằng
+    NULL: refresh_universe (job daily, T2-T6) chạy trên Listing.all_symbols()
+    hiện không trả cột sàn (API thật chỉ có symbol/organ_name) nên gán
+    exchange=None cho toàn bộ universe mỗi lần chạy. Trước bản sửa này, upsert
+    vô điều kiện khiến job daily xoá trắng dim_symbols.exchange mà job
+    monthly (update_symbol_exchanges, qua raw_company_info) vừa điền cho
+    ~1.587 mã — ngay lần chạy daily kế tiếp sau monthly. Cùng lý do áp cho
+    company_name (job daily cũng không có company_name đáng tin/đầy đủ hơn
+    job monthly)."""
     if df is None or df.empty:
         return 0
     con.register("df_sym", df)
@@ -104,8 +275,8 @@ def upsert_symbols(con, df, run_date) -> int:
         SELECT symbol, exchange, company_name, TRUE, DATE '{run_date}', DATE '{run_date}'
         FROM df_sym
         ON CONFLICT (symbol) DO UPDATE SET
-            exchange     = excluded.exchange,
-            company_name = excluded.company_name,
+            exchange     = COALESCE(excluded.exchange, dim_symbols.exchange),
+            company_name = COALESCE(excluded.company_name, dim_symbols.company_name),
             is_active    = TRUE,
             last_seen    = DATE '{run_date}';
         """
@@ -133,14 +304,12 @@ def upsert_prices(con, df) -> int:
 def upsert_financial_ratios(con, df) -> int:
     if df is None or df.empty:
         return 0
+    cols = ", ".join(RATIO_ALL_COLS)
     con.register("df_fin", df)
     con.execute(
-        """
-        INSERT OR REPLACE INTO raw_financial_ratio
-        SELECT symbol, year, quarter, period_type, market_cap, pe, pb, ps,
-               dividend_yield, roe, roa, roic, debt_to_equity, current_ratio,
-               gross_margin, ebit_margin, after_tax_profit_margin, now()
-        FROM df_fin;
+        f"""
+        INSERT OR REPLACE INTO raw_financial_ratio ({cols}, loaded_at)
+        SELECT {cols}, now() FROM df_fin;
         """
     )
     con.unregister("df_fin")
@@ -150,17 +319,70 @@ def upsert_financial_ratios(con, df) -> int:
 def upsert_company_info(con, df) -> int:
     if df is None or df.empty:
         return 0
+    cols = ", ".join(COMPANY_COLS)
     con.register("df_ci", df)
     con.execute(
-        """
-        INSERT OR REPLACE INTO raw_company_info
-        SELECT symbol, company_name, exchange, industry_icb, sector,
-               TRY_CAST(listed_date AS DATE), now()
-        FROM df_ci;
+        f"""
+        INSERT OR REPLACE INTO raw_company_info ({cols}, loaded_at)
+        SELECT {cols}, now() FROM df_ci;
         """
     )
     con.unregister("df_ci")
     return len(df)
+
+
+def upsert_industries(con, df) -> int:
+    if df is None or df.empty:
+        return 0
+    con.register("df_ind", df)
+    con.execute(
+        """
+        INSERT OR REPLACE INTO dim_industry
+            (icb_code, icb_name, en_icb_name, level, loaded_at)
+        SELECT icb_code, icb_name, en_icb_name, level, now() FROM df_ind;
+        """
+    )
+    con.unregister("df_ind")
+    return len(df)
+
+
+def upsert_index_prices(con, df) -> int:
+    """Ghi giá chỉ số (VNINDEX/VN30/HNXINDEX). INSERT OR REPLACE theo
+    (index_code, trade_date) → chạy lại an toàn. raw_index_daily là bảng mới,
+    chưa tồn tại trên MotherDuck nên không cần _ensure_column như các bảng cũ."""
+    if df is None or df.empty:
+        return 0
+    con.register("df_idx", df)
+    con.execute(
+        """
+        INSERT OR REPLACE INTO raw_index_daily
+            (index_code, trade_date, open, high, low, close, volume, loaded_at)
+        SELECT index_code, trade_date, open, high, low, close, volume, now()
+        FROM df_idx;
+        """
+    )
+    con.unregister("df_idx")
+    return len(df)
+
+
+def update_symbol_exchanges(con) -> int:
+    """Đồng bộ dim_symbols.exchange từ raw_company_info (đang NULL 100%)."""
+    n = con.execute(
+        """
+        SELECT count(*) FROM dim_symbols d JOIN raw_company_info c USING (symbol)
+        WHERE c.exchange IS NOT NULL
+          AND (d.exchange IS DISTINCT FROM c.exchange)
+        """
+    ).fetchone()[0]
+    con.execute(
+        """
+        UPDATE dim_symbols AS d
+        SET exchange = c.exchange
+        FROM raw_company_info AS c
+        WHERE d.symbol = c.symbol AND c.exchange IS NOT NULL
+        """
+    )
+    return n
 
 
 def get_active_symbols(con) -> list[str]:
@@ -209,10 +431,17 @@ def delete_trade_date(con, trade_date: str) -> int:
     return n
 
 
-def log_load(con, job_name, table, rows, status, watermark="", notes=""):
+def log_load(con, job_name, table, rows, status, watermark="", notes="",
+             rows_rejected=0):
     con.execute(
-        "INSERT INTO etl_load_log VALUES (?,?,?,?,?,?,?)",
-        [job_name, table, datetime.now(timezone.utc), rows, status, watermark, notes],
+        """
+        INSERT INTO etl_load_log
+            (job_name, target_table, run_at, rows_loaded, status,
+             watermark, notes, rows_rejected)
+        VALUES (?,?,?,?,?,?,?,?)
+        """,
+        [job_name, table, datetime.now(timezone.utc), rows, status,
+         watermark, notes, rows_rejected],
     )
 
 

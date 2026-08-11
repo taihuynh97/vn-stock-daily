@@ -1,4 +1,4 @@
-vnstock>=4.0,<5.0
+vnstock==4.0.4
 anthropic>=0.40
 requests>=2.31
 pandas>=2.0
