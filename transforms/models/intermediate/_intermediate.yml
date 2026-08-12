@@ -11,3 +11,14 @@ models:
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns: [symbol, trade_date]
+
+  - name: int_fundamentals_ttm
+    description: "Doanh thu/LNST/vốn chủ suy ra từ market_cap và ps/pe/pb, kèm tăng trưởng."
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: period_end_date
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, period_end_date]

@@ -112,3 +112,20 @@ vars:
   # xác nhận bằng mô phỏng trên production: ngưỡng 20 cho max 0,1974 (sát nút
   # 0,20, dữ liệu nhích nhẹ là test đỏ), ngưỡng 30 cho max 0,1691 (an toàn).
   price_features_min_valid_sessions: 30
+  # int_fundamentals_ttm (Task 4, fix round 1): dải hợp lý cho TRUNG VỊ
+  # market_cap/revenue_ttm toàn thị trường (tương đương trung vị ps thật, vì
+  # revenue_ttm = market_cap/ps nên market_cap/revenue_ttm = ps đại số).
+  # Test ban đầu kiểm tra TỪNG DÒNG với dải market_cap/100..market_cap*100
+  # (ps ∈ [0,01; 100]) đã báo động sai 344/36.676 dòng (0,94%) — toàn bộ là
+  # mã cực đoan CÓ THẬT của VN market (VEF/SQC ôm quỹ đất doanh thu gần
+  # zero, nano-cap thanh khoản cực mỏng), không phải lỗi công thức (đối
+  # chiếu HPG khớp 0% tuyệt đối). Đo trên production: ps dương có p99=58,93,
+  # p99,9=2.146,45 — một cổng kiểm từng dòng sẽ đỏ vĩnh viễn cho ~1% thị
+  # trường thật. Đổi sang kiểm TRUNG VỊ: một lỗi công thức hệ thống (quên
+  # chia, chia nhầm cột, sai đơn vị) kéo trung vị lệch nhiều bậc độ lớn,
+  # trong khi vài trăm mã cực đoan không đủ sức kéo trung vị lệch khỏi dải
+  # này (bài học C4 mảng A1: cổng báo động sai liên tục tệ hơn không có
+  # cổng). p50 quan sát thực tế của ps quanh 1-3, dải 0,1-20 rộng rãi đủ để
+  # chỉ bắt lỗi hệ thống thật.
+  fundamentals_median_ps_min: 0.1
+  fundamentals_median_ps_max: 20
