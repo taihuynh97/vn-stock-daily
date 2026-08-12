@@ -104,3 +104,11 @@ vars:
   peer_hard_min: 8
   # Số quý tối thiểu để tính percentile định giá so với chính mã.
   own_history_min_quarters: 12
+  # int_price_features (Task 3, fix round 2): số quan sát daily_return hợp lệ
+  # (volume>0 cả hai đầu, không dính khoảng trống >15 ngày) tối thiểu trong
+  # cửa sổ 60 phiên để volatility_60d được coi là đáng tin. Dưới ngưỡng này
+  # NULL hoá và gắn cờ is_thin_trading — mẫu quá nhỏ khiến stddev_samp tự nó
+  # nhiễu. Chọn 30 = "ít nhất nửa cửa sổ 60 phiên phải có giao dịch thật",
+  # xác nhận bằng mô phỏng trên production: ngưỡng 20 cho max 0,1974 (sát nút
+  # 0,20, dữ liệu nhích nhẹ là test đỏ), ngưỡng 30 cho max 0,1691 (an toàn).
+  price_features_min_valid_sessions: 30
