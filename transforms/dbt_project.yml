@@ -75,6 +75,29 @@ vars:
     - provision_to_outstanding_loans
     - car
     - casa_ratio
+  # Fix round 1 (review C2): brief cũ coi OTHERFIN (bảo hiểm/chứng khoán) chỉ
+  # dùng nhóm COMMON là SAI. Đo trên production: BH 478/478 (100%), CK
+  # ~1.396/1.402 (99,6%) có giá trị THẬT ở roic/current_ratio/ebit... — tức
+  # 14/15 chỉ tiêu metrics_nonfin áp dụng được cho OTHERFIN, chỉ
+  # days_inventory_outstanding thật sự không áp dụng (chứng khoán/bảo hiểm
+  # không có hàng tồn kho). Danh sách này = metrics_nonfin TRỪ
+  # days_inventory_outstanding — applicable_metrics() dùng để quyết định điều
+  # kiện NULL hoá cho từng chỉ tiêu trong metrics_nonfin.
+  metrics_otherfin:
+    - roic
+    - ev_to_ebitda
+    - current_ratio
+    - quick_ratio
+    - cash_ratio
+    - ebit_margin
+    - asset_turnover
+    - fixed_asset_turnover
+    - cash_cycle
+    - day_sale_outstanding
+    - days_payable_outstanding
+    - ebit
+    - ebitda
+    - debt_per_equity
   # Số mã tối thiểu để một peer group được coi là đủ tin cậy.
   peer_min_size: 15
   # Số mã tuyệt đối tối thiểu để tính percentile.
