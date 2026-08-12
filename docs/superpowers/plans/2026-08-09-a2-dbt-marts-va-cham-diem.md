@@ -733,7 +733,13 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 {{ config(materialized='table', tags=['daily']) }}
 
 with p as (
-    select symbol, trade_date, close, volume, turnover_vnd
+    select
+        symbol, trade_date, close, volume, turnover_vnd,
+        -- Tính suất sinh lời ngày ở đây, KHÔNG lồng vào stddev_samp bên dưới.
+        -- Lồng window function trong window function là cú pháp bất hợp lệ
+        -- của SQL chuẩn (DuckDB báo "window function calls cannot be nested").
+        close / nullif(lag(close) over (partition by symbol order by trade_date), 0) - 1
+            as daily_return
     from {{ ref('stg_price_daily') }}
     where not is_suspect_price
 ),
@@ -749,9 +755,7 @@ windowed as (
         avg(close)  over w200 as ma200,
         avg(turnover_vnd) over w20 as avg_turnover_20d,
         avg(turnover_vnd) over w60 as avg_turnover_60d,
-        stddev_samp(close / nullif(lag(close) over (
-            partition by symbol order by trade_date), 0) - 1) over w60
-                                   as volatility_60d,
+        stddev_samp(daily_return) over w60 as volatility_60d,
         max(close) over w250       as high_52w,
         min(close) over w250       as low_52w,
         lag(close, 21)  over (partition by symbol order by trade_date) as close_1m_ago,
