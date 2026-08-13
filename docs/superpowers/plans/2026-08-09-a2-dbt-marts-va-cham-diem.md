@@ -2171,8 +2171,7 @@ BANK,quality,roe_avg_8q,higher,peer,0.25
 BANK,quality,roe_stability,higher,direct,0.15
 BANK,quality,net_interest_margin,higher,peer,0.15
 BANK,quality,cir,lower,peer,0.15
-BANK,quality,npl,lower,peer,0.15
-BANK,quality,car,higher,peer,0.05
+BANK,quality,npl,lower,peer,0.20
 BANK,quality,casa_ratio,higher,peer,0.05
 BANK,quality,ldr_loan_deposit_ratio,lower,peer,0.05
 OTHERFIN,quality,roe_avg_8q,higher,peer,0.35
@@ -2951,7 +2950,20 @@ con.close()
 "
 ```
 
-- [ ] **Step 7: Đo tỉ lệ NULL của `car` và `casa_ratio` (§7.4 của spec)**
+> **§7.4 ĐÃ ĐƯỢC ĐO VÀ QUYẾT ở Task 5 — bước dưới chỉ để xác nhận lại.**
+> Kết quả trên production 2026-08-13, ở kỳ gần nhất của cả 29 ngân hàng:
+> `car` **0/29** · `casa_ratio` 29/29 · NIM/NPL/CIR/LDR đều 29/29.
+> Toàn lịch sử: `car` chỉ có ở **quý 2 (50,7%)** và **dòng năm (87,4%)**;
+> quý 1/3/4 đều bằng 0 — VCI chỉ công bố hệ số an toàn vốn ở báo cáo bán niên
+> và thường niên, nên nó không bao giờ có mặt ở kỳ TTM gần nhất.
+>
+> **Quyết định (đúng quy tắc §7.4 ">50% NULL thì loại"):** bỏ `car` khỏi công
+> thức `quality` của BANK, chuyển 0,05 sang `npl` (0,15 → 0,20). Chọn `npl` vì
+> nợ xấu là chỉ báo chất lượng quan trọng nhất của ngân hàng, và `car` vốn đo
+> cùng một thứ ở góc khác — đệm vốn để hấp thụ tổn thất.
+> `scoring_weights.csv` ở Step 1 đã phản ánh quyết định này.
+
+- [ ] **Step 7: Xác nhận lại tỉ lệ NULL của `car` và `casa_ratio` (§7.4 của spec)**
 
 ```bash
 .venv/bin/python -c "
