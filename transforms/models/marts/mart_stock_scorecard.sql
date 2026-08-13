@@ -170,40 +170,63 @@ facts as (
         to_json(list_filter([
             {'metric': 'pe_pct_own_5y',
              'value': v.pe_pct_own_5y,
+             -- Review vòng 1 (Minor #3): cửa sổ percentile thực tế là 12-20
+             -- quý (own_history_min_quarters..20), không phải luôn 20 — đo
+             -- được 366/805 mã dùng dưới 20 quý, ít nhất 12. Nói "5 năm qua"
+             -- với mã chỉ có 12 quý là nói quá. Nêu đúng số quý dùng
+             -- (v.pe_quarters_used, có sẵn từ int_valuation_percentile) và
+             -- đúng mẫu số: Task 6 tính percent_rank trên (số quý hợp lệ - 1)
+             -- vì không tính chính kỳ hiện tại, nên "các quý CÒN LẠI".
              'text': 'P/E ' || replace(printf('%.1f', v.pe), '.', ',')
-                     || ' — thấp hơn '
+                     || ' — rẻ hơn '
                      || printf('%.0f', (1 - v.pe_pct_own_5y) * 100)
-                     || '% số quý trong 5 năm qua của chính mã'},
+                     || '% các quý còn lại, trong '
+                     || cast(v.pe_quarters_used as varchar)
+                     || ' quý có số liệu của chính mã'},
             {'metric': 'pb_pct_own_5y',
              'value': v.pb_pct_own_5y,
              'text': 'P/B ' || replace(printf('%.2f', v.pb), '.', ',')
-                     || ' — thấp hơn '
+                     || ' — rẻ hơn '
                      || printf('%.0f', (1 - v.pb_pct_own_5y) * 100)
-                     || '% số quý trong 5 năm qua'},
+                     || '% các quý còn lại, trong '
+                     || cast(v.pb_quarters_used as varchar)
+                     || ' quý có số liệu của chính mã'},
             {'metric': 'roe_avg_8q',
              'value': q.roe_avg_8q,
+             -- Review vòng 1 (Important #1): câu chữ KHÔNG được phụ thuộc
+             -- chỉ tiêu thứ hai — nối chuỗi với NULL cho ra NULL, nên
+             -- roe_stability thiếu sẽ xoá sạch câu chữ dù roe_avg_8q vẫn có
+             -- giá trị. Đo được 153/1.497 fact rơi vào cảnh này, 27 mã rỗng
+             -- chữ hoàn toàn (ví dụ AAN). coalesce phần độ bền để nó chỉ
+             -- thêm vào khi có, không kéo sập cả câu.
              'text': 'ROE trung bình 8 quý '
-                     || replace(printf('%.1f', q.roe_avg_8q * 100), '.', ',')
-                     || '%, độ bền '
-                     || replace(printf('%.2f', q.roe_stability), '.', ',')},
+                     || replace(printf('%.1f', q.roe_avg_8q * 100), '.', ',') || '%'
+                     || coalesce(', độ bền '
+                                 || replace(printf('%.2f', q.roe_stability), '.', ','), '')},
             {'metric': 'dividend_years_consecutive',
              -- ép DOUBLE để mọi phần tử trong list có cùng kiểu struct
              'value': cast(dv.dividend_years_consecutive as double),
+             -- Cùng lớp lỗi với roe_avg_8q ở trên: dividend_yield_avg_5y
+             -- thiếu không được xoá sạch câu chữ về số năm liên tiếp.
              'text': 'Trả cổ tức '
                      -- dividend_years_consecutive là BIGINT; printf('%.0f', ...)
                      -- đòi kiểu thực nên lỗi "Invalid type specifier f for
                      -- formatting a value of type int". cast sang varchar vừa
                      -- đúng kiểu vừa gọn hơn cho một số đếm.
                      || cast(dv.dividend_years_consecutive as varchar)
-                     || ' năm liên tiếp, tỷ suất TB 5 năm '
-                     || replace(printf('%.1f', dv.dividend_yield_avg_5y * 100), '.', ',')
-                     || '%'},
+                     || ' năm liên tiếp'
+                     || coalesce(', tỷ suất TB 5 năm '
+                                 || replace(printf('%.1f', dv.dividend_yield_avg_5y * 100), '.', ',')
+                                 || '%', '')},
             {'metric': 'revenue_cagr_3y',
              'value': t.revenue_cagr_3y,
              'text': 'Tăng trưởng doanh thu 3 năm (CAGR) '
                      || replace(printf('%.1f', t.revenue_cagr_3y * 100), '.', ',')
                      || '%'}
-        ], x -> x.value is not null)) as facts
+        -- Review vòng 1 (Important #1): chốt chặn ở tầng list_filter — không
+        -- phần tử nào được mang text NULL, kể cả khi ai đó thêm fact mới sau
+        -- này mà quên áp coalesce đúng cách.
+        ], x -> x.value is not null and x.text is not null)) as facts
     from {{ ref('int_valuation_percentile') }} v
     join (select symbol, max(period_end_date) as period_end_date
           from {{ ref('int_valuation_percentile') }} group by 1) m

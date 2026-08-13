@@ -86,3 +86,21 @@ models:
               min_value: 0
               max_value: 100
               where: "quality_score is not null"
+      - name: growth_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "growth_score is not null"
+      - name: dividend_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "dividend_score is not null"
+      - name: safety_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "safety_score is not null"
