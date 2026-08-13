@@ -26,3 +26,48 @@ jobs:
           VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
           VNSTOCK_MIN_INTERVAL: "1.05"
         run: python build_warehouse.py --mode weekly
+
+      - name: dbt deps
+        working-directory: transforms
+        run: dbt deps --profiles-dir .
+
+      - name: dbt seed
+        working-directory: transforms
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: dbt seed --profiles-dir . --no-partial-parse
+
+      - name: dbt build (toàn bộ)
+        working-directory: transforms
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: dbt build --profiles-dir . --no-partial-parse
+
+      - name: dbt source freshness
+        working-directory: transforms
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: dbt source freshness --profiles-dir .
+
+      - name: Smoke check — tiêu chí nghiệm thu #8 (>=3 ngân hàng trong top 30)
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: |
+          python - <<'PY'
+          from src import warehouse, scoring
+          con = warehouse.get_conn()
+          r = scoring.screen(con, "bluechip_dividend", limit=30)
+          banks = r[r.com_class == "BANK"]
+          print(f"Ngân hàng trong top 30: {len(banks)}")
+          print(banks[["rank", "symbol", "composite_score", "quality_score"]].to_string(index=False))
+          con.close()
+          assert len(banks) >= 3, (
+              f"Tiêu chí nghiệm thu #8 KHÔNG ĐẠT: chỉ {len(banks)} ngân hàng trong "
+              "top 30. Khả năng cao sentinel ngân hàng đã quay lại — kiểm "
+              "stg_financial_ratio và assert_no_bank_sentinel_leak."
+          )
+          PY

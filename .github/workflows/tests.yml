@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      # 129 test đơn vị, không cần mạng, không cần MotherDuck.
+      - run: python -m pytest tests/ -q
+
+      # Ràng buộc toàn cục đòi mọi model chạy được trên CẢ DuckDB local lẫn
+      # MotherDuck, nhưng CI chỉ từng chạy MotherDuck — nhiều vòng review đã ghi
+      # "không kiểm được từ diff" cho điểm này. Bước dưới đóng một PHẦN khoản đó.
+      #
+      # GIỚI HẠN, phải nói rõ: `dbt compile` chỉ render Jinja và phân giải ref,
+      # KHÔNG thực thi SQL. Nó bắt được lỗi cấu hình, macro, ref sai — nhưng
+      # KHÔNG chứng minh hai engine cho cùng kết quả. Muốn chứng minh điều đó
+      # phải dựng bộ dữ liệu mẫu cho cả 6 bảng nguồn rồi `dbt build` thật;
+      # đó là việc riêng, ghi thành nợ kỹ thuật.
+      - name: dbt compile trên DuckDB local (không phải MotherDuck)
+        working-directory: transforms
+        env:
+          WAREHOUSE_DB: "/tmp/ci_local.duckdb"
+        run: |
+          dbt deps --profiles-dir .
+          dbt compile --profiles-dir . --no-partial-parse

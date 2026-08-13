@@ -34,3 +34,28 @@ jobs:
           VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
           VNSTOCK_MIN_INTERVAL: "1.05"
         run: python -m scripts.reconcile_warehouse --sample 5
+
+      - name: dbt deps
+        working-directory: transforms
+        run: dbt deps --profiles-dir .
+
+      - name: dbt seed
+        working-directory: transforms
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: dbt seed --profiles-dir . --no-partial-parse
+
+      - name: dbt build (toàn bộ)
+        working-directory: transforms
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: dbt build --profiles-dir . --no-partial-parse
+
+      - name: dbt source freshness
+        working-directory: transforms
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: dbt source freshness --profiles-dir .
