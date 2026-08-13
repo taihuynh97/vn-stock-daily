@@ -35,18 +35,46 @@ with ttm as (
     where quarter between 1 and 4
 ),
 
+-- Fix round 2 (coordinator review, C1): GHÉP THEO LỊCH, KHÔNG DÙNG lag()
+-- THEO DÒNG.
+--
+-- lag(x, 4) lấy dòng cách 4 VỊ TRÍ, chỉ đúng nếu chuỗi quý liền mạch. Thực
+-- tế 1.378/1.585 mã (87%) có khoảng trống — riêng 2021 Q2 chỉ 177/1.585 mã
+-- báo cáo (kể cả HPG: dòng 2021Q2 vắng mặt trong chính chuỗi TTM của nó).
+-- Đo trên production với bản dùng lag(): 53% dòng revenue_yoy LẬT DẤU tăng
+-- trưởng, và 62,7% giá trị revenue_cagr_3y lẽ ra phải NULL. Chính HPG cũng
+-- sai: 2022Q4 đúng là +18,88% nhưng lag() cho ra -5,53%.
+--
+-- Không tồn tại kỳ đối chiếu thì kết quả là NULL — đó là câu trả lời ĐÚNG.
+-- Task 10 chuẩn hoá lại trọng số khi gặp NULL nên không gây hại.
 with_lags as (
     select
+        t.*,
+        y1.revenue_ttm  as revenue_4q_ago,
+        y1.earnings_ttm as earnings_4q_ago,
+        y3.revenue_ttm  as revenue_12q_ago,
+        y3.earnings_ttm as earnings_12q_ago,
+        -- Số quý tuyệt đối, dùng cho cửa sổ theo LỊCH ở dưới.
+        t.year * 4 + t.quarter as abs_quarter
+    from ttm t
+    left join ttm y1
+           on y1.symbol = t.symbol and y1.year = t.year - 1 and y1.quarter = t.quarter
+    left join ttm y3
+           on y3.symbol = t.symbol and y3.year = t.year - 3 and y3.quarter = t.quarter
+),
+
+-- Cửa sổ 12 quý phải tính theo LỊCH, không theo 12 dòng liền kề — cùng lý
+-- do như trên. `range` trên abs_quarter cho đúng ngữ nghĩa "12 quý gần
+-- nhất", bất kể chuỗi có khoảng trống hay không.
+with_windows as (
+    select
         *,
-        lag(revenue_ttm,   4) over (partition by symbol order by period_end_date) as revenue_4q_ago,
-        lag(earnings_ttm,  4) over (partition by symbol order by period_end_date) as earnings_4q_ago,
-        lag(revenue_ttm,  12) over (partition by symbol order by period_end_date) as revenue_12q_ago,
-        lag(earnings_ttm, 12) over (partition by symbol order by period_end_date) as earnings_12q_ago,
-        sum(case when is_loss_making then 1 else 0 end) over (
-            partition by symbol order by period_end_date
-            rows between 11 preceding and current row
-        ) as loss_quarters_12q
-    from ttm
+        sum(case when is_loss_making then 1 else 0 end) over w12 as loss_quarters_12q
+    from with_lags
+    window w12 as (
+        partition by symbol order by abs_quarter
+        range between 11 preceding and current row
+    )
 ),
 
 with_growth as (
@@ -59,7 +87,7 @@ with_growth as (
              then power(revenue_ttm / revenue_12q_ago, 1.0 / 3) - 1 end as revenue_cagr_3y,
         case when earnings_12q_ago > 0 and earnings_ttm > 0
              then power(earnings_ttm / earnings_12q_ago, 1.0 / 3) - 1 end as earnings_cagr_3y
-    from with_lags
+    from with_windows
 )
 
 select
@@ -80,11 +108,13 @@ select
     revenue_cagr_3y,
     earnings_cagr_3y,
     loss_quarters_12q,
-    -- Tính nhất quán tăng trưởng: tỉ lệ quý có YoY doanh thu dương trong 12 quý.
+    -- Tính nhất quán tăng trưởng: tỉ lệ quý có YoY doanh thu dương trong 12
+    -- quý. Cửa sổ theo LỊCH (`range` trên abs_quarter), không phải 12 dòng
+    -- liền kề — cùng lý do với loss_quarters_12q ở trên (fix round 2).
     avg(case when revenue_yoy > 0 then 1.0
              when revenue_yoy is null then null
              else 0.0 end) over (
-        partition by symbol order by period_end_date
-        rows between 11 preceding and current row
+        partition by symbol order by abs_quarter
+        range between 11 preceding and current row
     ) as growth_consistency
 from with_growth
