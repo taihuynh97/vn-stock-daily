@@ -274,6 +274,7 @@ select
     vb.period_end_date          as ratio_as_of,
     t.is_loss_making,
     dq.data_quality_score,
+    dq.quarters_available,
     dq.quality_flags,
     dv.dividend_years_consecutive,
     q.roe_avg_8q,
