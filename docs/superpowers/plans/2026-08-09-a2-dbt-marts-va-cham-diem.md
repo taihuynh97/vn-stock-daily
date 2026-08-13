@@ -1106,9 +1106,19 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```sql
 {{ config(materialized='table') }}
 
+-- CỬA SỔ THEO LỊCH, KHÔNG THEO DÒNG.
+--
+-- 1.378/1.585 mã (87%) có khoảng trống trong chuỗi quý báo cáo — riêng 2021 Q2
+-- chỉ 177/1.585 mã báo cáo. Nên `rows between 7 preceding` KHÔNG phải "8 quý
+-- gần nhất" mà là "8 dòng gần nhất", có thể trải dài nhiều năm. Đây đúng lớp
+-- lỗi đã xảy ra ở int_fundamentals_ttm với lag() theo dòng.
+--
+-- `abs_quarter = year * 4 + quarter` cho phép dùng `range`, tức cửa sổ theo
+-- khoảng cách LỊCH thật. Nó cũng là biến chạy đúng cho regr_slope: hệ số góc
+-- phải là "thay đổi biên gộp trên mỗi QUÝ", không phải "trên mỗi dòng có dữ liệu".
 with q as (
     select symbol, period_end_date, com_class, roe, gross_margin,
-           row_number() over (partition by symbol order by period_end_date) as seq
+           year * 4 + quarter as abs_quarter
     from {{ ref('stg_financial_ratio') }}
     where quarter between 1 and 4
 ),
@@ -1122,10 +1132,10 @@ rolled as (
         stddev_samp(roe) over w8 as roe_sd_8q,
         count(roe)       over w8 as roe_n_8q,
         -- Hệ số góc xu hướng biên gộp: dương = biên đang cải thiện.
-        regr_slope(gross_margin, seq) over w8 as gross_margin_slope_8q
+        regr_slope(gross_margin, abs_quarter) over w8 as gross_margin_slope_8q
     from q
-    window w8 as (partition by symbol order by period_end_date
-                  rows between 7 preceding and current row)
+    window w8 as (partition by symbol order by abs_quarter
+                  range between 7 preceding and current row)
 )
 
 select
@@ -1430,6 +1440,7 @@ with hist as (
     select
         symbol,
         period_end_date,
+        year * 4 + quarter as abs_quarter,
         pe,
         pb,
         ps,
@@ -1448,15 +1459,17 @@ ranked as (
         percent_rank() over (
             partition by symbol order by pb_valid
         ) as pb_pct_all_history,
+        -- Cửa sổ theo LỊCH (`range` trên abs_quarter), không theo dòng: 87% mã
+        -- có khoảng trống chuỗi quý nên 20 dòng liền kề có thể trải dài hơn 5 năm.
         count(pe_valid) over (
             partition by symbol
-            order by period_end_date
-            rows between 19 preceding and current row
+            order by abs_quarter
+            range between 19 preceding and current row
         ) as pe_quarters_20,
         count(pb_valid) over (
             partition by symbol
-            order by period_end_date
-            rows between 19 preceding and current row
+            order by abs_quarter
+            range between 19 preceding and current row
         ) as pb_quarters_20
     from hist
 )
