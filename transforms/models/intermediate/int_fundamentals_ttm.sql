@@ -112,6 +112,12 @@ select
     revenue_cagr_3y,
     earnings_cagr_3y,
     loss_quarters_12q,
+    -- Task 10 fix: is_loss_making đã được tính trong CTE `ttm` (dùng để suy
+    -- loss_quarters_12q) và trôi qua with_lags/with_windows/with_growth
+    -- (đều select *), nhưng bị rớt khỏi SELECT cuối — không model nào cần đến
+    -- tới trước mart_stock_scorecard. Phơi lại nguyên giá trị đã tính, không
+    -- đổi công thức nào.
+    is_loss_making,
     -- Tính nhất quán tăng trưởng: tỉ lệ quý có YoY doanh thu dương trong 12
     -- quý. Cửa sổ theo LỊCH (`range` trên abs_quarter), không phải 12 dòng
     -- liền kề — cùng lý do với loss_quarters_12q ở trên (fix round 2).

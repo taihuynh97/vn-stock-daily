@@ -68,3 +68,21 @@ models:
           - dbt_utils.accepted_range:
               min_value: 0
               max_value: 100
+
+  - name: mart_stock_scorecard
+    description: "Điểm thành phần từng mã. KHÔNG chứa điểm tổng hợp — điểm đó do src/scoring.py tính theo profile."
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: value_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "value_score is not null"
+      - name: quality_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "quality_score is not null"
