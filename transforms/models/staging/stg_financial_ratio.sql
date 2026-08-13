@@ -67,126 +67,170 @@ cleaned as (
         ) as is_blank_row
     from joined
     where year is not null and quarter is not null
+),
+
+-- Fix vòng sửa 1 (review Task 8.5, phát hiện Critical): `nulled` cô lập MỌI
+-- phép NULL hoá (Nhóm A/B/C + ba tiền lệ cir/average_cost_of_financing/car/
+-- debt_to_equity) vào MỘT bậc riêng. Bậc SELECT tiếp theo suy diễn
+-- is_loss_making/pe_meaningful/pb_meaningful từ CỘT ĐÃ SẠCH của `nulled`,
+-- KHÔNG đặt cạnh phép nullif của chính cột nó phụ thuộc.
+--
+-- Lý do tách: `pb_meaningful` cũ viết `(pb > 0 and pb < 30)` NGAY TRONG
+-- CÙNG select đang khai báo lại `nullif(pb, 0) as pb` — alias `pb` trùng tên
+-- với cột nguồn của `cleaned`. Kiểm thử thực nghiệm (xem comment is_blank_row
+-- ở CTE `cleaned`) xác nhận DuckDB phân giải `pb` trần trong tình huống này
+-- về CỘT THÔ của `cleaned` (trước nullif), không phải alias vừa khai báo —
+-- hậu quả: 1.797 dòng pb=0 (đã NULL đúng ở output) lại nhận pb_meaningful =
+-- false ("chắc chắn không có nghĩa") thay vì NULL ("không biết") — tái diễn
+-- CHÍNH lớp lỗi mà Task 8.5 tồn tại để diệt, chỉ đổi từ trục số 0 sang trục
+-- boolean. `is_loss_making` mắc lỗi tương tự với after_tax_profit_margin
+-- trong 686 dòng trắng (Nhóm C). `pe_meaningful` KHÔNG mắc vì nó tự viết lại
+-- `nullif(pe, 0) > 0` — né được va chạm bằng trùng hợp, không phải chủ đích.
+-- Tách CTE loại bỏ va chạm tên tại GỐC: SELECT suy diễn đọc `nulled.pb`,
+-- không có cột `pb` nào khác cùng cấp để nhầm.
+nulled as (
+    select
+        * exclude (
+            cir, average_cost_of_financing, car, debt_to_equity,
+            -- Nhóm A (Task 8.5, V7): 7 chỉ tiêu COMMON mà 0 bất khả thi kinh
+            -- tế — khai báo lại bằng nullif ngay dưới.
+            roe, pe, pb, ps, ev_to_ebitda, price_to_cash_flow, market_cap,
+            -- Nhóm C + 1 ngoại lệ Nhóm B (Task 8.5, V7): NULL hoá chỉ khi
+            -- is_blank_row — khai báo lại bằng case ngay dưới. is_blank_row
+            -- bản thân không thuộc output, loại nó khỏi kết quả cuối.
+            is_blank_row,
+            dividend_yield, number_of_shares_mkt_cap, roa, gross_margin,
+            pre_tax_profit_margin, after_tax_profit_margin,
+            roic, current_ratio, quick_ratio, cash_ratio, ebit_margin,
+            asset_turnover, fixed_asset_turnover, ebit, ebitda
+        ),
+        -- Nguồn trả CIR và chi phí vốn theo quy ước dấu ÂM (VCB: cir = -0,4098).
+        abs(cir) as cir,
+        -- Fix round 1 (review C1): sentinel 0.0 còn sót theo trục KỲ BÁO CÁO,
+        -- không chỉ com_class — cùng lỗi gốc của cả task, chỉ khác trục. Đo trên
+        -- production: average_cost_of_financing=0 tập trung ở ngân hàng nhỏ/mới
+        -- thiếu dữ liệu nguồn (EVF 39/40=97,5%; KLB 38/42=90,5%...) trong khi
+        -- 16/29 ngân hàng lớn (VCB, BID, CTG, MBB...) không có dòng nào = 0 —
+        -- chi phí huy động vốn bằng 0 chính xác là bất khả thi. Cột này chỉ tồn
+        -- tại (khác NULL) ở BANK — applicable_metrics() đã lọc theo com_class —
+        -- nên nullif ở đây an toàn toàn cục, không đụng nhóm khác (đã NULL sẵn).
+        nullif(abs(average_cost_of_financing), 0) as average_cost_of_financing,
+        -- car=0.0 (mất sạch vốn tự có) bất khả thi với ngân hàng đang hoạt động.
+        -- Đo trên production: car=0 ở 100% dòng BANK quý 1/3/4 (223/224, 199/199,
+        -- 204/204), quý 2 chỉ 49,3%, dòng năm 12,6% — rõ ràng sentinel theo kỳ,
+        -- không phải giá trị thật lặp lại. Cột chỉ tồn tại ở BANK nên nullif an
+        -- toàn toàn cục.
+        nullif(car, 0) as car,
+        -- debt_to_equity là chỉ tiêu COMMON — giữ cho MỌI nhóm — nên PHẢI khoanh
+        -- theo com_class: 0 bất khả thi CHỈ với ngân hàng (không huy động đồng
+        -- nào là không thể; đo production: 207/207 dòng NĂM của BANK = 0 chính
+        -- xác, trong khi quý 1-4 là 0%). Với NONFIN, 0 là giá trị THẬT (DN không
+        -- vay nợ) — TUYỆT ĐỐI không nullif toàn cục, chỉ khoanh vùng BANK.
+        case
+            when com_class = 'BANK' then nullif(debt_to_equity, 0)
+            else debt_to_equity
+        end as debt_to_equity,
+        -- Fix V7 (Task 8.5) — trục sentinel THỨ BA: các chỉ tiêu COMMON (áp dụng
+        -- cho MỌI com_class) mà 0 bất khả thi về kinh tế, không cần khoanh vùng
+        -- vì bất khả thi ở mọi loại hình. Bằng chứng nặng nhất là roe: 1.661
+        -- dòng roe=0, toàn bộ ở NONFIN (0/1.035 ở BANK — đã đo, khớp kỳ vọng vì
+        -- roic/current_ratio NULL ở BANK khiến is_blank_row không bao giờ khớp
+        -- BANK). Phân rã 1.661: 686 dòng "trắng" (mọi chỉ tiêu = 0, xem
+        -- is_blank_row) + 975 dòng còn lại, trong đó 929 (95,3%) có debt_per_equity
+        -- < 0 (vốn chủ âm) hoặc pb = 0 — ví dụ APT/JOS/HLA: roa âm (đang lỗ) mà
+        -- roe = 0 là vô nghĩa, xảy ra vì nguồn blank ROE khi vốn chủ âm (lỗ chia
+        -- vốn âm ra số dương giả, nguồn chọn trả 0 thay vì số dương sai lệch đó).
+        nullif(roe, 0)                as roe,
+        -- pe = 0: giá đóng cửa bằng 0 (không thể với mã đang niêm yết) hoặc lợi
+        -- nhuận vô hạn — cả hai đều vô nghĩa. Đo trên production: 771 dòng pe=0
+        -- (767 NONFIN, 4 BANK) — số 771 này đã được pe_meaningful loại ra từ Fix
+        -- round 1 (review I2) phía dưới, nay nullif ngay tại nguồn cho nhất quán.
+        nullif(pe, 0)                 as pe,
+        -- pb = 0: giá bằng 0 hoặc giá trị sổ sách vô hạn. Đo trên production:
+        -- 1.797 dòng pb=0 (1.793 NONFIN, 4 BANK).
+        nullif(pb, 0)                 as pb,
+        -- ps = 0: giá bằng 0 hoặc doanh thu vô hạn. Đo trên production: 1.190
+        -- dòng ps=0 (1.032 NONFIN, 154 OTHERFIN, 4 BANK).
+        nullif(ps, 0)                 as ps,
+        -- ev_to_ebitda = 0: giá trị doanh nghiệp (EV) bằng 0 — bất khả thi cho
+        -- một công ty đang hoạt động. Đo trên production: 861 dòng = 0 (860
+        -- NONFIN, 1 OTHERFIN).
+        nullif(ev_to_ebitda, 0)       as ev_to_ebitda,
+        -- price_to_cash_flow = 0: giá bằng 0. Đo trên production: 818 dòng = 0
+        -- (809 NONFIN, 5 OTHERFIN, 4 BANK).
+        nullif(price_to_cash_flow, 0) as price_to_cash_flow,
+        -- market_cap = 0: công ty đã niêm yết không thể có vốn hoá thị trường
+        -- bằng 0 (giá hoặc số lượng cổ phiếu lưu hành bằng 0 đều vô lý). Đo trên
+        -- production: 62 dòng = 0 (59 NONFIN, 3 BANK) — nhỏ nhất trong Nhóm A vì
+        -- hầu hết mã mất giao dịch vẫn giữ giá đóng cửa cuối cùng khác 0.
+        nullif(market_cap, 0)         as market_cap,
+        -- Nhóm C (Task 8.5, V7) — TUYỆT ĐỐI KHÔNG nullif toàn cục: những chỉ tiêu
+        -- này có thể = 0 THẬT (DN hoà vốn, ROA=0 thật, tỉ suất chưa dùng nợ...).
+        -- Chỉ NULL hoá bên trong 686 "dòng trắng" (is_blank_row) — dòng mà nguồn
+        -- không trả gì cả, nên ngay cả số 0 trong dòng đó cũng không đáng tin.
+        -- dividend_yield là NGOẠI LỆ DUY NHẤT của Nhóm B (xem comment Nhóm B ở
+        -- macro applicable_metrics()/dbt_project.yml): 38.112 dòng dividend_yield
+        -- = 0 là giá trị THẬT (đa số DN Việt không trả cổ tức trong quý) và PHẢI
+        -- giữ nguyên ngoài phạm vi 686 dòng trắng này — nullif toàn cục ở đây là
+        -- xoá dữ liệu thật, không phải khử sentinel.
+        case when is_blank_row then null else dividend_yield end          as dividend_yield,
+        case when is_blank_row then null else number_of_shares_mkt_cap end as number_of_shares_mkt_cap,
+        case when is_blank_row then null else roa end                     as roa,
+        case when is_blank_row then null else gross_margin end            as gross_margin,
+        case when is_blank_row then null else pre_tax_profit_margin end   as pre_tax_profit_margin,
+        case when is_blank_row then null else after_tax_profit_margin end as after_tax_profit_margin,
+        case when is_blank_row then null else roic end                   as roic,
+        case when is_blank_row then null else current_ratio end          as current_ratio,
+        case when is_blank_row then null else quick_ratio end            as quick_ratio,
+        case when is_blank_row then null else cash_ratio end             as cash_ratio,
+        case when is_blank_row then null else ebit_margin end            as ebit_margin,
+        case when is_blank_row then null else asset_turnover end         as asset_turnover,
+        case when is_blank_row then null else fixed_asset_turnover end   as fixed_asset_turnover,
+        case when is_blank_row then null else ebit end                   as ebit,
+        case when is_blank_row then null else ebitda end                 as ebitda
+        -- Các chỉ tiêu chỉ áp dụng riêng BANK (net_interest_margin,
+        -- average_yield_on_earning_assets, non_and_interest_income, loans_growth,
+        -- deposit_growth, equity_to_liabilities, equity_to_loans,
+        -- total_equity_total_asset, ldr_loan_deposit_ratio,
+        -- loans_loss_reserve_to_loans, provision_to_outstanding_loans) KHÔNG được
+        -- bọc case is_blank_row ở trên: is_blank_row chỉ có thể đúng khi
+        -- com_class in ('NONFIN', 'OTHERFIN') (xem guard trong CTE `cleaned`), và
+        -- applicable_metrics() đã NULL hoá toàn bộ nhóm này cho NONFIN/OTHERFIN —
+        -- bọc thêm case is_blank_row cho chúng là NULL else NULL, vô nghĩa. npl
+        -- và casa_ratio (Nhóm B, BANK) cũng không bọc — cùng lý do cấu trúc.
+    from cleaned
 )
 
+-- Bậc suy diễn cuối cùng: MỌI cột dưới đây đọc từ `nulled` (đã sạch), không
+-- đọc trực tiếp từ `cleaned`. Đây là bất biến kiến trúc bảo vệ: một cột suy
+-- diễn mới thêm vào tương lai đọc `nulled.<col>` chứ không thể vô tình chạm
+-- lại cột thô — vì `cleaned` không còn trong scope ở bậc này.
 select
-    * exclude (
-        cir, average_cost_of_financing, car, debt_to_equity,
-        -- Nhóm A (Task 8.5, V7): 7 chỉ tiêu COMMON mà 0 bất khả thi kinh tế —
-        -- khai báo lại bằng nullif ngay dưới.
-        roe, pe, pb, ps, ev_to_ebitda, price_to_cash_flow, market_cap,
-        -- Nhóm C + 1 ngoại lệ Nhóm B (Task 8.5, V7): NULL hoá chỉ khi
-        -- is_blank_row — khai báo lại bằng case ngay dưới. is_blank_row bản
-        -- thân không thuộc output, loại nó khỏi kết quả cuối.
-        is_blank_row,
-        dividend_yield, number_of_shares_mkt_cap, roa, gross_margin,
-        pre_tax_profit_margin, after_tax_profit_margin,
-        roic, current_ratio, quick_ratio, cash_ratio, ebit_margin,
-        asset_turnover, fixed_asset_turnover, ebit, ebitda
-    ),
-    -- Nguồn trả CIR và chi phí vốn theo quy ước dấu ÂM (VCB: cir = -0,4098).
-    abs(cir) as cir,
-    -- Fix round 1 (review C1): sentinel 0.0 còn sót theo trục KỲ BÁO CÁO,
-    -- không chỉ com_class — cùng lỗi gốc của cả task, chỉ khác trục. Đo trên
-    -- production: average_cost_of_financing=0 tập trung ở ngân hàng nhỏ/mới
-    -- thiếu dữ liệu nguồn (EVF 39/40=97,5%; KLB 38/42=90,5%...) trong khi
-    -- 16/29 ngân hàng lớn (VCB, BID, CTG, MBB...) không có dòng nào = 0 —
-    -- chi phí huy động vốn bằng 0 chính xác là bất khả thi. Cột này chỉ tồn
-    -- tại (khác NULL) ở BANK — applicable_metrics() đã lọc theo com_class —
-    -- nên nullif ở đây an toàn toàn cục, không đụng nhóm khác (đã NULL sẵn).
-    nullif(abs(average_cost_of_financing), 0) as average_cost_of_financing,
-    -- car=0.0 (mất sạch vốn tự có) bất khả thi với ngân hàng đang hoạt động.
-    -- Đo trên production: car=0 ở 100% dòng BANK quý 1/3/4 (223/224, 199/199,
-    -- 204/204), quý 2 chỉ 49,3%, dòng năm 12,6% — rõ ràng sentinel theo kỳ,
-    -- không phải giá trị thật lặp lại. Cột chỉ tồn tại ở BANK nên nullif an
-    -- toàn toàn cục.
-    nullif(car, 0) as car,
-    -- debt_to_equity là chỉ tiêu COMMON — giữ cho MỌI nhóm — nên PHẢI khoanh
-    -- theo com_class: 0 bất khả thi CHỈ với ngân hàng (không huy động đồng
-    -- nào là không thể; đo production: 207/207 dòng NĂM của BANK = 0 chính
-    -- xác, trong khi quý 1-4 là 0%). Với NONFIN, 0 là giá trị THẬT (DN không
-    -- vay nợ) — TUYỆT ĐỐI không nullif toàn cục, chỉ khoanh vùng BANK.
-    case
-        when com_class = 'BANK' then nullif(debt_to_equity, 0)
-        else debt_to_equity
-    end as debt_to_equity,
-    -- Fix V7 (Task 8.5) — trục sentinel THỨ BA: các chỉ tiêu COMMON (áp dụng
-    -- cho MỌI com_class) mà 0 bất khả thi về kinh tế, không cần khoanh vùng
-    -- vì bất khả thi ở mọi loại hình. Bằng chứng nặng nhất là roe: 1.661
-    -- dòng roe=0, toàn bộ ở NONFIN (0/1.035 ở BANK — đã đo, khớp kỳ vọng vì
-    -- roic/current_ratio NULL ở BANK khiến is_blank_row không bao giờ khớp
-    -- BANK). Phân rã 1.661: 686 dòng "trắng" (mọi chỉ tiêu = 0, xem
-    -- is_blank_row) + 975 dòng còn lại, trong đó 929 (95,3%) có debt_per_equity
-    -- < 0 (vốn chủ âm) hoặc pb = 0 — ví dụ APT/JOS/HLA: roa âm (đang lỗ) mà
-    -- roe = 0 là vô nghĩa, xảy ra vì nguồn blank ROE khi vốn chủ âm (lỗ chia
-    -- vốn âm ra số dương giả, nguồn chọn trả 0 thay vì số dương sai lệch đó).
-    nullif(roe, 0)                as roe,
-    -- pe = 0: giá đóng cửa bằng 0 (không thể với mã đang niêm yết) hoặc lợi
-    -- nhuận vô hạn — cả hai đều vô nghĩa. Đo trên production: 771 dòng pe=0
-    -- (767 NONFIN, 4 BANK) — số 771 này đã được pe_meaningful loại ra từ Fix
-    -- round 1 (review I2) phía dưới, nay nullif ngay tại nguồn cho nhất quán.
-    nullif(pe, 0)                 as pe,
-    -- pb = 0: giá bằng 0 hoặc giá trị sổ sách vô hạn. Đo trên production:
-    -- 1.797 dòng pb=0 (1.793 NONFIN, 4 BANK).
-    nullif(pb, 0)                 as pb,
-    -- ps = 0: giá bằng 0 hoặc doanh thu vô hạn. Đo trên production: 1.190
-    -- dòng ps=0 (1.032 NONFIN, 154 OTHERFIN, 4 BANK).
-    nullif(ps, 0)                 as ps,
-    -- ev_to_ebitda = 0: giá trị doanh nghiệp (EV) bằng 0 — bất khả thi cho
-    -- một công ty đang hoạt động. Đo trên production: 861 dòng = 0 (860
-    -- NONFIN, 1 OTHERFIN).
-    nullif(ev_to_ebitda, 0)       as ev_to_ebitda,
-    -- price_to_cash_flow = 0: giá bằng 0. Đo trên production: 818 dòng = 0
-    -- (809 NONFIN, 5 OTHERFIN, 4 BANK).
-    nullif(price_to_cash_flow, 0) as price_to_cash_flow,
-    -- market_cap = 0: công ty đã niêm yết không thể có vốn hoá thị trường
-    -- bằng 0 (giá hoặc số lượng cổ phiếu lưu hành bằng 0 đều vô lý). Đo trên
-    -- production: 62 dòng = 0 (59 NONFIN, 3 BANK) — nhỏ nhất trong Nhóm A vì
-    -- hầu hết mã mất giao dịch vẫn giữ giá đóng cửa cuối cùng khác 0.
-    nullif(market_cap, 0)         as market_cap,
-    -- Nhóm C (Task 8.5, V7) — TUYỆT ĐỐI KHÔNG nullif toàn cục: những chỉ tiêu
-    -- này có thể = 0 THẬT (DN hoà vốn, ROA=0 thật, tỉ suất chưa dùng nợ...).
-    -- Chỉ NULL hoá bên trong 686 "dòng trắng" (is_blank_row) — dòng mà nguồn
-    -- không trả gì cả, nên ngay cả số 0 trong dòng đó cũng không đáng tin.
-    -- dividend_yield là NGOẠI LỆ DUY NHẤT của Nhóm B (xem comment Nhóm B ở
-    -- macro applicable_metrics()/dbt_project.yml): 38.112 dòng dividend_yield
-    -- = 0 là giá trị THẬT (đa số DN Việt không trả cổ tức trong quý) và PHẢI
-    -- giữ nguyên ngoài phạm vi 686 dòng trắng này — nullif toàn cục ở đây là
-    -- xoá dữ liệu thật, không phải khử sentinel.
-    case when is_blank_row then null else dividend_yield end          as dividend_yield,
-    case when is_blank_row then null else number_of_shares_mkt_cap end as number_of_shares_mkt_cap,
-    case when is_blank_row then null else roa end                     as roa,
-    case when is_blank_row then null else gross_margin end            as gross_margin,
-    case when is_blank_row then null else pre_tax_profit_margin end   as pre_tax_profit_margin,
-    case when is_blank_row then null else after_tax_profit_margin end as after_tax_profit_margin,
-    case when is_blank_row then null else roic end                   as roic,
-    case when is_blank_row then null else current_ratio end          as current_ratio,
-    case when is_blank_row then null else quick_ratio end            as quick_ratio,
-    case when is_blank_row then null else cash_ratio end             as cash_ratio,
-    case when is_blank_row then null else ebit_margin end            as ebit_margin,
-    case when is_blank_row then null else asset_turnover end         as asset_turnover,
-    case when is_blank_row then null else fixed_asset_turnover end   as fixed_asset_turnover,
-    case when is_blank_row then null else ebit end                   as ebit,
-    case when is_blank_row then null else ebitda end                 as ebitda,
-    -- Các chỉ tiêu chỉ áp dụng riêng BANK (net_interest_margin,
-    -- average_yield_on_earning_assets, non_and_interest_income, loans_growth,
-    -- deposit_growth, equity_to_liabilities, equity_to_loans,
-    -- total_equity_total_asset, ldr_loan_deposit_ratio,
-    -- loans_loss_reserve_to_loans, provision_to_outstanding_loans) KHÔNG được
-    -- bọc case is_blank_row ở trên: is_blank_row chỉ có thể đúng khi
-    -- com_class in ('NONFIN', 'OTHERFIN') (xem guard trong CTE `cleaned`), và
-    -- applicable_metrics() đã NULL hoá toàn bộ nhóm này cho NONFIN/OTHERFIN —
-    -- bọc thêm case is_blank_row cho chúng là NULL else NULL, vô nghĩa. npl
-    -- và casa_ratio (Nhóm B, BANK) cũng không bọc — cùng lý do cấu trúc.
+    *,
     -- Fix round 1 (review I2): is_loss_making suy từ biên lợi nhuận thật,
     -- KHÔNG phải dấu P/E — đo được 216 dòng is_loss_making=false (theo pe cũ)
     -- nhưng after_tax_profit_margin<0, và 295 dòng ngược lại; sai cả hai
     -- chiều vì P/E âm cũng xảy ra do các nguyên nhân kế toán khác ngoài lỗ.
+    -- Fix vòng sửa 1 (Task 8.5): đọc `nulled.after_tax_profit_margin` — đã
+    -- NULL hoá đúng trong 686 dòng trắng (Nhóm C) — nên is_loss_making giờ
+    -- ra NULL ("không biết") cho các dòng đó, thay vì false ("không lỗ") sai
+    -- lệch như khi còn đọc cột thô.
     (after_tax_profit_margin < 0) as is_loss_making,
     -- nullif(pe, 0): loại 771 dòng pe=0 (khả năng cũng là sentinel, không
     -- phải P/E thật) khỏi diện "có nghĩa" — NULL đúng ngữ nghĩa hơn (không rõ)
     -- so với false (chắc chắn không có nghĩa) mà công thức cũ vô tình tạo ra
-    -- vì 0 không > 0.
+    -- vì 0 không > 0. Fix vòng sửa 1: `pe` ở đây đã là `nulled.pe` (đã nullif
+    -- ở bậc trên) — nullif(pe, 0) lặp lại là DƯ THỪA nhưng VÔ HẠI (nullif
+    -- idempotent), giữ nguyên để không xoá bối cảnh lịch sử của comment này.
     (nullif(pe, 0) > 0 and nullif(pe, 0) < 200) as pe_meaningful,
+    -- Fix vòng sửa 1 (review Task 8.5, phát hiện Critical): trước đây `pb`
+    -- trần ở dòng này nằm CÙNG select với `nullif(pb, 0) as pb` — alias
+    -- trùng tên cột nguồn khiến DuckDB phân giải `pb` về cột THÔ của
+    -- `cleaned` (trước nullif), không phải giá trị đã NULL hoá. Hậu quả:
+    -- 1.797 dòng pb=0 (đã NULL đúng ở output pb) lại nhận pb_meaningful =
+    -- false thay vì NULL — lệch "không biết" thành "chắc chắn không có
+    -- nghĩa". Giờ `pb` ở đây là `nulled.pb` (đọc từ CTE riêng, không còn cột
+    -- `cleaned.pb` nào cùng cấp để nhầm) — pb_meaningful NULL đúng khi pb
+    -- NULL, không cần tự viết nullif(pb, 0) như pe_meaningful.
     (pb > 0 and pb < 30) as pb_meaningful
-from cleaned
+from nulled
