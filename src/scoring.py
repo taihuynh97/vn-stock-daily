@@ -108,45 +108,65 @@ def compute_composite(df: pd.DataFrame, profile: dict) -> pd.DataFrame:
 
 
 def apply_universe(df: pd.DataFrame, profile: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Tách thành (đủ điều kiện, bị loại kèm lý do)."""
+    """Tách thành (đủ điều kiện, bị loại kèm lý do).
+
+    Một mã có thể trượt NHIỀU điều kiện cùng lúc — đo thực tế trên production:
+    85,5%-96,4% mã bị loại trượt từ 2 điều kiện trở lên. `reject_reason` liệt
+    kê ĐẦY ĐỦ mọi điều kiện trượt của mã đó, nối bằng "; ", không chỉ điều
+    kiện đầu tiên gặp phải — để trả lời đúng câu hỏi "vì sao mã X bị loại" mà
+    không bỏ sót lý do (bản trước chỉ giữ lý do đầu, khiến ví dụ một mã trượt
+    cả sàn lẫn vốn hoá chỉ hiện "ngoài sàn cho phép").
+    """
     uni = profile["universe"]
     req = profile.get("require", {}) or {}
     out = df.copy()
-    reasons = pd.Series("", index=out.index)
 
-    def add(mask, text):
-        nonlocal reasons
-        reasons = reasons.where(~(mask & (reasons == "")), text)
-
+    # Danh sách (mask, lý do) — KHÔNG áp dụng tuần tự loại trừ lẫn nhau, mỗi
+    # check độc lập chạy trên toàn bộ out để một mã có thể khớp nhiều check.
+    checks: list[tuple[pd.Series, str]] = []
     if uni.get("exchanges"):
-        add(~out["exchange"].isin(uni["exchanges"]), "ngoài sàn cho phép")
+        checks.append((~out["exchange"].isin(uni["exchanges"]), "ngoài sàn cho phép"))
     if uni.get("min_market_cap_vnd") is not None:
-        add(out["market_cap"].fillna(0) < uni["min_market_cap_vnd"],
-            "vốn hoá dưới ngưỡng")
+        checks.append((out["market_cap"].fillna(0) < uni["min_market_cap_vnd"],
+                        "vốn hoá dưới ngưỡng"))
     if uni.get("min_avg_turnover_20d_vnd") is not None:
-        add(out["avg_turnover_20d"].fillna(0) < uni["min_avg_turnover_20d_vnd"],
-            "thanh khoản dưới ngưỡng")
+        checks.append((out["avg_turnover_20d"].fillna(0) < uni["min_avg_turnover_20d_vnd"],
+                        "thanh khoản dưới ngưỡng"))
     if uni.get("min_data_quality_score") is not None:
-        add(out["data_quality_score"].fillna(0) < uni["min_data_quality_score"],
-            "chất lượng dữ liệu thấp")
+        checks.append((out["data_quality_score"].fillna(0) < uni["min_data_quality_score"],
+                        "chất lượng dữ liệu thấp"))
     if uni.get("min_quarters_history") is not None:
         # Khác với min_data_quality_score: điểm dữ liệu là tổ hợp 5 thành phần,
         # một mã có thể đạt 60 điểm nhờ giá và độ tươi trong khi lịch sử tỷ số
         # vẫn mỏng. Hai ngưỡng đo hai thứ khác nhau.
-        add(out["quarters_available"].fillna(0) < uni["min_quarters_history"],
-            "lịch sử tỷ số chưa đủ số quý")
+        checks.append((out["quarters_available"].fillna(0) < uni["min_quarters_history"],
+                        "lịch sử tỷ số chưa đủ số quý"))
     if req.get("dividend_years_min") is not None:
-        add(out["dividend_years_consecutive"].fillna(0) < req["dividend_years_min"],
-            "cổ tức chưa đủ số năm liên tiếp")
+        checks.append((out["dividend_years_consecutive"].fillna(0) < req["dividend_years_min"],
+                        "cổ tức chưa đủ số năm liên tiếp"))
     if req.get("roe_avg_8q_min") is not None:
-        add(out["roe_avg_8q"].fillna(-1) < req["roe_avg_8q_min"],
-            "ROE trung bình 8 quý dưới ngưỡng")
+        checks.append((out["roe_avg_8q"].fillna(-1) < req["roe_avg_8q_min"],
+                        "ROE trung bình 8 quý dưới ngưỡng"))
     if req.get("exclude_loss_making"):
-        add(out["is_loss_making"].fillna(False).astype(bool), "đang lỗ")
+        # Quy ước xuyên suốt hàm này: THIẾU DỮ LIỆU THÌ TRƯỢT điều kiện, không
+        # phải mặc định cho qua — các check khác đạt điều đó bằng fillna(0)
+        # hoặc fillna(-1) trên một ngưỡng "nhỏ hơn thì trượt". is_loss_making
+        # là boolean thẳng nên phải fillna(True) (không biết có lỗ hay không
+        # → coi như có lỗ, loại), KHÔNG phải fillna(False) (không biết → coi
+        # như không lỗ, cho qua) — chiều ngược sẽ đi ngược đúng quy ước trên.
+        checks.append((out["is_loss_making"].fillna(True).astype(bool), "đang lỗ"))
 
-    ok = out[reasons == ""].reset_index(drop=True)
-    rejected = out[reasons != ""].copy()
-    rejected["reject_reason"] = reasons[reasons != ""].values
+    n = len(out)
+    reason_lists: list[list[str]] = [[] for _ in range(n)]
+    for mask, text in checks:
+        for pos in mask.to_numpy().nonzero()[0]:
+            reason_lists[pos].append(text)
+
+    reject_reason = pd.Series(["; ".join(r) for r in reason_lists], index=out.index)
+    is_rejected = reject_reason != ""
+    ok = out[~is_rejected].reset_index(drop=True)
+    rejected = out[is_rejected].copy()
+    rejected["reject_reason"] = reject_reason[is_rejected].values
     return ok, rejected.reset_index(drop=True)
 
 
@@ -170,7 +190,15 @@ def screen(con, profile_name: str = None, limit: int = 30,
 
 def screen_report(con, profile_name: str = None, limit: int = 30,
                   profile_path=None) -> dict:
-    """Như screen() nhưng trả thêm phần bị loại — để giải thích, không giấu."""
+    """Như screen() nhưng trả thêm phần bị loại — để giải thích, không giấu.
+
+    `rejected_counts`: số mã trượt TỪNG điều kiện riêng lẻ, CHO PHÉP CHỒNG LẤP
+    — một mã trượt cả sàn lẫn vốn hoá được cộng vào cả hai khoá. Vì vậy
+    `sum(rejected_counts.values())` lớn hơn số mã bị loại thật (đo thực tế:
+    85,5%-96,4% mã bị loại trượt ≥2 điều kiện). `rejected_total` là số mã bị
+    loại thật — dùng khoá này để đối chiếu, không tự cộng `rejected_counts`
+    lại rồi tưởng đó là tổng số mã.
+    """
     profile = get_profile(profile_name, profile_path)
     df = con.execute(SCORECARD_SQL).df()
     ok, rejected = apply_universe(df, profile)
@@ -180,11 +208,19 @@ def screen_report(con, profile_name: str = None, limit: int = 30,
         "composite_score", ascending=False
     ).head(limit).reset_index(drop=True)
     ranked.insert(0, "rank", range(1, len(ranked) + 1))
+
+    if len(rejected):
+        reasons_flat = rejected["reject_reason"].str.split("; ").explode()
+        rejected_counts = reasons_flat.value_counts().to_dict()
+    else:
+        rejected_counts = {}
+
     return {
         "profile": profile["name"],
         "label": profile.get("label", ""),
         "ranked": ranked,
         "unscored": unscored[["symbol", "components_missing"]].reset_index(drop=True),
-        "rejected_counts": rejected["reject_reason"].value_counts().to_dict(),
+        "rejected_counts": rejected_counts,
+        "rejected_total": len(rejected),
         "universe_size": len(ok),
     }
