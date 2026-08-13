@@ -57,3 +57,14 @@ models:
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns: [icb_code_lv2, com_class, period_end_date]
+
+  - name: mart_data_quality
+    description: "1 dòng/mã: điểm tin cậy dữ liệu (0-100). Agent phải đọc bảng này trước khi phát biểu về một mã."
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: data_quality_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
