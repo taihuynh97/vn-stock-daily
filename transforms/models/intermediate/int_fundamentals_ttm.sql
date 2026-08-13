@@ -42,8 +42,12 @@ with ttm as (
 -- tế 1.378/1.585 mã (87%) có khoảng trống — riêng 2021 Q2 chỉ 177/1.585 mã
 -- báo cáo (kể cả HPG: dòng 2021Q2 vắng mặt trong chính chuỗi TTM của nó).
 -- Đo trên production với bản dùng lag(): 53% dòng revenue_yoy LẬT DẤU tăng
--- trưởng, và 62,7% giá trị revenue_cagr_3y lẽ ra phải NULL. Chính HPG cũng
--- sai: 2022Q4 đúng là +18,88% nhưng lag() cho ra -5,53%.
+-- trưởng, và 62,7% giá trị revenue_cagr_3y lẽ ra phải NULL.
+--
+-- Ví dụ minh hoạ bằng chính HPG (thiếu 2021 Q2): từ dòng 2021Q4 lùi 4 VỊ TRÍ
+-- được 2021Q3 -> 2021Q1 -> 2020Q4 -> 2020Q3, tức chỉ tới 2020Q3 chứ không tới
+-- 2020Q4. Khoảng trống nằm TRONG cửa sổ nhìn lại thì kết quả sai; nằm ngoài
+-- thì tình cờ đúng. Ghép theo lịch loại bỏ hẳn sự tình cờ đó.
 --
 -- Không tồn tại kỳ đối chiếu thì kết quả là NULL — đó là câu trả lời ĐÚNG.
 -- Task 10 chuẩn hoá lại trọng số khi gặp NULL nên không gây hại.
