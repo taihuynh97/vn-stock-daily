@@ -248,6 +248,14 @@ def _screen_rows():
         {**base, "symbol": "OUT", "exchange": "UPCOM", "value_score": 99.0,
          "quality_score": 99.0, "growth_score": 99.0, "dividend_score": 99.0,
          "safety_score": 99.0},
+        # Trượt HAI điều kiện cùng lúc (ngoài sàn VÀ vốn hoá). Không có mã như
+        # thế này thì test không phân biệt được logic đếm CHỒNG LẤP với logic cũ
+        # "chỉ ghi lý do đầu tiên" — cả hai đều cho rejected_counts giống nhau
+        # khi mỗi mã bị loại chỉ trượt đúng một điều kiện. Re-review vòng 1 phát
+        # hiện đúng lỗ hổng này: revert logic chồng lấp mà test vẫn xanh.
+        {**base, "symbol": "OUT2", "exchange": "UPCOM", "market_cap": 1e9,
+         "value_score": 99.0, "quality_score": 99.0, "growth_score": 99.0,
+         "dividend_score": 99.0, "safety_score": 99.0},
     ])
 
 
@@ -276,6 +284,11 @@ def test_screen_report_separates_ranked_unscored_and_rejected(monkeypatch):
     r = scoring.screen_report(con, "test", limit=10)
     assert set(r["ranked"]["symbol"]) == {"HIGH", "MID", "LOW"}
     assert set(r["unscored"]["symbol"]) == {"NOSCORE"}
-    assert r["universe_size"] == 4        # tất cả trừ OUT (ngoài sàn)
-    assert r["rejected_total"] == 1
-    assert r["rejected_counts"] == {"ngoài sàn cho phép": 1}
+    assert r["universe_size"] == 4        # tất cả trừ OUT và OUT2
+    assert r["rejected_total"] == 2
+    # OUT trượt 1 điều kiện, OUT2 trượt 2 -> phải đếm CHỒNG LẤP.
+    assert r["rejected_counts"] == {"ngoài sàn cho phép": 2,
+                                    "vốn hoá dưới ngưỡng": 1}
+    # Bất biến khoá lại ngữ nghĩa "đếm theo từng điều kiện": tổng các giá trị
+    # lớn hơn số mã bị loại. Đây là dòng mà logic "chỉ lý do đầu tiên" làm đỏ.
+    assert sum(r["rejected_counts"].values()) > r["rejected_total"]
