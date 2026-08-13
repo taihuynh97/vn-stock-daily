@@ -862,7 +862,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Create: `transforms/models/intermediate/int_fundamentals_ttm.sql`
 - Modify: `transforms/models/intermediate/_intermediate.yml`
-- Create: `transforms/tests/assert_derived_revenue_sanity.sql`
+- Create: `transforms/tests/assert_derived_revenue_sanity.sql`, `assert_growth_uses_calendar_alignment.sql`
 
 **Interfaces:**
 - Consumes: `ref('stg_financial_ratio')`.
@@ -873,14 +873,49 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 `transforms/tests/assert_derived_revenue_sanity.sql`:
 
 ```sql
--- Doanh thu suy ra = market_cap / ps. Nếu công thức sai, giá trị sẽ lệch
--- nhiều bậc độ lớn so với vốn hoá.
-select symbol, period_end_date, revenue_ttm, market_cap
-from {{ ref('int_fundamentals_ttm') }}
-where revenue_ttm is not null
-  and (revenue_ttm <= 0
-       or revenue_ttm < market_cap / 100
-       or revenue_ttm > market_cap * 100)
+-- Bắt LỖI CÔNG THỨC, không bắt "mã có định giá cực đoan".
+--
+-- Bản đầu kiểm từng dòng với dải market_cap/100..market_cap*100 (tương đương
+-- ps in [0,01; 100]) và fail 344/36.676 dòng trên production. Điều tra cho thấy
+-- đó là dữ liệu THẬT: p99 của ps là 58,9 nhưng p99.9 là 2.146 và max 245.347 —
+-- các mã ôm quỹ đất có doanh thu gần bằng 0.
+--
+-- Một lỗi công thức (quên chia, chia nhầm cột, sai đơn vị) sai HỆ THỐNG trên
+-- MỌI dòng, không phải 0,94%. Nên kiểm TRUNG VỊ toàn thị trường: quên chia sẽ
+-- làm trung vị nhảy nhiều bậc độ lớn, còn vài trăm mã cực đoan không kéo nổi
+-- trung vị. Ngưỡng đặt trong dbt_project.yml (fundamentals_median_ps_min/max).
+with med as (
+    select median(market_cap / nullif(revenue_ttm, 0)) as median_ps
+    from {{ ref('int_fundamentals_ttm') }}
+    where revenue_ttm is not null
+)
+select median_ps from med
+where median_ps < {{ var('fundamentals_median_ps_min') }}
+   or median_ps > {{ var('fundamentals_median_ps_max') }}
+
+union all
+
+-- Rào chắn hồi quy rẻ tiền: sau khi chặn ps <= 0 ở model thì không dòng nào
+-- được có doanh thu suy ra âm hoặc bằng 0.
+select revenue_ttm from {{ ref('int_fundamentals_ttm') }} where revenue_ttm <= 0
+```
+
+`transforms/tests/assert_growth_uses_calendar_alignment.sql`:
+
+```sql
+-- Canh đúng lớp lỗi đã xảy ra: lag() theo VỊ TRÍ DÒNG thay vì theo LỊCH.
+-- 87% mã có khoảng trống trong chuỗi quý (2021 Q2 chỉ 177/1.585 mã báo cáo),
+-- nên lag(x, 4) lấy nhầm dòng ở đa số trường hợp — đo được 53% dòng
+-- revenue_yoy LẬT DẤU tăng trưởng so với tính đúng theo lịch.
+--
+-- Khẳng định: mọi dòng có revenue_yoy phải TỒN TẠI kỳ đối chiếu đúng lịch
+-- (cùng symbol, cùng quarter, year - 1) trong chính model.
+select t.symbol, t.year, t.quarter
+from {{ ref('int_fundamentals_ttm') }} t
+left join {{ ref('int_fundamentals_ttm') }} y1
+       on y1.symbol = t.symbol and y1.year = t.year - 1 and y1.quarter = t.quarter
+where t.revenue_yoy is not null
+  and y1.symbol is null
 ```
 
 - [ ] **Step 2: Chạy để xác nhận fail**
@@ -918,18 +953,43 @@ with ttm as (
     where quarter between 1 and 4
 ),
 
+-- GHÉP THEO LỊCH, KHÔNG DÙNG lag() THEO DÒNG.
+--
+-- lag(x, 4) lấy dòng cách 4 VỊ TRÍ, chỉ đúng nếu chuỗi quý liền mạch. Thực tế
+-- 1.378/1.585 mã (87%) có khoảng trống — riêng 2021 Q2 chỉ 177/1.585 mã báo
+-- cáo. Đo trên production với bản dùng lag(): 53% dòng revenue_yoy LẬT DẤU
+-- tăng trưởng, và 62,7% giá trị revenue_cagr_3y lẽ ra phải NULL. Chính HPG
+-- cũng sai: 2022Q4 đúng là +18,88% nhưng lag() cho ra -5,53%.
+--
+-- Không tồn tại kỳ đối chiếu thì kết quả là NULL — đó là câu trả lời ĐÚNG.
+-- Task 10 chuẩn hoá lại trọng số khi gặp NULL nên không gây hại.
 with_lags as (
     select
+        t.*,
+        y1.revenue_ttm  as revenue_4q_ago,
+        y1.earnings_ttm as earnings_4q_ago,
+        y3.revenue_ttm  as revenue_12q_ago,
+        y3.earnings_ttm as earnings_12q_ago,
+        -- Số quý tuyệt đối, dùng cho cửa sổ theo LỊCH ở dưới.
+        t.year * 4 + t.quarter as abs_quarter
+    from ttm t
+    left join ttm y1
+           on y1.symbol = t.symbol and y1.year = t.year - 1 and y1.quarter = t.quarter
+    left join ttm y3
+           on y3.symbol = t.symbol and y3.year = t.year - 3 and y3.quarter = t.quarter
+),
+
+-- Cửa sổ 12 quý phải tính theo LỊCH, không theo 12 dòng liền kề — cùng lý do
+-- như trên. `range` trên abs_quarter cho đúng ngữ nghĩa "12 quý gần nhất".
+with_windows as (
+    select
         *,
-        lag(revenue_ttm,   4) over (partition by symbol order by period_end_date) as revenue_4q_ago,
-        lag(earnings_ttm,  4) over (partition by symbol order by period_end_date) as earnings_4q_ago,
-        lag(revenue_ttm,  12) over (partition by symbol order by period_end_date) as revenue_12q_ago,
-        lag(earnings_ttm, 12) over (partition by symbol order by period_end_date) as earnings_12q_ago,
-        sum(case when is_loss_making then 1 else 0 end) over (
-            partition by symbol order by period_end_date
-            rows between 11 preceding and current row
-        ) as loss_quarters_12q
-    from ttm
+        sum(case when is_loss_making then 1 else 0 end) over w12 as loss_quarters_12q
+    from with_lags
+    window w12 as (
+        partition by symbol order by abs_quarter
+        range between 11 preceding and current row
+    )
 ),
 
 with_growth as (
@@ -942,7 +1002,7 @@ with_growth as (
              then power(revenue_ttm / revenue_12q_ago, 1.0 / 3) - 1 end as revenue_cagr_3y,
         case when earnings_12q_ago > 0 and earnings_ttm > 0
              then power(earnings_ttm / earnings_12q_ago, 1.0 / 3) - 1 end as earnings_cagr_3y
-    from with_lags
+    from with_windows
 )
 
 select
@@ -964,11 +1024,13 @@ select
     earnings_cagr_3y,
     loss_quarters_12q,
     -- Tính nhất quán tăng trưởng: tỉ lệ quý có YoY doanh thu dương trong 12 quý.
+    -- Cửa sổ theo LỊCH (`range` trên abs_quarter), không phải 12 dòng liền kề —
+    -- cùng lý do với loss_quarters_12q ở trên.
     avg(case when revenue_yoy > 0 then 1.0
              when revenue_yoy is null then null
              else 0.0 end) over (
-        partition by symbol order by period_end_date
-        rows between 11 preceding and current row
+        partition by symbol order by abs_quarter
+        range between 11 preceding and current row
     ) as growth_consistency
 from with_growth
 ```
