@@ -22,3 +22,28 @@ models:
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns: [symbol, period_end_date]
+
+  - name: int_quality_metrics
+    columns:
+      - name: symbol
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, period_end_date]
+
+  - name: int_dividend_history
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+
+  - name: int_metric_long
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: metric
+        tests: [not_null]
+      - name: value
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, metric]
