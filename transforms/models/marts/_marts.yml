@@ -1,0 +1,39 @@
+version: 2
+
+models:
+  - name: dim_stock
+    description: "Một dòng mỗi mã: hồ sơ, ngành, loại hình, thanh khoản."
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: com_class
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['NONFIN', 'BANK', 'OTHERFIN', 'UNKNOWN']
+
+  - name: dim_industry_hierarchy
+    description: "1 dòng/ngành ICB cấp 4, kèm tên cấp 3 và cấp 2. Tên KHÁC bảng nguồn dim_industry để dbt không ghi đè bảng đó."
+    columns:
+      - name: icb_code_lv4
+        tests: [not_null, unique]
+
+  - name: fct_price_daily
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_stock')
+              field: symbol
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, trade_date]
+
+  - name: fct_financial_quarterly
+    columns:
+      - name: symbol
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, year, quarter]
