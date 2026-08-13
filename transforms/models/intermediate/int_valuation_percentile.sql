@@ -68,5 +68,14 @@ select
     case when pb_valid is not null
               and pb_quarters_20 >= {{ var('own_history_min_quarters') }}
          then pb_pct_win end as pb_pct_own_5y,
-    pe_quarters_20 as own_quarters_used
+    -- Fix round 2 (phát hiện bởi reviewer): bản trước chỉ có MỘT cột
+    -- `own_quarters_used` gán từ pe_quarters_20 — nói dối về số quý của
+    -- pb_pct_own_5y, vì pe_meaningful và pb_meaningful không cùng pattern
+    -- trên cùng một dòng (đo: 3.698 dòng có pb_pct_own_5y hợp lệ nhưng
+    -- own_quarters_used < 12, có dòng own_quarters_used = 0 dù pb_pct_own_5y
+    -- là số có ý nghĩa — ví dụ UDC 2024-12-31). Tách hai cột riêng để tầng
+    -- sau (Task 10, mart_stock_scorecard dùng làm peer_count hiển thị cho
+    -- người dùng) không đọc nhầm độ tin cậy của percentile.
+    pe_quarters_20 as pe_quarters_used,
+    pb_quarters_20 as pb_quarters_used
 from ranked
