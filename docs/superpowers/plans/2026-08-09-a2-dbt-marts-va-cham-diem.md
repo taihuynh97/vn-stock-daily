@@ -1392,7 +1392,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `ref('stg_financial_ratio')`, `ref('int_metric_long')`.
 - Produces:
-  - `ref('int_valuation_percentile')` — `symbol, period_end_date, pe, pb, ps, pe_pct_own_5y, pb_pct_own_5y, own_quarters_used`
+  - `ref('int_valuation_percentile')` — `symbol, period_end_date, pe, pb, ps, pe_pct_own_5y, pb_pct_own_5y, pe_quarters_used, pb_quarters_used`
   - `ref('int_metric_percentile')` — `symbol, com_class, metric, value, pct_peer, peer_basis, peer_count`
 
 - [ ] **Step 1: Viết test thất bại**
@@ -1485,7 +1485,8 @@ select
          then pe_pct_all_history end as pe_pct_own_5y,
     case when pb_quarters_20 >= {{ var('own_history_min_quarters') }}
          then pb_pct_all_history end as pb_pct_own_5y,
-    pe_quarters_20 as own_quarters_used
+    pe_quarters_20 as pe_quarters_used,
+    pb_quarters_20 as pb_quarters_used
 from ranked
 ```
 
@@ -1862,7 +1863,8 @@ select
     v.ps,
     v.pe_pct_own_5y,
     v.pb_pct_own_5y,
-    v.own_quarters_used,
+    v.pe_quarters_used,
+    v.pb_quarters_used,
     -- Nhãn vùng định giá dựa trên percentile lịch sử CỦA CHÍNH MÃ.
     -- NULL khi chưa đủ 12 quý hợp lệ — không đoán bừa.
     case
@@ -2283,7 +2285,7 @@ with metric_values as (
     select
         v.symbol, d.com_class, 'pe_pct_own_5y' as metric,
         v.pe_pct_own_5y as value, null as pct_peer,
-        'own_history' as peer_basis, v.own_quarters_used as peer_count
+        'own_history' as peer_basis, v.pe_quarters_used as peer_count
     from {{ ref('int_valuation_percentile') }} v
     join (select symbol, max(period_end_date) as period_end_date
           from {{ ref('int_valuation_percentile') }} group by 1) m
@@ -2296,7 +2298,7 @@ with metric_values as (
     select
         v.symbol, d.com_class, 'pb_pct_own_5y' as metric,
         v.pb_pct_own_5y as value, null as pct_peer,
-        'own_history' as peer_basis, v.own_quarters_used as peer_count
+        'own_history' as peer_basis, v.pb_quarters_used as peer_count
     from {{ ref('int_valuation_percentile') }} v
     join (select symbol, max(period_end_date) as period_end_date
           from {{ ref('int_valuation_percentile') }} group by 1) m
