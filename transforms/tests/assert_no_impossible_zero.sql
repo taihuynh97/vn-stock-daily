@@ -29,3 +29,54 @@ union all
 select 'average_cost_of_financing', symbol, year, quarter, average_cost_of_financing
 from {{ ref('stg_financial_ratio') }}
 where com_class = 'BANK' and average_cost_of_financing = 0
+
+-- V7 (Task 8.5): trục sentinel THỨ BA — 7 chỉ tiêu COMMON (áp dụng cho MỌI
+-- com_class, không khoanh vùng như ba cột phía trên) mà 0 bất khả thi kinh
+-- tế. Nặng nhất là roe: 1.661 dòng roe=0 trên production trước khi sửa,
+-- toàn bộ ở NONFIN — ví dụ APT/JOS/HLA đang lỗ (roa<0) mà roe=0 là vô nghĩa,
+-- 95,3% số dòng còn lại (ngoài 686 dòng "trắng") có debt_per_equity<0 hoặc
+-- pb=0 làm chứng. Sáu cột còn lại (pe/pb/ps/ev_to_ebitda/price_to_cash_flow/
+-- market_cap) cùng lý do "giá hoặc mẫu số bằng 0" — xem comment nullif() của
+-- từng cột trong stg_financial_ratio.sql.
+
+union all
+
+select 'roe', symbol, year, quarter, roe
+from {{ ref('stg_financial_ratio') }}
+where roe = 0
+
+union all
+
+select 'pe', symbol, year, quarter, pe
+from {{ ref('stg_financial_ratio') }}
+where pe = 0
+
+union all
+
+select 'pb', symbol, year, quarter, pb
+from {{ ref('stg_financial_ratio') }}
+where pb = 0
+
+union all
+
+select 'ps', symbol, year, quarter, ps
+from {{ ref('stg_financial_ratio') }}
+where ps = 0
+
+union all
+
+select 'ev_to_ebitda', symbol, year, quarter, ev_to_ebitda
+from {{ ref('stg_financial_ratio') }}
+where ev_to_ebitda = 0
+
+union all
+
+select 'price_to_cash_flow', symbol, year, quarter, price_to_cash_flow
+from {{ ref('stg_financial_ratio') }}
+where price_to_cash_flow = 0
+
+union all
+
+select 'market_cap', symbol, year, quarter, market_cap
+from {{ ref('stg_financial_ratio') }}
+where market_cap = 0
