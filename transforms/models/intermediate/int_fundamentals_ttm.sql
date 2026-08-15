@@ -93,6 +93,12 @@ with_growth as (
         -- nó tồn tại để mệnh đề "mốc gốc phải dương" là bất biến TƯỜNG MINH của
         -- cả bốn chỉ tiêu tăng trưởng, thay vì một sự trùng hợp phải suy ra từ
         -- hai model khác.
+        --
+        -- Vòng sửa 2 — kiểm lại: revenue_yoy KHÔNG có vấn đề tương tự
+        -- earnings_yoy. Không tồn tại ca "lật doanh thu" (dương → âm) vì
+        -- revenue_ttm không bao giờ âm theo cấu trúc nêu trên, nên ở đây không
+        -- có vế nào để bỏ bớt. Một vế `revenue_4q_ago > 0` là đủ và đúng, khớp
+        -- đúng hình thái của earnings_yoy bên dưới.
         case when revenue_4q_ago > 0
              then revenue_ttm / revenue_4q_ago - 1 end  as revenue_yoy,
         -- Fix vòng review toàn nhánh (Important #2): YoY phải chịu CÙNG rào chắn
@@ -112,9 +118,40 @@ with_growth as (
         -- về số học), còn int_metric_percentile ĐỌC nó như một thang có thứ tự
         -- "cao là tốt". Mỗi bên đọc riêng đều đúng — nên 13 vòng review
         -- từng-task bỏ sót.
-        case when earnings_4q_ago > 0 and earnings_ttm > 0
+        --
+        -- VÌ SAO CHỈ MỘT VẾ, TRONG KHI earnings_cagr_3y NGAY DƯỚI CÓ HAI VẾ —
+        -- ĐÂY LÀ CHỦ ĐÍCH, KHÔNG PHẢI SÓT (vòng sửa 2).
+        --
+        -- Bản sửa đầu của vòng này chép nguyên rào chắn của earnings_cagr_3y
+        -- (`... and earnings_ttm > 0`) cho "nhất quán". Đó là quá tay: lỗi cần
+        -- chữa là MỐC GỐC ÂM, và chỉ `earnings_4q_ago > 0` chữa nó. Với mốc gốc
+        -- DƯƠNG, `(hiện tại - gốc) / gốc` luôn xác định và ĐÚNG DẤU kể cả khi
+        -- hiện tại âm — doanh nghiệp lật từ lãi sang lỗ cho một YoY âm lớn, là
+        -- câu trả lời ĐÚNG và phải nằm bét rổ tăng trưởng.
+        --
+        -- earnings_cagr_3y thì BUỘC phải có cả hai vế vì nó lấy CĂN BẬC BA:
+        -- power(số âm, 1.0/3) không xác định trong miền số thực của DuckDB (ra
+        -- NaN). YoY không hề vướng ràng buộc đó — nó chỉ là một phép chia.
+        --
+        -- Đo trên production khi phát hiện: vế thừa `earnings_ttm > 0` NULL hoá
+        -- 1.098 dòng LẬT LÃI → LỖ (toàn bộ 1.098, không sót dòng nào). Ở kỳ mới
+        -- nhất có 21 mã lật, trong đó 16 mã VẪN GIỮ growth_score, trung bình
+        -- 46,1 — điểm tầm trung cho doanh nghiệp vừa lật sang lỗ. Nguyên nhân:
+        -- mart_stock_scorecard loại NULL khỏi MẪU SỐ khi chuẩn hoá lại trọng số,
+        -- nên NULL không phải là "phạt", nó là "miễn" — 0,55 trọng số còn lại
+        -- (revenue_cagr_3y 0,30 + revenue_yoy 0,15 + growth_consistency 0,10)
+        -- vẫn vượt cổng 0,5 và mã đó được chấm trên doanh thu, bỏ qua việc lợi
+        -- nhuận vừa sụp. Ví dụ TCD: lãi 71,1 tỷ cùng kỳ năm trước, lỗ 438,1 tỷ
+        -- kỳ này ⟹ YoY = -7,16. Vế thừa biến con số đó thành NULL.
+        --
+        -- Ràng buộc toàn cục của dự án: NULL nghĩa "KHÔNG ĐO ĐƯỢC", không phải
+        -- "kém nhất nhóm" (đó là 0). Ở đây ta ĐO ĐƯỢC — nên phải ghi ra số.
+        case when earnings_4q_ago > 0
              then earnings_ttm / earnings_4q_ago - 1 end as earnings_yoy,
-        -- CAGR 3 năm chỉ có nghĩa khi mốc gốc dương.
+        -- CAGR 3 năm chỉ có nghĩa khi mốc gốc dương. Vế `... _ttm > 0` ở HAI
+        -- dòng dưới là BẮT BUỘC (căn bậc ba của số âm không xác định), khác hẳn
+        -- earnings_yoy ở trên — xem ghi chú dài ngay trên đó trước khi "sửa cho
+        -- nhất quán".
         case when revenue_12q_ago > 0 and revenue_ttm > 0
              then power(revenue_ttm / revenue_12q_ago, 1.0 / 3) - 1 end as revenue_cagr_3y,
         case when earnings_12q_ago > 0 and earnings_ttm > 0
