@@ -39,8 +39,21 @@ def _date_str(v):
     DATE (price_as_of, ratio_as_of, listed_date), không sửa `_clean()`
     dùng chung vì đó là hàm tổng quát, không nên giả định mọi giá trị có
     `.isoformat()` đều là DATE (một TIMESTAMP thật đúng lúc nửa đêm sẽ bị
-    cắt nhầm nếu áp logic này toàn cục)."""
-    if v is None or (isinstance(v, float) and pd.isna(v)):
+    cắt nhầm nếu áp logic này toàn cục).
+
+    Fix round 1 (code review): guard NULL trước đây chỉ bắt
+    `isinstance(v, float) and pd.isna(v)` — bỏ sót `pandas.NaT`
+    (kiểu `NaTType`, KHÔNG phải `float`). Một mã thiếu lịch sử định giá
+    (`ratio_as_of` NULL thật, vd mã mới niêm yết <12 quý — đúng kịch bản
+    CCC trong fixture, chỉ là fixture cũ tình cờ không gán NULL) đọc qua
+    `.df()` cho `v = pd.NaT`, lọt qua guard cũ, rồi `hasattr(v, "date")`
+    và `hasattr(v, "isoformat")` đều True trên `NaT` (nó tự trả về chính
+    nó ở `.date()`), kết quả cuối là chuỗi literal `"NaT"` thay vì `None`
+    — sai gấp đôi: vừa không phải None, vừa là text vô nghĩa nếu agent
+    hội thoại đọc thẳng. `pd.isna(v)` (không giới hạn kiểu) nhận diện
+    đúng cả `None`, `float('nan')`, lẫn `NaT` nên dùng thẳng nó làm điều
+    kiện duy nhất, bỏ nhánh `isinstance(v, float)` thừa."""
+    if v is None or pd.isna(v):
         return None
     if hasattr(v, "date"):
         v = v.date()

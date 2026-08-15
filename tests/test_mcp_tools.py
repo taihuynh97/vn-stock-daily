@@ -52,3 +52,19 @@ def test_get_stock_profile_unknown_symbol(con):
     res = tools.get_stock_profile(con, "ZZZ")
     assert "error" in res
     assert "ZZZ" in res["error"]
+
+
+def test_get_stock_profile_null_dates_return_none_not_nat(con):
+    """Fix round 1 (code review): DDD có ratio_as_of NULL thật (mã mới niêm
+    yết, chưa có kỳ định giá nào) và không có dòng khớp trong dim_stock nên
+    listed_date cũng NULL qua LEFT JOIN. `_date_str()` từng trả chuỗi literal
+    "NaT" cho các ca này (pandas.NaT lọt qua guard `isinstance(v, float)`,
+    vì NaT không phải kiểu float) — phải trả None."""
+    res = tools.get_stock_profile(con, "DDD")
+    assert res["ratio_as_of"] is None
+    assert res["listed_date"] is None
+    assert res["ratio_as_of"] != "NaT"
+    assert res["listed_date"] != "NaT"
+    # price_as_of của DDD có giá trị thật — xác nhận ca không-NULL vẫn đúng
+    # định dạng "YYYY-MM-DD" như trước, sửa guard không làm hỏng đường này.
+    assert res["price_as_of"] == "2026-08-07"

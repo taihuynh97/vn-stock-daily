@@ -48,7 +48,22 @@ def build_fake_mart(path: str):
          'com_class', 300, 95,40,30,20,25, 5,6,5,4,7,
          6e11, 2e8, 8000, DATE '2026-08-07', 4.0, 0.5, 0.05, 0.08,
          'rất rẻ', DATE '2026-06-30', TRUE, 45, 6, 'thiếu lịch sử tỷ số (<12 quý)',
-         0, -0.05, 0.0, '[]');
+         0, -0.05, 0.0, '[]'),
+        -- DDD (fix round 1, code review): mã mới niêm yết, ratio_as_of NULL
+        -- THẬT — kịch bản có thật trên production, mart_stock_scorecard lấy
+        -- ratio_as_of qua LEFT JOIN mart_valuation_band nên mã chưa có kỳ
+        -- định giá nào sẽ ra NULL, không phải một ngày cụ thể. Khoá lại hành
+        -- vi _date_str(): NULL phải ra None, không phải chuỗi "NaT". Đặt
+        -- UPCOM (giống CCC) để bị loại khỏi universe bluechip_dividend, không
+        -- lọt vào 'results'/ảnh hưởng thứ hạng của các test search_stocks đã
+        -- có. Cố tình KHÔNG thêm dòng khớp trong dim_stock — LEFT JOIN ở
+        -- get_stock_profile() sẽ tự cho listed_date NULL, khoá thêm luôn ca
+        -- đó mà không cần bảng riêng.
+        ('DDD','Cty D','UPCOM','NONFIN','1700','Tài nguyên cơ bản',
+         'com_class', 10, 50,50,50,50,50, 5,6,5,4,7,
+         1e11, 1e8, 10000, DATE '2026-08-07', NULL, NULL, NULL, NULL,
+         NULL, NULL, FALSE, 50, 5, 'chưa đủ lịch sử định giá',
+         0, NULL, NULL, '[]');
     """)
     con.execute("""
         CREATE TABLE fct_price_daily (symbol VARCHAR, trade_date DATE, close DOUBLE);
