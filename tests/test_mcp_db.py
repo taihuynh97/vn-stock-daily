@@ -1,3 +1,5 @@
+import threading
+
 import duckdb
 import pytest
 
@@ -35,10 +37,14 @@ def con(tmp_path):
 # tại trên MotherDuck.
 #
 # GIỚI HẠN CÒN LẠI (vòng 5, chưa giải quyết): cơ chế EXPLAIN chỉ bắt được
-# TABLE-FUNCTION (hàm trong FROM). HÀM SCALAR có alias (`AS bất_kỳ_gì`) bị
-# DuckDB ẩn hoàn toàn khỏi output EXPLAIN — xem
-# `test_scalar_function_with_alias_is_not_blocked_known_gap` và
-# task-1-report.md mục "Vòng sửa 5" để biết chi tiết + bằng chứng.
+# TABLE-FUNCTION (hàm trong FROM). HÀM SCALAR nói chung — KHÔNG phân biệt có
+# alias (`AS bất_kỳ_gì`) hay không — không sinh node "Function" trong plan
+# nên không lọt vào diện được kiểm; alias chỉ khiến TÊN biểu thức gốc bị
+# EXPLAIN ẩn thêm khỏi phần Projections/Expressions (không còn gì để đọc dù
+# có muốn tự vá bằng text), chứ không phải điều kiện làm phát sinh lỗ hổng —
+# ca không-alias cũng bị bỏ qua y hệt. Xem
+# `test_scalar_function_is_not_blocked_known_gap` và task-1-report.md mục
+# "Vòng sửa 5" để biết chi tiết + bằng chứng.
 MUST_BLOCK = [
     "INSERT INTO t VALUES (9,'q')",
     "update t set a = 5",
@@ -120,6 +126,73 @@ def test_run_query_rejects_write(con):
     with pytest.raises(db.SqlGuardError):
         db.run_query(con, "DELETE FROM t")
     assert con.execute("SELECT count(*) FROM t").fetchone()[0] == 3
+
+
+# I3 (fix round cuối): Global Constraint của plan A3 "giới hạn 1.000 dòng;
+# timeout 30 giây" — giới hạn dòng có sẵn (min(limit, 1000)), timeout thì
+# chưa. DuckDB không có statement_timeout built-in nên run_query() dùng
+# threading.Timer(30, con.interrupt) quanh con.execute(). Không test thật
+# 30 giây trôi qua (chậm, không cần thiết) — thay bằng FakeTimer để xác
+# nhận ĐÚNG hành vi: Timer được tạo với (30, con.interrupt), start() trước
+# execute, và cancel() được gọi trong finally ở CẢ hai nhánh (thành công
+# lẫn lỗi).
+class _FakeTimer:
+    """Thay threading.Timer thật — ghi lại tham số/lời gọi thay vì chờ thật."""
+
+    def __init__(self, interval, function):
+        self.interval = interval
+        self.function = function
+        self.started = False
+        self.cancelled = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def test_run_query_sets_30s_timer_and_cancels_after_success(con, monkeypatch):
+    created = []
+
+    def fake_timer_ctor(interval, function):
+        t = _FakeTimer(interval, function)
+        created.append(t)
+        return t
+
+    monkeypatch.setattr(threading, "Timer", fake_timer_ctor)
+    rows = db.run_query(con, "SELECT a FROM t ORDER BY a")
+
+    assert rows == [{"a": 1}, {"a": 2}, {"a": 3}]
+    assert len(created) == 1
+    assert created[0].interval == 30
+    assert created[0].function == con.interrupt
+    assert created[0].started is True
+    assert created[0].cancelled is True   # phải cancel sau khi execute xong
+
+
+def test_run_query_cancels_timer_even_when_execute_raises(con, monkeypatch):
+    """Câu này qua được assert_safe_sql (PRAGMA đọc thông tin thuần, không
+    side-effect) nhưng thất bại ở bước execute thật của run_query() — ca đã
+    biết ("PRAGMA rút gọn không nhúng được vào subquery LIMIT", xem
+    test_run_query_pragma_shorthand_fails_due_to_select_wrapping bên dưới).
+    Tái dùng đúng ca lỗi có thật này để xác nhận timer.cancel() vẫn được
+    gọi trong `finally` khi execute() ném lỗi — không cần giả lập lỗi giả
+    bằng cách vá trực tiếp con.execute (DuckDBPyConnection không cho gán
+    thuộc tính, đã tự xác minh)."""
+    created = []
+
+    def fake_timer_ctor(interval, function):
+        t = _FakeTimer(interval, function)
+        created.append(t)
+        return t
+
+    monkeypatch.setattr(threading, "Timer", fake_timer_ctor)
+    with pytest.raises(duckdb.Error):
+        db.run_query(con, "PRAGMA database_list")
+
+    assert len(created) == 1
+    assert created[0].cancelled is True
 
 
 def test_assert_safe_sql_allows_paren_wrapped_function_call_and_executes_correctly(con):
@@ -230,29 +303,40 @@ def test_table_function_allowlist_does_not_false_positive_on_replace(con):
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    "Lỗ hổng CHƯA giải quyết (vòng sửa 5): hàm scalar có alias bị DuckDB "
-    "ẩn hoàn toàn khỏi mọi giai đoạn output EXPLAIN (đã tự kiểm "
+    "Lỗ hổng CHƯA giải quyết (vòng sửa 5): hàm scalar KHÔNG bao giờ sinh "
+    "node \"Function\" trong EXPLAIN plan (đó là node riêng của "
+    "table-function trong FROM) nên không lọt vào diện được cơ chế này "
+    "kiểm — có alias hay không đều như nhau, đã tự kiểm cả hai (`select "
+    "write_log('hi')` và `select write_log('hi') as x` cùng ALLOW). Alias "
+    "chỉ khiến vấn đề RÕ hơn: khi có alias, EXPLAIN (đã tự kiểm "
     "logical_plan/logical_opt/physical_plan qua explain_output='ALL', và "
-    "duckdb_dependencies() sau PREPARE — không có API nào giữ lại tên hàm "
-    "gốc một khi có alias). Không có cách chặn đáng tin cậy trong phạm vi "
-    "cơ chế EXPLAIN/plan-text — báo cáo cho coordinator, không tự vá bằng "
-    "regex trên text Projections (đã kiểm thêm: quy ước quote tên hàm "
-    "trong Projections cũng không nhất quán — vd write_log('hi') không có "
-    "ngoặc kép quanh tên hàm dù replace(...) thì có, và DuckDB tự "
+    "duckdb_dependencies() sau PREPARE) còn ẩn luôn TÊN biểu thức gốc khỏi "
+    "Projections/Expressions (chỉ còn tên alias) — nên dù có muốn tự vá "
+    "bằng cách đọc text/JSON của EXPLAIN để suy ra tên hàm scalar, ca có "
+    "alias cũng không còn gì để đọc. Không có cách chặn đáng tin cậy trong "
+    "phạm vi cơ chế EXPLAIN/plan-text — báo cáo cho coordinator, không tự "
+    "vá bằng regex trên text Projections (đã kiểm thêm: quy ước quote tên "
+    "hàm trong Projections cũng không nhất quán — vd write_log('hi') không "
+    "có ngoặc kép quanh tên hàm dù replace(...) thì có, và DuckDB tự "
     "hằng-số-hoá/constant-fold một số hàm scalar thuần trước khi tới "
     "EXPLAIN, nên ngay cả không có alias, việc trích tên hàm từ text cũng "
     "không đáng tin cậy)."
 ))
-def test_scalar_function_with_alias_is_not_blocked_known_gap(con):
+def test_scalar_function_is_not_blocked_known_gap(con):
     """Vòng 5 — giới hạn CHƯA giải quyết của cơ chế EXPLAIN-based: cơ chế chỉ
     kiểm TABLE-FUNCTION (node "Function" trong plan, sinh ra khi hàm được
     gọi trong mệnh đề FROM). Hàm SCALAR (gọi trong SELECT list, như
-    `write_log(...)` — hàm DuckDB thật, side-effect ghi log) khi có alias
-    (`AS bất_kỳ_tên_gì`) bị DuckDB ẩn HOÀN TOÀN khỏi output EXPLAIN — đã tự
-    kiểm ở cả 3 giai đoạn plan (`explain_output='ALL'`: logical_plan,
-    logical_opt, physical_plan) và qua `duckdb_dependencies()` sau
-    `PREPARE` — không giai đoạn/API nào giữ lại tên hàm gốc một khi có
-    alias, chỉ còn lại chuỗi alias.
+    `write_log(...)` — hàm DuckDB thật, side-effect ghi log) không sinh node
+    này nên không bị lớp (3) kiểm, DÙ CÓ ALIAS (`AS bất_kỳ_tên_gì`) HAY
+    KHÔNG — đã tự kiểm cả hai ca, cùng bị ALLOW như nhau (fix round cuối,
+    M4: bản trước đóng khung sai giới hạn này là "chỉ khi có alias", tên
+    test cũ `..._with_alias_...` gây hiểu nhầm y hệt — sửa lại câu chữ cho
+    đúng thực tế, KHÔNG đổi phán quyết chấp nhận rủi ro). Khi có alias,
+    EXPLAIN còn ẩn thêm TÊN biểu thức gốc khỏi output — đã tự kiểm ở cả 3
+    giai đoạn plan (`explain_output='ALL'`: logical_plan, logical_opt,
+    physical_plan) và qua `duckdb_dependencies()` sau `PREPARE` — không
+    giai đoạn/API nào giữ lại tên hàm gốc một khi có alias, chỉ còn lại
+    chuỗi alias.
 
     Test này CỐ TÌNH assert hành vi AN TOÀN mong muốn (chặn) rồi đánh dấu
     xfail — không phải vì đã có cách chặn, mà để ghi nhận công khai đây là
