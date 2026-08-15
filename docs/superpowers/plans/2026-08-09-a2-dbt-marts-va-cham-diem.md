@@ -1620,21 +1620,27 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Marts nền — `dim_stock`, `dim_industry`, `fct_price_daily`, `fct_financial_quarterly`
+### Task 7: Marts nền — `dim_stock`, `dim_industry_hierarchy`, `fct_price_daily`, `fct_financial_quarterly`
 
 **Files:**
-- Create: `transforms/models/marts/dim_stock.sql`, `dim_industry.sql`, `fct_price_daily.sql`, `fct_financial_quarterly.sql`
+- Create: `transforms/models/marts/dim_stock.sql`, `dim_industry_hierarchy.sql`, `fct_price_daily.sql`, `fct_financial_quarterly.sql`
 - Create: `transforms/models/marts/_marts.yml`
 
 **Interfaces:**
 - Consumes: mọi model staging và intermediate.
 - Produces:
   - `ref('dim_stock')` — 1 dòng/mã
-  - `ref('dim_industry')` — 1 dòng/mã ngành cấp 4, kèm cấp 2 và 3
+  - `ref('dim_industry_hierarchy')` — 1 dòng/mã ngành cấp 4, kèm cấp 2 và 3
   - `ref('fct_price_daily')` — mã × phiên
   - `ref('fct_financial_quarterly')` — mã × quý
 
-- [ ] **Step 1: Viết `dim_industry.sql`**
+> **Tên model KHÔNG được trùng `dim_industry`.** Project không cấu hình schema
+> riêng cho từng tầng, nên mọi model dbt materialize vào đúng schema `main` —
+> nơi bảng nguồn `dim_industry` (177 dòng) đang nằm. Một model tên
+> `dim_industry` sẽ chạy `CREATE OR REPLACE TABLE main.dim_industry` và xoá
+> sạch bảng nguồn. Vì vậy mart mang tên `dim_industry_hierarchy`.
+
+- [ ] **Step 1: Viết `dim_industry_hierarchy.sql`**
 
 ```sql
 {{ config(materialized='table') }}
@@ -1662,6 +1668,22 @@ where l4.level = 4
 
 - [ ] **Step 2: Viết `dim_stock.sql`**
 
+> **Gốc là `dim_symbols`, không phải `stg_company_info`.** Một mã mới niêm yết
+> có giá ngay từ phiên đầu, nhưng hồ sơ doanh nghiệp chỉ được job **hằng
+> tháng** nạp về — nên luôn tồn tại một cửa sổ nhiều tuần trong đó mã đã có
+> giá mà chưa có hồ sơ. Đã kiểm chứng trên production: PCB lên sàn
+> 2026-08-12, có giá 2 phiên, VCI **có** hồ sơ (`com_type_code=NH`) nhưng
+> warehouse chưa nạp. Nếu lấy `stg_company_info` làm gốc thì mọi mã mới lên
+> sàn đều thành dòng mồ côi trong `fct_price_daily` và test `relationships`
+> fail — lặp lại vô hạn, không phải sự cố một lần.
+>
+> Ba mã DPD/PYU/TAC thì ngược lại: VCI trả **rỗng**, nguồn thật sự không có
+> hồ sơ. Nạp lại bao nhiêu lần cũng không có. Càng khẳng định phải sửa ở
+> model, không phải đi vá dữ liệu.
+>
+> Các mã thiếu hồ sơ vào bảng với `com_class = 'UNKNOWN'` (đã bị loại khỏi
+> mọi rổ percentile theo N2) và `has_profile = false`.
+
 ```sql
 {{ config(materialized='table') }}
 
@@ -1681,11 +1703,11 @@ ind4 as (
 )
 
 select
-    c.symbol,
+    s.symbol,
     c.company_name,
     c.short_name,
-    c.exchange,
-    c.com_class,
+    coalesce(c.exchange, s.exchange) as exchange,
+    coalesce(c.com_class, 'UNKNOWN') as com_class,
     c.com_type_code,
     c.is_bank,
     c.icb_code_lv2,
@@ -1712,13 +1734,17 @@ select
     px.return_3m,
     px.return_12m,
     px.sessions_1y,
-    (s.symbol is not null and s.is_active) as is_active
-from {{ ref('stg_company_info') }} c
-left join px using (symbol)
+    s.is_active,
+    (c.symbol is not null) as has_profile
+from {{ source('warehouse', 'dim_symbols') }} s
+left join {{ ref('stg_company_info') }} c on c.symbol = s.symbol
+left join px on px.symbol = s.symbol
 left join ind2 i2 on i2.icb_code = c.icb_code_lv2
 left join ind4 i4 on i4.icb_code = c.icb_code_lv4
-left join {{ source('warehouse', 'dim_symbols') }} s on s.symbol = c.symbol
 ```
+
+Expected: **1.599 dòng** (đúng bằng `dim_symbols`), trong đó 10 dòng
+`has_profile = false`.
 
 - [ ] **Step 3: Viết `fct_price_daily.sql`**
 
@@ -1788,7 +1814,8 @@ models:
           - accepted_values:
               values: ['NONFIN', 'BANK', 'OTHERFIN', 'UNKNOWN']
 
-  - name: dim_industry
+  - name: dim_industry_hierarchy
+    description: "1 dòng/ngành ICB cấp 4, kèm tên cấp 3 và cấp 2. Tên KHÁC bảng nguồn dim_industry để dbt không ghi đè bảng đó."
     columns:
       - name: icb_code_lv4
         tests: [not_null, unique]
@@ -1817,18 +1844,26 @@ models:
 - [ ] **Step 6: Chạy dbt**
 
 ```bash
-cd transforms && ../.venv/bin/dbt build --profiles-dir . --select dim_stock dim_industry fct_price_daily fct_financial_quarterly
+cd transforms && ../.venv/bin/dbt build --profiles-dir . --no-partial-parse \
+  --select dim_stock dim_industry_hierarchy fct_price_daily fct_financial_quarterly
 ```
 
-Expected: PASS.
+Expected: PASS toàn bộ, `dim_stock` 1.599 dòng.
 
-> **Nếu test `relationships` fail:** có mã trong `raw_price_daily` nhưng thiếu trong `raw_company_info`. Chạy `python build_warehouse.py --mode monthly` để bổ sung, rồi build lại.
+> **Sau khi build, bắt buộc kiểm bảng nguồn `dim_industry` vẫn còn 177 dòng
+> và đủ 4 cấp.** Đây là bảng production của A1; mất là mất thật.
+
+> **Nếu test `relationships` vẫn fail:** KHÔNG nới test, KHÔNG lọc dòng, và
+> KHÔNG chạy `build_warehouse.py`. `dim_stock` lấy gốc từ `dim_symbols` nên
+> mọi mã có giá đều phải có dòng — còn fail nghĩa là có mã trong
+> `raw_price_daily` mà thiếu cả trong `dim_symbols`, một lỗ hổng khác hẳn.
+> Báo lại kèm danh sách mã.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add transforms/models/marts/
-git commit -m "feat(dbt): marts nền dim_stock, dim_industry, fct_price_daily, fct_financial_quarterly
+git commit -m "feat(dbt): marts nền dim_stock, dim_industry_hierarchy, fct_price_daily, fct_financial_quarterly
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -1845,7 +1880,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `ref('int_valuation_percentile')`, `ref('stg_financial_ratio')`, `ref('dim_stock')`, `ref('fct_price_daily')`.
 - Produces:
   - `ref('mart_valuation_band')` — `symbol, period_end_date, pe, pb, pe_pct_own_5y, pb_pct_own_5y, valuation_band`
-  - `ref('mart_sector_snapshot')` — `icb_code_lv2, industry_lv2, com_class, period_end_date, n_symbols, median_pe, median_pb, median_roe, sector_return_3m`
+  - `ref('mart_sector_snapshot')` — `icb_code_lv2, industry_lv2, com_class, period_end_date, n_symbols, n_pe, n_pb, n_roe, median_pe, median_pb, median_roe, sector_return_3m`
 
 - [ ] **Step 1: Viết `mart_valuation_band.sql`**
 
@@ -1899,14 +1934,26 @@ with ratios as (
     where f.quarter between 1 and 4
 ),
 
+lp as (select max(period_end_date) as max_period from ratios),
+
 sector_return as (
+    -- Chỉ lấy mã CÒN giao dịch. Một mã bị đình chỉ sẽ đóng băng phiên cuối
+    -- của nó, và `return_3m` cũ hàng tháng vẫn được tính vào suất sinh lời
+    -- ngành hôm nay như thể còn hiệu lực. Ngưỡng 15 ngày thống nhất với quy
+    -- tắc đứt gãy giao dịch đã chốt ở Task 3.
     select d.icb_code_lv2, d.com_class,
            sum(p.return_3m * d.market_cap) / nullif(sum(d.market_cap), 0) as sector_return_3m
     from {{ ref('dim_stock') }} d
-    join (select symbol, max(trade_date) as trade_date
-          from {{ ref('fct_price_daily') }} group by 1) m using (symbol)
-    join {{ ref('fct_price_daily') }} p using (symbol, trade_date)
-    where d.market_cap is not null and p.return_3m is not null
+    join (select symbol, max(trade_date) as last_session
+          from {{ ref('fct_price_daily') }} group by 1) m
+      on m.symbol = d.symbol
+    join {{ ref('fct_price_daily') }} p
+      on p.symbol = d.symbol and p.trade_date = m.last_session
+    cross join (select max(trade_date) as market_date
+                from {{ ref('fct_price_daily') }}) mk
+    where d.market_cap is not null
+      and p.return_3m is not null
+      and datediff('day', m.last_session, mk.market_date) <= 15
     group by 1, 2
 )
 
@@ -1916,11 +1963,25 @@ select
     r.com_class,
     r.period_end_date,
     count(distinct r.symbol) as n_symbols,
+    -- `n_symbols` đếm mọi mã trong nhóm, nhưng median chỉ tính trên mã có số
+    -- liệu dùng được. Không phơi ba cột dưới thì `median_pe` của một nhóm 238
+    -- mã trông như dựa trên 238 mã, trong khi thực tế chỉ 182 mã có P/E hợp
+    -- lệ (đã đo trên production: 17/21 nhóm lệch).
+    count(r.pe)              as n_pe,
+    count(r.pb)              as n_pb,
+    count(r.roe)             as n_roe,
     median(r.pe)             as median_pe,
     median(r.pb)             as median_pb,
     median(r.roe)            as median_roe,
-    max(s.sector_return_3m)  as sector_return_3m
+    -- `sector_return_3m` tính từ phiên giao dịch GẦN NHẤT và lấy trọng số là
+    -- `market_cap` HIỆN TẠI, nên nó chỉ đúng cho kỳ mới nhất. Gắn nó vào một
+    -- kỳ quá khứ là trộn hai mốc thời gian — dòng 2018Q1 sẽ mang suất sinh
+    -- lời của 2026. Ta không có vốn hoá lịch sử nên không tính ngược được;
+    -- để NULL là trung thực, đừng bịa.
+    max(case when r.period_end_date = lp.max_period
+             then s.sector_return_3m end) as sector_return_3m
 from ratios r
+cross join lp
 left join sector_return s
        on s.icb_code_lv2 = r.icb_code_lv2 and s.com_class = r.com_class
 group by 1, 2, 3, 4
@@ -1953,26 +2014,249 @@ group by 1, 2, 3, 4
 - [ ] **Step 4: Chạy dbt và kiểm chứng**
 
 ```bash
-cd transforms && ../.venv/bin/dbt build --profiles-dir . --select mart_valuation_band mart_sector_snapshot
+cd transforms && ../.venv/bin/dbt build --profiles-dir . --no-partial-parse \
+  --select mart_valuation_band mart_sector_snapshot
 ```
 
 Expected: PASS.
 
+**Kiểm chứng 1 — nhãn phải khớp percentile, đối chiếu giá trị đã biết:**
+
 ```bash
 cd transforms && ../.venv/bin/dbt show --profiles-dir . --inline "
-select valuation_band, count(*) n from {{ ref('mart_valuation_band') }}
-where period_end_date = (select max(period_end_date) from {{ ref('mart_valuation_band') }})
-group by 1 order by 1
+select symbol, round(pe,2) as pe, round(pe_pct_own_5y,4) as pct,
+       pe_quarters_used, valuation_band
+from {{ ref('mart_valuation_band') }}
+where symbol in ('HPG','VCB','FPT') and period_end_date = date '2026-06-30'
+order by symbol
 " --limit 10
 ```
 
-Expected: cả 5 nhãn đều xuất hiện, phân bố tương đối đều (mỗi nhãn ~20%).
+Expected: HPG → `pe = 8.00`, `pct = 0.2941`, `pe_quarters_used = 18`,
+`valuation_band = 'rẻ'` (vì 0.20 ≤ 0.2941 < 0.40). Ba số này đã đo trên
+production, sai một số là model sai.
+
+**Kiểm chứng 2 — nhãn NULL đúng chỗ:** đếm số dòng có `pe_pct_own_5y is null`
+nhưng `valuation_band is not null`, và ngược lại. Cả hai phải bằng **0**.
+
+> **KHÔNG kỳ vọng 5 nhãn phân bố đều nhau.** Percentile ở đây so mỗi mã với
+> **lịch sử của chính nó**, nên ở một lát cắt ngang thị trường không có lý do
+> gì để phân bố đồng đều. Nếu cả thị trường đang rẻ so với lịch sử thì phần
+> lớn mã rơi vào `'rất rẻ'` — và đó là kết quả **đúng**, là thông tin có giá
+> trị nhất mà bảng này cung cấp. Thấy phân bố lệch thì **không được sửa model
+> để ép cho đều**. Cứ in phân bố ra để tham khảo, nhưng nó không phải tiêu chí
+> đạt/không đạt.
+
+**Kiểm chứng 3 — `n_pe` phải nhỏ hơn hoặc bằng `n_symbols` và phản ánh đúng
+số mã có số liệu.** In vài nhóm ngành lớn ở kỳ mới nhất, đối chiếu `n_symbols`
+với `n_pe`/`n_pb`/`n_roe`. Nhóm `icb_code_lv2 = 2300`, `com_class = 'NONFIN'`,
+kỳ `2026-06-30` phải cho `n_symbols = 238` và `n_pe = 182`.
+
+**Kiểm chứng 4 — `sector_return_3m` chỉ có giá trị ở kỳ mới nhất.** Đếm số
+dòng `sector_return_3m is not null` mà `period_end_date` khác kỳ lớn nhất —
+phải bằng **0**.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add transforms/models/marts/
 git commit -m "feat(dbt): mart_valuation_band + mart_sector_snapshot
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 8.5: Trục sentinel thứ ba — số 0 bất khả thi ở chỉ tiêu COMMON
+
+**Bối cảnh — đây là lỗi V7, phát hiện sau khi Task 8 đã xong.**
+
+Task 2 khử sentinel theo hai trục: `com_class` và kỳ báo cáo. Còn một trục thứ
+ba chưa xử lý: **các chỉ tiêu COMMON mà số 0 là bất khả thi về mặt kinh tế.**
+`roe` là ví dụ nặng nhất — 1.661 dòng có `roe` đúng bằng 0, và raw cũng đúng
+1.661 dòng, tức staging chưa NULL hoá dòng nào.
+
+Bằng chứng đo trên production rằng đây là sentinel, không phải giá trị thật:
+
+| Mã (kỳ 2026Q2) | roe | roa | biên LN sau thuế | `debt_per_equity` | pb |
+|---|---|---|---|---|---|
+| APT | **0,0** | −6,214 | −4,346 | **−0,380** | 0,0 |
+| JOS | **0,0** | −3,290 | −6,538 | **−0,425** | 0,0 |
+| HLA | **0,0** | −0,579 | −19,565 | **−0,418** | 0,0 |
+
+Một doanh nghiệp lỗ (`roa < 0`) **không thể** có ROE đúng bằng 0. `debt_per_equity`
+**âm** nghĩa là vốn chủ sở hữu âm — nợ chia cho số âm. Đây là các doanh nghiệp
+đã bị xoá sạch vốn chủ, và nguồn blank ROE thành 0 vì ROE mất ý nghĩa khi vốn
+chủ âm (lỗ chia vốn âm cho ra số dương). Kèm `pb = 0` cùng lý do.
+
+Phân rã 1.661 dòng `roe = 0`:
+- **686 dòng "trắng"**: `roa = 0 and roic = 0 and current_ratio = 0` — nguồn trả
+  bản ghi toàn số 0, không có dữ liệu gì. Mọi chỉ tiêu trong dòng đều là 0.
+- **975 dòng còn lại**: chỉ `roe` (và `pb`) bị zero. Trong đó **865** có
+  `debt_per_equity < 0`, **716** có `pb = 0`, **929/975 = 95,3%** có ít nhất
+  một trong hai dấu hiệu. 46 dòng không có dấu hiệu nào.
+
+**Tác động đã đo:** `median_roe` của `mart_sector_snapshot` bị kéo thấp có hệ
+thống ở 7 nhóm ngành — ngành 2300 cho 0,0526 trong khi đúng phải là 0,0644
+(**thấp hơn 22%**), ngành 5700 lệch **39%**, ngành 3500 lệch **25%**.
+
+Nguy hiểm hơn nữa là ở Task 10: nếu `roe = 0` được coi là thật, một doanh nghiệp
+**đã mất sạch vốn chủ** sẽ được xếp hạng chất lượng **cao hơn** một doanh nghiệp
+có ROE thấp nhưng dương. Đó là đảo ngược thứ tự, không phải sai số nhỏ.
+
+**Files:**
+- Modify: `transforms/models/staging/stg_financial_ratio.sql`
+- Create: `transforms/tests/assert_no_impossible_zero.sql`, `transforms/tests/assert_real_zeros_preserved.sql`
+
+**Interfaces:** không đổi cột nào. Chỉ đổi giá trị: một số 0 thành NULL.
+
+#### Phân loại — luật quyết định
+
+Nguyên tắc: **NULL hoá số 0 khi số 0 bất khả thi về kinh tế; GIỮ số 0 khi nó có
+nghĩa thật.** Nhầm chiều nào cũng sai: NULL hoá quá tay là xoá dữ liệu thật,
+giữ quá tay là bịa dữ liệu.
+
+**Nhóm A — NULL hoá số 0 toàn cục (số 0 bất khả thi):**
+
+| Cột | Vì sao 0 là bất khả thi |
+|---|---|
+| `roe` | vốn chủ âm hoặc bằng 0; lỗ mà ROE = 0 là vô nghĩa |
+| `pe` | giá bằng 0 hoặc lợi nhuận vô hạn |
+| `pb` | giá bằng 0 hoặc giá trị sổ sách vô hạn |
+| `ps` | giá bằng 0 hoặc doanh thu vô hạn |
+| `ev_to_ebitda` | giá trị doanh nghiệp bằng 0 |
+| `price_to_cash_flow` | giá bằng 0 |
+| `market_cap` | công ty niêm yết không thể có vốn hoá 0 |
+
+**Nhóm B — TUYỆT ĐỐI GIỮ số 0 (số 0 là giá trị thật):**
+
+| Cột | Vì sao 0 là thật | Số dòng = 0 |
+|---|---|---|
+| `dividend_yield` | phần lớn DN Việt không trả cổ tức trong quý | **38.112** |
+| `debt_per_equity` | doanh nghiệp không vay nợ | 9.914 |
+| `days_inventory_outstanding` | DN dịch vụ không có hàng tồn kho | 2.168 |
+| `day_sale_outstanding`, `days_payable_outstanding`, `cash_cycle` | tương tự | |
+| `npl`, `casa_ratio` | ngân hàng có thể gần 0 thật | |
+
+> NULL hoá `dividend_yield` là xoá 38.112 điểm dữ liệu **thật** và làm sập hoàn
+> toàn thành phần điểm cổ tức ở Task 10. Đây là cái bẫy lớn nhất của task này.
+
+**Nhóm C — chỉ NULL hoá bên trong "dòng trắng"** (thái độ thận trọng: không phá
+dữ liệu có thể là thật): mọi cột numeric còn lại — `roa`, `roic`, `current_ratio`,
+`quick_ratio`, `cash_ratio`, `gross_margin`, `ebit_margin`,
+`pre_tax_profit_margin`, `after_tax_profit_margin`, `ebitda`, `ebit`,
+`asset_turnover`, `fixed_asset_turnover`, `equity_to_asset`, `net_interest_margin`…
+
+- [ ] **Step 1: Thêm phát hiện dòng trắng vào `cleaned` CTE**
+
+Định nghĩa: `roa = 0 and roic = 0 and current_ratio = 0` → **686 dòng** (đã đo).
+`roic` và `current_ratio` là chỉ tiêu NONFIN nên `applicable_metrics()` đã NULL
+hoá chúng ở `BANK`; nghĩa là luật này theo cấu trúc không bao giờ khớp dòng
+`BANK` — đúng ý muốn, vì `BANK` không có dòng `roe = 0` nào (đã đo: 0/1.035).
+
+Thêm vào `cleaned`:
+
+```sql
+        (roa = 0 and roic = 0 and current_ratio = 0) as is_blank_row
+```
+
+- [ ] **Step 2: Áp Nhóm A ở SELECT ngoài cùng**
+
+Thêm các cột này vào `exclude (...)` rồi khai báo lại bằng `nullif`. Giữ nguyên
+mọi comment và logic đã có (`cir`, `average_cost_of_financing`, `car`,
+`debt_to_equity`, `is_loss_making`, `pe_meaningful`, `pb_meaningful`).
+
+```sql
+    nullif(roe, 0)                as roe,
+    nullif(pe, 0)                 as pe,
+    nullif(pb, 0)                 as pb,
+    nullif(ps, 0)                 as ps,
+    nullif(ev_to_ebitda, 0)       as ev_to_ebitda,
+    nullif(price_to_cash_flow, 0) as price_to_cash_flow,
+    nullif(market_cap, 0)         as market_cap,
+```
+
+Sau khi `pe`/`pb` đã NULL ở nguồn, `pe_meaningful`/`pb_meaningful` giữ nguyên
+công thức — `nullif(pe, 0)` bên trong nó trở thành dư thừa nhưng vô hại, đừng
+xoá để không phá comment giải thích lịch sử.
+
+- [ ] **Step 3: Áp Nhóm C — NULL hoá mọi chỉ tiêu numeric trong dòng trắng**
+
+Dùng `case when is_blank_row then null else <cot> end` cho từng cột Nhóm C.
+Trong dòng trắng, NULL hoá **cả `dividend_yield`** — khi nguồn không trả gì thì
+không có gì trong dòng đó đáng tin, kể cả số 0 của cổ tức. Đây là ngoại lệ duy
+nhất với Nhóm B, và chỉ giới hạn trong 686 dòng trắng.
+
+Cuối cùng `exclude` cột `is_blank_row` khỏi kết quả — nó là biến trung gian.
+
+- [ ] **Step 4: `transforms/tests/assert_no_impossible_zero.sql`**
+
+```sql
+-- Canh Nhóm A: sau khi sửa, không cột nào trong nhóm còn giá trị đúng bằng 0.
+with z as (
+    select 'roe' as metric, count(*) as n from {{ ref('stg_financial_ratio') }} where roe = 0
+    union all select 'pe', count(*) from {{ ref('stg_financial_ratio') }} where pe = 0
+    union all select 'pb', count(*) from {{ ref('stg_financial_ratio') }} where pb = 0
+    union all select 'ps', count(*) from {{ ref('stg_financial_ratio') }} where ps = 0
+    union all select 'ev_to_ebitda', count(*) from {{ ref('stg_financial_ratio') }} where ev_to_ebitda = 0
+    union all select 'price_to_cash_flow', count(*) from {{ ref('stg_financial_ratio') }} where price_to_cash_flow = 0
+    union all select 'market_cap', count(*) from {{ ref('stg_financial_ratio') }} where market_cap = 0
+)
+select * from z where n > 0
+```
+
+- [ ] **Step 5: `transforms/tests/assert_real_zeros_preserved.sql`**
+
+Test này canh **lỗi ngược lại** — NULL hoá quá tay. Nó tồn tại vì đây là rủi ro
+lớn hơn: một test chỉ canh chiều "còn sót sentinel" sẽ xanh rực rỡ trong khi
+38.112 điểm dữ liệu cổ tức thật đã bị xoá.
+
+```sql
+-- dividend_yield = 0 là giá trị THẬT (phần lớn DN Việt không trả cổ tức trong
+-- quý). Đo trên production trước khi sửa: 38.112 dòng. Cho phép giảm tối đa
+-- 686 dòng (số dòng trắng) — dưới ngưỡng đó nghĩa là ai đó đã NULL hoá nhầm.
+select count(*) as n_conserved
+from {{ ref('stg_financial_ratio') }}
+where dividend_yield = 0
+having count(*) < 37000
+```
+
+- [ ] **Step 6: Build lại TOÀN BỘ DAG, không chỉ staging**
+
+`stg_financial_ratio` nằm ở gốc DAG. Mọi model `int_*` và `mart_*` đọc nó đều
+phải chạy lại, nếu không marts sẽ giữ giá trị cũ mà không test nào bắt được.
+
+```bash
+cd transforms && ../.venv/bin/dbt build --profiles-dir . --no-partial-parse
+```
+
+Expected: PASS toàn bộ. Đây là lần build đầy đủ đầu tiên của cả A2 — nếu có
+model nào fail vì thay đổi này, **dừng và báo**, đừng nới test.
+
+- [ ] **Step 7: Kiểm chứng bằng số đã đo trước**
+
+1. `roe = 0` còn **0** dòng (trước: 1.661).
+2. `roe is null` tăng đúng 1.661 dòng so với trước (trước: 130 NULL trên tổng 48.103).
+3. `dividend_yield = 0` còn **≥ 37.000** dòng (trước 38.112, mất tối đa 686 dòng trắng).
+4. `median_roe` của `mart_sector_snapshot` ở kỳ `2026-06-30`:
+   ngành `2300`/`NONFIN` phải chuyển từ **0,0526 → 0,0644**;
+   ngành `3500`/`NONFIN` từ **0,0855 → 0,1069**.
+   Hai con số đích này đã tính trước trên production — lệch là model sai.
+5. `mart_valuation_band`: HPG kỳ `2026-06-30` vẫn phải cho `pe = 8.00`,
+   `pe_pct_own_5y = 0.2941`, `valuation_band = 'rẻ'`. Định giá **không được
+   đổi**, vì `pe`/`pb` đã được `*_meaningful` chặn từ trước — nếu con số này
+   đổi thì thay đổi đã lan sang chỗ không đáng lan.
+6. Số dòng `dim_stock` vẫn 1.599, `fct_price_daily` vẫn 1.248.015.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add transforms/
+git commit -m "fix(dbt): khử sentinel số 0 bất khả thi ở chỉ tiêu COMMON (V7)
+
+roe=0 trên 1.661 dòng là sentinel của doanh nghiệp âm vốn chủ sở hữu, không
+phải ROE thật — 95,3% số dòng có debt_per_equity âm hoặc pb=0. Giữ nguyên
+38.112 dòng dividend_yield=0 vì đó là giá trị thật.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -1987,7 +2271,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `ref('stg_financial_ratio')`, `ref('stg_price_daily')`, `ref('dim_stock')`.
-- Produces: `ref('mart_data_quality')` — `symbol, quarters_available, price_sessions_1y, ratio_age_days, max_price_gap_days, data_quality_score` (0–100), `data_quality_ratio` (0–1), `quality_flags` (VARCHAR)
+- Produces: `ref('mart_data_quality')` — `symbol, quarters_available, price_sessions_1y, ratio_age_days, max_missed_sessions, has_required_metrics, data_quality_score` (0–100), `data_quality_ratio` (0–1), `quality_flags` (VARCHAR)
 
 - [ ] **Step 1: Viết model**
 
@@ -2003,22 +2287,41 @@ with ratio_stats as (
     group by 1
 ),
 
-price_stats as (
-    select
-        symbol,
-        count(*) filter (where trade_date >= current_date - interval '365 days')
-            as price_sessions_1y,
-        max(gap_days) as max_price_gap_days
+-- Khoảng trống đo bằng SỐ PHIÊN THỊ TRƯỜNG BỊ BỎ, không phải số ngày lịch.
+-- Đã đo trên production: nghỉ Tết 2026 tạo khoảng trống đúng 10 NGÀY LỊCH cho
+-- 891/1.577 mã. Ngưỡng ">10 ngày lịch" của bản kế hoạch cũ chỉ vừa đủ không
+-- nổ — Tết dài thêm một ngày là cờ nổ cho 891 mã và thành phần điểm này mất
+-- sạch ý nghĩa. Đếm phiên bị bỏ thì miễn nhiễm với lịch nghỉ: đã kiểm, khoảng
+-- trống Tết cho ra ĐÚNG 0 phiên bị bỏ, vì thị trường đóng cửa không phải lỗi
+-- của mã nào.
+market_sessions as (
+    select trade_date, row_number() over (order by trade_date) as session_no
     from (
-        select
-            symbol,
-            trade_date,
-            date_diff('day',
-                lag(trade_date) over (partition by symbol order by trade_date),
-                trade_date) as gap_days
+        select distinct trade_date
         from {{ ref('stg_price_daily') }}
         where trade_date >= current_date - interval '365 days'
     )
+),
+
+symbol_sessions as (
+    select
+        p.symbol,
+        m.session_no,
+        lag(m.session_no) over (partition by p.symbol order by m.session_no)
+            as prev_session_no
+    from {{ ref('stg_price_daily') }} p
+    join market_sessions m using (trade_date)
+    where p.trade_date >= current_date - interval '365 days'
+),
+
+price_stats as (
+    -- lag() ở CTE trên, max() ở đây — hai bậc riêng. Không lồng hàm cửa sổ vào
+    -- hàm tổng hợp: SQL không cho phép, và dự án này đã vấp đúng lỗi đó ở Task 3.
+    select
+        symbol,
+        count(*)                              as price_sessions_1y,
+        max(session_no - prev_session_no - 1) as max_missed_sessions
+    from symbol_sessions
     group by 1
 ),
 
@@ -2038,6 +2341,13 @@ required_ok as (
     join (select symbol, max(period_end_date) as period_end_date
           from {{ ref('stg_financial_ratio') }} where quarter between 1 and 4
           group by 1) m using (symbol, period_end_date)
+    -- Lọc dòng quý ở CẢ query ngoài, không chỉ trong subquery. Dòng năm
+    -- (quarter = 5) dùng CHUNG period_end_date = 31/12 với dòng quý 4 — đã đo
+    -- trên production: tại 2025-12-31 có 1.390 dòng quý VÀ 1.438 dòng năm.
+    -- Thiếu mệnh đề này thì mọi mã có kỳ mới nhất là quý 4 sẽ kéo cả dòng năm
+    -- vào, và max() nhặt giá trị dễ dãi hơn giữa hai trục sentinel khác nhau —
+    -- báo "đủ chỉ tiêu bắt buộc" cho mã thực ra không đủ.
+    where f.quarter between 1 and 4
     group by 1
 ),
 
@@ -2047,7 +2357,10 @@ scored as (
         coalesce(r.quarters_available, 0)  as quarters_available,
         coalesce(p.price_sessions_1y, 0)   as price_sessions_1y,
         r.ratio_age_days,
-        coalesce(p.max_price_gap_days, 999) as max_price_gap_days,
+        -- Giữ NULL ở đầu ra, KHÔNG coalesce về 999. Một mã chưa có phiên giá
+        -- nào thì "số phiên bỏ" là không đo được, không phải 999. coalesce chỉ
+        -- được dùng bên trong công thức điểm bên dưới.
+        p.max_missed_sessions,
         coalesce(q.has_required_metrics, 0) as has_required_metrics,
         -- 5 thành phần, tổng trọng số = 1.
         0.30 * least(1.0, coalesce(r.quarters_available, 0) / 20.0)
@@ -2057,7 +2370,11 @@ scored as (
                     when r.ratio_age_days <= 240  then 0.5
                     else 0.0 end
       + 0.15 * coalesce(q.has_required_metrics, 0)
-      + 0.10 * case when coalesce(p.max_price_gap_days, 999) <= 10 then 1.0 else 0.0 end
+      -- Ngưỡng 5 phiên = hơn một tuần giao dịch. Phân bố đã đo trên production:
+      -- 612 mã bỏ 0 phiên · 242 mã bỏ 1-2 · 154 mã bỏ 3-5 · 188 mã bỏ 6-10 ·
+      -- 381 mã bỏ >10 (tệ nhất là BDB, chỉ giao dịch 47 trong 247 phiên, có lúc
+      -- bỏ liền 200 phiên).
+      + 0.10 * case when coalesce(p.max_missed_sessions, 999) <= 5 then 1.0 else 0.0 end
             as ratio
     from {{ ref('dim_stock') }} d
     left join ratio_stats r using (symbol)
@@ -2070,7 +2387,7 @@ select
     quarters_available,
     price_sessions_1y,
     ratio_age_days,
-    max_price_gap_days,
+    max_missed_sessions,
     (has_required_metrics = 1) as has_required_metrics,
     ratio                      as data_quality_ratio,
     round(ratio * 100, 1)      as data_quality_score,
@@ -2079,7 +2396,7 @@ select
         case when price_sessions_1y < 200 then 'thiếu phiên giá trong 1 năm' end,
         case when ratio_age_days > 240    then 'tỷ số quá cũ (>8 tháng)' end,
         case when has_required_metrics = 0 then 'thiếu chỉ tiêu bắt buộc của loại hình' end,
-        case when max_price_gap_days > 10 then 'có khoảng trống giá >10 ngày' end
+        case when max_missed_sessions > 5 then 'bỏ >5 phiên giao dịch liên tiếp' end
     ) as quality_flags
 from scored
 ```
@@ -2101,22 +2418,47 @@ from scored
 - [ ] **Step 3: Chạy dbt và xem phân bố**
 
 ```bash
-cd transforms && ../.venv/bin/dbt build --profiles-dir . --select mart_data_quality
+cd transforms && ../.venv/bin/dbt build --profiles-dir . --no-partial-parse --select mart_data_quality
 ```
 
-Expected: PASS.
+Expected: PASS. Số dòng = **1.599** (đúng bằng `dim_stock`).
+
+**Kiểm chứng 1 — chỉ số phiên bị bỏ phải miễn nhiễm với lịch nghỉ.** Đây là lý
+do cả chỉ số này được viết lại, nên phải kiểm trực tiếp:
+
+Khoảng trống Tết `2026-02-23` dài **10 ngày lịch** nhưng phải cho **0 phiên bị
+bỏ** cho mọi mã giao dịch bình thường. Kiểm bằng cách lấy một mã thanh khoản
+cao (ví dụ HPG, VCB) và xác nhận `max_missed_sessions` của nó **không** nhảy lên
+vì Tết. Nếu chỉ số này ≥ 8 cho HPG thì công thức đang đếm ngày lịch, không phải
+phiên — sai, dừng và báo.
+
+**Kiểm chứng 2 — đối chiếu mã tệ nhất đã đo trước.** Một năm có **247 phiên**
+thị trường. `BDB` phải cho `price_sessions_1y = 47` và `max_missed_sessions = 200`.
+Ba số này đã đo trên production; lệch là model sai.
+
+**Kiểm chứng 3 — phân bố số phiên bị bỏ.** Phải khớp: 612 mã bỏ 0 phiên · 242 mã
+bỏ 1–2 · 154 mã bỏ 3–5 · 188 mã bỏ 6–10 · 381 mã bỏ >10. (Tổng 1.577 mã có giá;
+22 mã còn lại trong `dim_stock` chưa có phiên nào → `max_missed_sessions` NULL.)
+
+**Kiểm chứng 4 — cột đầu ra không được bịa số.** Đếm dòng `max_missed_sessions = 999`
+— phải bằng **0**. Số 999 chỉ được tồn tại bên trong công thức điểm.
+
+**Kiểm chứng 5 — phân bố điểm.**
 
 ```bash
 cd transforms && ../.venv/bin/dbt show --profiles-dir . --inline "
 select
   count(*) tong,
   count(*) filter (where data_quality_score >= 60) dat_60,
-  round(median(data_quality_score),1) trung_vi
+  round(median(data_quality_score),1) trung_vi,
+  count(*) filter (where quality_flags = '') khong_co_co_nao
 from {{ ref('mart_data_quality') }}
 " --limit 5
 ```
 
-Expected: `dat_60` ≥ 800 mã.
+Expected: `dat_60` ≥ 800 mã (ước lượng trước khi làm cho ~1.298 mã, trung vị
+~84 — nhưng ước lượng đó giả định mọi mã đủ chỉ tiêu bắt buộc nên số thật sẽ
+thấp hơn chút). Đây là **mốc sàn hợp lý**, không phải con số phải khớp chính xác.
 
 - [ ] **Step 4: Commit**
 
@@ -2137,11 +2479,11 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Create: `transforms/seeds/scoring_weights.csv`
 - Create: `transforms/models/marts/mart_stock_scorecard.sql`
 - Modify: `transforms/models/marts/_marts.yml`
-- Create: `transforms/tests/assert_scorecard_coverage.sql`, `assert_bank_scored_on_quality.sql`
+- Create: `transforms/tests/assert_scorecard_coverage.sql`, `assert_bank_scored_on_quality.sql`, `assert_scoring_weights_sum_to_one.sql`, `assert_score_weight_coverage.sql`
 
 **Interfaces:**
 - Consumes: `ref('int_metric_percentile')`, `ref('int_valuation_percentile')`, `ref('mart_data_quality')`, `ref('dim_stock')`.
-- Produces: `ref('mart_stock_scorecard')` — 1 dòng/mã, cột `symbol, com_class, peer_basis, peer_count, value_score, quality_score, growth_score, dividend_score, safety_score, *_metrics_used, is_loss_making, data_quality_score, facts` (JSON)
+- Produces: `ref('mart_stock_scorecard')` — 1 dòng/mã, cột `symbol, com_class, peer_basis, peer_count, value_score, quality_score, growth_score, dividend_score, safety_score, *_metrics_used, *_weight_coverage, is_loss_making, data_quality_score, facts` (JSON)
 
 - [ ] **Step 1: Tạo seed `transforms/seeds/scoring_weights.csv`**
 
@@ -2231,7 +2573,7 @@ OTHERFIN,safety,data_quality_ratio,higher,direct,0.10
 ```
 
 Run: `cd transforms && ../.venv/bin/dbt seed --profiles-dir .`
-Expected: nạp 79 dòng.
+Expected: nạp **78 dòng** (13 định giá + 17 chất lượng + 15 tăng trưởng + 12 cổ tức + 21 an toàn).
 
 - [ ] **Step 2: Viết test thất bại**
 
@@ -2258,6 +2600,46 @@ select count(*) as n_banks_scored
 from {{ ref('mart_stock_scorecard') }}
 where com_class = 'BANK' and quality_score is not null and quality_score > 0
 having count(*) < 20
+```
+
+`transforms/tests/assert_scoring_weights_sum_to_one.sql`:
+
+```sql
+-- Cổng chặn ở `gated` so trọng số dùng được với TỔNG trọng số định nghĩa. Nếu
+-- một nhóm (com_class, component) không tổng bằng 1,0 thì ngưỡng 0,5 mang
+-- nghĩa khác đi mà không ai nhận ra. Test này khoá bất biến đó lại.
+select com_class, component, sum(weight) as total_weight
+from {{ ref('scoring_weights') }}
+group by 1, 2
+having abs(sum(weight) - 1.0) > 0.001
+```
+
+`transforms/tests/assert_score_weight_coverage.sql`:
+
+```sql
+-- Không điểm thành phần nào được tồn tại khi đo được dưới một nửa trọng số.
+-- Đây là test canh trực tiếp cho lỗi "van luôn mở": trước khi sửa, 617 cặp
+-- (mã, thành phần) có điểm mà trọng số đo được < 0,5 — trong đó 442 ở thành
+-- phần tăng trưởng, tệ nhất là điểm 100/100 dựng trên đúng 10% trọng số.
+select symbol, 'value' as component, value_score, value_weight_coverage
+from {{ ref('mart_stock_scorecard') }}
+where value_score is not null and value_weight_coverage < 0.5
+union all
+select symbol, 'quality', quality_score, quality_weight_coverage
+from {{ ref('mart_stock_scorecard') }}
+where quality_score is not null and quality_weight_coverage < 0.5
+union all
+select symbol, 'growth', growth_score, growth_weight_coverage
+from {{ ref('mart_stock_scorecard') }}
+where growth_score is not null and growth_weight_coverage < 0.5
+union all
+select symbol, 'dividend', dividend_score, dividend_weight_coverage
+from {{ ref('mart_stock_scorecard') }}
+where dividend_score is not null and dividend_weight_coverage < 0.5
+union all
+select symbol, 'safety', safety_score, safety_weight_coverage
+from {{ ref('mart_stock_scorecard') }}
+where safety_score is not null and safety_weight_coverage < 0.5
 ```
 
 - [ ] **Step 3: Chạy để xác nhận fail**
@@ -2340,6 +2722,16 @@ weighted as (
       on w.com_class = m.com_class and w.metric = m.metric
 ),
 
+-- Tổng trọng số ĐỊNH NGHĨA cho mỗi (com_class, component), lấy từ seed.
+-- Đây là mẫu số đúng của cổng chặn bên dưới. Không được suy nó từ số dòng
+-- thực có, vì một chỉ tiêu vắng mặt hoàn toàn thì KHÔNG sinh dòng nào và tự
+-- biến mất khỏi cả tử số lẫn mẫu số.
+component_weight_total as (
+    select com_class, component, sum(weight) as weight_defined
+    from {{ ref('scoring_weights') }}
+    group by 1, 2
+),
+
 -- Chuẩn hoá lại trọng số trên các chỉ tiêu CÓ dữ liệu (§7.1-6 của spec):
 -- chỉ tiêu NULL không kéo điểm xuống, mà bị loại khỏi mẫu số.
 component_scores as (
@@ -2350,17 +2742,38 @@ component_scores as (
         round(100 * sum(weight * adj) filter (where adj is not null)
               / nullif(sum(weight) filter (where adj is not null), 0), 1) as raw_score,
         count(*) filter (where adj is not null) as metrics_used,
-        count(*)                                as metrics_total
+        sum(weight) filter (where adj is not null) as weight_used
     from weighted
     group by 1, 2, 3
 ),
 
--- Dùng được dưới 50% số chỉ tiêu → điểm không đáng tin → NULL.
+-- CỔNG CHẶN: phải đo bằng TRỌNG SỐ, không bằng số chỉ tiêu có mặt.
+--
+-- Công thức cũ `metrics_used * 2 >= metrics_total` với `metrics_total = count(*)`
+-- là van luôn mở, vì `count(*)` chỉ đếm những dòng có mặt trong `weighted`.
+-- Đã đo trên production: **617 cặp (mã, thành phần) lọt lưới** — tăng trưởng
+-- 442 · định giá 96 · cổ tức 33 · chất lượng 30 · an toàn 16.
+--
+-- Ca tệ nhất (QLD, SDY, HFX, VHH, VMT, PLA, VGL, LMC...): chỉ có duy nhất
+-- `growth_consistency` (trọng số 0,10) trong khi 90% trọng số của thành phần
+-- tăng trưởng không đo được. Cổng cũ thấy "1 trong 1 chỉ tiêu có mặt = 100%"
+-- và cho qua. Vì điểm được chuẩn hoá lại trên phần trọng số dùng được, một mã
+-- KHÔNG có dữ liệu doanh thu lẫn lợi nhuận sẽ nhận `growth_score = 100/100`.
+-- Tự tin tối đa từ bằng chứng tối thiểu.
+--
+-- Siết cổng gần như không mất độ phủ: 1.552 mã vẫn đạt ≥3 trong 5 thành phần
+-- (so với 1.573 ở cổng cũ), mà loại được 617 điểm bịa.
 gated as (
     select
-        symbol, com_class, component, metrics_used, metrics_total,
-        case when metrics_used * 2 >= metrics_total then raw_score end as score
-    from component_scores
+        g.symbol, g.com_class, g.component, g.metrics_used,
+        round(g.weight_used / wt.weight_defined, 3) as weight_coverage,
+        -- Ngưỡng 0,5 = phải đo được ít nhất một nửa TRỌNG SỐ của thành phần.
+        -- Đây là con số duy nhất cần đổi nếu muốn siết/nới chính sách này.
+        case when g.weight_used >= 0.5 * wt.weight_defined
+             then g.raw_score end as score
+    from component_scores g
+    join component_weight_total wt
+      on wt.com_class = g.com_class and wt.component = g.component
 ),
 
 pivoted as (
@@ -2376,7 +2789,16 @@ pivoted as (
         max(metrics_used) filter (where component = 'quality')  as quality_metrics_used,
         max(metrics_used) filter (where component = 'growth')   as growth_metrics_used,
         max(metrics_used) filter (where component = 'dividend') as dividend_metrics_used,
-        max(metrics_used) filter (where component = 'safety')   as safety_metrics_used
+        max(metrics_used) filter (where component = 'safety')   as safety_metrics_used,
+        -- `metrics_used` một mình vẫn gây ngộ nhận, đúng như `n_symbols` ở
+        -- Task 8: "dùng 1 chỉ tiêu" không cho biết chỉ tiêu đó nặng 10% hay
+        -- 50%. Phơi luôn phần trọng số đã đo được để mỗi điểm tự mang theo cơ
+        -- sở bằng chứng của nó.
+        max(weight_coverage) filter (where component = 'value')    as value_weight_coverage,
+        max(weight_coverage) filter (where component = 'quality')  as quality_weight_coverage,
+        max(weight_coverage) filter (where component = 'growth')   as growth_weight_coverage,
+        max(weight_coverage) filter (where component = 'dividend') as dividend_weight_coverage,
+        max(weight_coverage) filter (where component = 'safety')   as safety_weight_coverage
     from gated
     group by symbol
 ),
@@ -2386,7 +2808,11 @@ pivoted as (
 peer_info as (
     select symbol,
            mode(peer_basis) as peer_basis,
-           max(peer_count)  as peer_count
+           -- mode() chứ KHÔNG max(): các chỉ tiêu khác nhau có thể rơi vào rổ
+           -- so sánh khác nhau (một số phải lùi về rổ chỉ theo com_class).
+           -- max() sẽ báo con số lớn nhất trong mọi rổ, tức phóng đại số mã
+           -- mà điểm thật sự được so với.
+           mode(peer_count)  as peer_count
     from {{ ref('int_metric_percentile') }}
     where pct_peer is not null
     group by symbol
@@ -2418,8 +2844,12 @@ facts as (
             {'metric': 'dividend_years_consecutive',
              -- ép DOUBLE để mọi phần tử trong list có cùng kiểu struct
              'value': cast(dv.dividend_years_consecutive as double),
+             -- `dividend_years_consecutive` là số NGUYÊN. `printf('%.0f', ...)`
+             -- nổ "Invalid type specifier f for formatting a value of type int"
+             -- trên DuckDB — %f đòi kiểu thực. Với một số đếm thì cast sang
+             -- varchar vừa đúng vừa gọn hơn printf.
              'text': 'Trả cổ tức '
-                     || printf('%.0f', dv.dividend_years_consecutive)
+                     || cast(dv.dividend_years_consecutive as varchar)
                      || ' năm liên tiếp, tỷ suất TB 5 năm '
                      || replace(printf('%.1f', dv.dividend_yield_avg_5y * 100), '.', ',')
                      || '%'},
@@ -2459,6 +2889,11 @@ select
     p.growth_metrics_used,
     p.dividend_metrics_used,
     p.safety_metrics_used,
+    p.value_weight_coverage,
+    p.quality_weight_coverage,
+    p.growth_weight_coverage,
+    p.dividend_weight_coverage,
+    p.safety_weight_coverage,
     d.market_cap,
     d.avg_turnover_20d,
     d.last_close,
@@ -2543,7 +2978,37 @@ where com_class = 'BANK' order by quality_score desc nulls last limit 8
 " --limit 8
 ```
 
-Expected: ≥ 20 ngân hàng có `quality_score` khác NULL và > 0. **Nếu toàn NULL: lỗi sentinel chưa được sửa — quay lại Task 2.**
+Expected: ≥ 20 ngân hàng (trong 29 mã) có `quality_score` khác NULL và > 0.
+**Nếu toàn NULL: lỗi sentinel chưa được sửa — quay lại Task 2.**
+
+- [ ] **Step 7b: Kiểm chứng cổng chặn trọng số đã đóng đúng**
+
+Đây là kiểm chứng quan trọng nhất của cả task. Ba con số dưới đã đo trên
+production **trước khi** làm, bằng cách mô phỏng lại cả hai cổng:
+
+1. Số cặp (mã, thành phần) có điểm mà `weight_coverage < 0.5` phải bằng **0**.
+   Trước khi siết cổng là **617** cặp (tăng trưởng 442 · định giá 96 · cổ tức 33
+   · chất lượng 30 · an toàn 16).
+2. Số mã đạt **≥ 3 trong 5** thành phần phải khoảng **1.552** (cổng cũ cho
+   1.573). Nếu con số này tụt xuống dưới 1.400 thì cổng đang siết quá tay —
+   dừng và báo.
+3. Các mã `QLD`, `SDY`, `HFX`, `VHH`, `VMT`, `PLA`, `VGL`, `LMC` phải có
+   `growth_score = NULL`. Trước khi sửa, chúng nhận điểm tăng trưởng dựng trên
+   đúng một chỉ tiêu mang 10% trọng số.
+
+```bash
+cd transforms && ../.venv/bin/dbt show --profiles-dir . --inline "
+select symbol, growth_score, growth_metrics_used, growth_weight_coverage
+from {{ ref('mart_stock_scorecard') }}
+where symbol in ('QLD','SDY','HFX','VHH','VMT','PLA','VGL','LMC')
+order by symbol
+" --limit 10
+```
+
+Expected: `growth_score` NULL cả 8 mã.
+
+**Nếu 8 mã này vẫn có `growth_score`:** cổng chặn chưa hoạt động. Không được nới
+test — quay lại sửa `gated`.
 
 - [ ] **Step 8: Commit**
 
@@ -2566,6 +3031,37 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Create: `config/scoring_profiles.yml`
 - Create: `src/scoring.py`
 - Create: `tests/test_scoring.py`
+- Modify: `transforms/models/marts/mart_stock_scorecard.sql` (thêm 1 cột — xem Step 0)
+
+- [ ] **Step 0: Thêm `quarters_available` vào `mart_stock_scorecard`**
+
+`universe_defaults` có khoá `min_quarters_history: 12`, nhưng mart hiện **không có
+cột nào** để áp nó — đã kiểm 40 cột của `mart_stock_scorecard`, không có
+`quarters_available`. Nếu để nguyên, đây là **filter rỗng**: người dùng đặt ngưỡng,
+tin rằng đã lọc mã thiếu lịch sử, mà thực tế không lọc gì. Đúng lớp lỗi mà cả dự
+án này đang chống — một cái van trông như đang làm việc.
+
+Không xoá khoá đó, vì "đủ 12 quý lịch sử tỷ số" và "điểm chất lượng dữ liệu ≥ 60"
+là **hai điều khác nhau**: điểm dữ liệu là tổ hợp 5 thành phần, một mã có thể đạt
+60 điểm nhờ giá và độ tươi trong khi lịch sử tỷ số vẫn mỏng.
+
+`mart_data_quality` đã có sẵn cột này và đã được join vào mart với alias `dq`.
+Thêm một dòng vào SELECT cuối của `transforms/models/marts/mart_stock_scorecard.sql`,
+cạnh `dq.data_quality_score`:
+
+```sql
+    dq.quarters_available,
+```
+
+Rồi build lại:
+
+```bash
+cd transforms && ../.venv/bin/dbt build --profiles-dir . --no-partial-parse
+```
+
+Expected: PASS toàn bộ (107 node), mart vẫn **1.589 dòng**, và các mốc của Task 10
+không đổi — 0 cặp có điểm mà `*_weight_coverage < 0.5` · 1.552 mã đạt ≥3/5 thành
+phần · 29/29 ngân hàng có `quality_score > 0`.
 
 **Interfaces:**
 - Consumes: `ref('mart_stock_scorecard')` (Task 10).
@@ -2683,6 +3179,58 @@ def test_load_profiles_merges_universe_defaults():
     p = profiles["profiles"]["bluechip_dividend"]
     assert p["universe"]["exchanges"] == ["HOSE", "HNX"]      # từ universe_defaults
     assert p["universe"]["min_market_cap_vnd"] == 5_000_000_000_000
+
+
+def test_load_profiles_rejects_unknown_universe_key(tmp_path):
+    """Khoá cấu hình không được code nào áp phải NỔ, không được im lặng bỏ qua.
+
+    Đây là lỗi thật đã gặp: `min_quarters_history` từng nằm trong
+    universe_defaults mà không code nào đọc, nên nó là một filter rỗng —
+    người dùng đặt ngưỡng và tin là đã lọc.
+    """
+    p = tmp_path / "profiles.yml"
+    p.write_text(
+        "default_profile: x\n"
+        "universe_defaults: {exchanges: [HOSE]}\n"
+        "profiles:\n"
+        "  x:\n"
+        "    universe: {min_pe_ratio: 15}\n"
+        "    weights: {value: 1.0, quality: 0.0, growth: 0.0,\n"
+        "              dividend: 0.0, safety: 0.0}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="min_pe_ratio"):
+        scoring.load_profiles(p)
+
+
+def test_load_profiles_rejects_weights_not_summing_to_one(tmp_path):
+    p = tmp_path / "profiles.yml"
+    p.write_text(
+        "default_profile: x\n"
+        "profiles:\n"
+        "  x:\n"
+        "    universe: {}\n"
+        "    weights: {value: 0.5, quality: 0.2, growth: 0.0,\n"
+        "              dividend: 0.0, safety: 0.0}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="tổng trọng số"):
+        scoring.load_profiles(p)
+
+
+def test_apply_universe_filters_min_quarters_history():
+    """`min_quarters_history` phải THẬT SỰ lọc, không phải khoá trang trí."""
+    rows = _rows().copy()
+    rows["quarters_available"] = [20, 20, 20, 20, 20]
+    rows.loc[rows.symbol == "AAA", "quarters_available"] = 8
+
+    prof = _profile()
+    prof["universe"]["min_quarters_history"] = 12
+
+    ok, rejected = scoring.apply_universe(rows, prof)
+    assert "AAA" not in set(ok["symbol"])
+    reasons = dict(zip(rejected["symbol"], rejected["reject_reason"]))
+    assert "quý" in reasons["AAA"]
 ```
 
 - [ ] **Step 2: Chạy test để xác nhận fail**
@@ -2778,17 +3326,56 @@ DEFAULT_PROFILE_PATH = ROOT / "config" / "scoring_profiles.yml"
 
 COMPONENTS = ["value", "quality", "growth", "dividend", "safety"]
 
+# Mọi khoá mà apply_universe() THẬT SỰ đọc. Khoá nào không có ở đây thì không
+# code nào áp — và một khoá cấu hình im lặng không làm gì là loại lỗi tệ nhất
+# trong file này: người dùng đặt ngưỡng, tin rằng đã lọc, mà không lọc gì.
+# Bản kế hoạch gốc từng có `min_quarters_history` ở đúng tình trạng đó.
+KNOWN_UNIVERSE_KEYS = {
+    "exchanges", "min_market_cap_vnd", "min_avg_turnover_20d_vnd",
+    "min_data_quality_score", "min_quarters_history",
+}
+KNOWN_REQUIRE_KEYS = {
+    "dividend_years_min", "roe_avg_8q_min", "exclude_loss_making",
+}
+
 
 def load_profiles(path=None) -> dict:
-    """Đọc scoring_profiles.yml, hợp nhất universe_defaults vào từng profile."""
+    """Đọc scoring_profiles.yml, hợp nhất universe_defaults vào từng profile.
+
+    Ném lỗi nếu gặp khoá lạ, hoặc trọng số không tổng bằng 1 — thà nổ lúc nạp
+    cấu hình còn hơn im lặng cho ra một bảng xếp hạng sai.
+    """
     path = Path(path) if path else DEFAULT_PROFILE_PATH
     cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
     defaults = cfg.get("universe_defaults", {}) or {}
-    for prof in cfg.get("profiles", {}).values():
+    for name, prof in cfg.get("profiles", {}).items():
         merged = dict(defaults)
         merged.update(prof.get("universe", {}) or {})
         prof["universe"] = merged
         prof.setdefault("require", {})
+
+        unknown_uni = set(merged) - KNOWN_UNIVERSE_KEYS
+        if unknown_uni:
+            raise ValueError(
+                f"Profile '{name}': khoá universe không được áp dụng: "
+                f"{sorted(unknown_uni)}. Khoá hợp lệ: {sorted(KNOWN_UNIVERSE_KEYS)}"
+            )
+        unknown_req = set(prof["require"]) - KNOWN_REQUIRE_KEYS
+        if unknown_req:
+            raise ValueError(
+                f"Profile '{name}': khoá require không được áp dụng: "
+                f"{sorted(unknown_req)}. Khoá hợp lệ: {sorted(KNOWN_REQUIRE_KEYS)}"
+            )
+        unknown_w = set(prof.get("weights", {})) - set(COMPONENTS)
+        if unknown_w:
+            raise ValueError(
+                f"Profile '{name}': thành phần điểm không tồn tại: {sorted(unknown_w)}"
+            )
+        total = sum(prof.get("weights", {}).values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"Profile '{name}': tổng trọng số = {total}, phải bằng 1,0"
+            )
     return cfg
 
 
@@ -2851,6 +3438,12 @@ def apply_universe(df: pd.DataFrame, profile: dict) -> tuple[pd.DataFrame, pd.Da
     if uni.get("min_data_quality_score") is not None:
         add(out["data_quality_score"].fillna(0) < uni["min_data_quality_score"],
             "chất lượng dữ liệu thấp")
+    if uni.get("min_quarters_history") is not None:
+        # Khác với min_data_quality_score: điểm dữ liệu là tổ hợp 5 thành phần,
+        # một mã có thể đạt 60 điểm nhờ giá và độ tươi trong khi lịch sử tỷ số
+        # vẫn mỏng. Hai ngưỡng đo hai thứ khác nhau.
+        add(out["quarters_available"].fillna(0) < uni["min_quarters_history"],
+            "lịch sử tỷ số chưa đủ số quý")
     if req.get("dividend_years_min") is not None:
         add(out["dividend_years_consecutive"].fillna(0) < req["dividend_years_min"],
             "cổ tức chưa đủ số năm liên tiếp")
@@ -2932,9 +3525,25 @@ con.close()
 "
 ```
 
-Expected:
+Expected — **các con số dưới đã được mô phỏng trên production 2026-08-14 trước khi
+giao việc**, nên lệch nhiều là dấu hiệu code sai chứ không phải dữ liệu đổi:
+
+| Profile | Quy mô universe | Bị loại vì thiếu thành phần | Chấm được | Ngân hàng trong top 30 |
+|---|---|---|---|---|
+| `bluechip_dividend` | **25** | 0 | 25 | **5** |
+| `deep_value` | **217** | 12 | 205 | 4 |
+| `quality_growth` | **55** | 2 | 53 | 4 |
+
 - Ba profile cho ra **ba danh sách khác nhau** (nếu giống hệt nhau → trọng số chưa có tác dụng, kiểm tra `compute_composite`).
-- **`bluechip_dividend` phải có ít nhất 3 ngân hàng trong top 30** — đây là tiêu chí nghiệm thu #8 của spec, phép thử trực tiếp cho lỗi sentinel.
+- **`bluechip_dividend` phải có ít nhất 3 ngân hàng trong top 30** — tiêu chí nghiệm thu #8 của spec, phép thử trực tiếp cho lỗi sentinel. Mô phỏng cho **5** ngân hàng: VPB, MBB, TCB, VIB, ACB.
+- Top 5 của `bluechip_dividend` theo mô phỏng: SSI 71,45 · FPT 71,24 · IDC 68,23 · PNJ 68,16 · VNM 67,96.
+
+> **Lưu ý về `bluechip_dividend`:** universe chỉ 25 mã nên `limit=30` trả về **toàn
+> bộ** universe, không thực sự là một phép xếp hạng cắt ngọn. Đó là hệ quả có chủ ý
+> của bộ điều kiện (vốn hoá ≥ 5.000 tỷ, thanh khoản ≥ 5 tỷ/phiên, ROE ≥ 12%, cổ tức
+> ≥ 3 năm liên tiếp) trên một thị trường mà **64,6% mã có 0 năm cổ tức liên tiếp**.
+> Không phải lỗi — nhưng phải nêu rõ trong báo cáo để người đọc không hiểu sai rằng
+> đã sàng từ 1.589 mã xuống 30.
 
 Kiểm tra riêng tiêu chí đó:
 
@@ -2990,10 +3599,13 @@ con.close()
 - [ ] **Step 8: Chạy toàn bộ test và commit**
 
 Run: `.venv/bin/python -m pytest tests/ -q`
-Expected: PASS — 79 passed
+Expected: PASS. **115 test hiện có phải vẫn pass** (đừng dùng con số tuyệt đối cũ
+trong bản kế hoạch — bộ test đã lớn lên qua các task), cộng 10 test mới của
+`tests/test_scoring.py`.
 
 ```bash
-git add config/scoring_profiles.yml src/scoring.py tests/test_scoring.py
+git add config/scoring_profiles.yml src/scoring.py tests/test_scoring.py \
+        transforms/models/marts/mart_stock_scorecard.sql
 git commit -m "feat(scoring): profile cấu hình được + screener đọc mart
 
 Điểm tổng hợp tính lúc đọc, không trong dbt -> đổi trọng số chạy lại
@@ -3008,12 +3620,35 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `.github/workflows/warehouse.yml`, `warehouse-weekly.yml`, `warehouse-monthly.yml`
+- Create: `.github/workflows/tests.yml`
 
 **Interfaces:**
-- Consumes: dbt project `transforms/` (Task 1–10).
+- Consumes: dbt project `transforms/` (Task 1–11), `src/scoring.py` (Task 11).
 - Produces: không có interface code.
 
-- [ ] **Step 1: Thêm bước dbt vào workflow daily**
+- [ ] **Step 1: Thêm bước dbt vào workflow daily — build TOÀN DAG, không dùng `--select`**
+
+> **Không dùng `--select tag:daily`.** Chỉ 4 model được gắn tag `daily`
+> (`stg_price_daily`, `stg_index_daily`, `int_price_features`, `fct_price_daily`),
+> nhưng **bốn model hạ nguồn cũng phụ thuộc giá mà không có tag**:
+>
+> | Model | Đọc gì phụ thuộc giá |
+> |---|---|
+> | `dim_stock` | `int_price_features` → `last_close`, `return_*`, `avg_turnover_20d`, `volatility_60d` |
+> | `mart_data_quality` | `stg_price_daily` → `price_sessions_1y`, `max_missed_sessions` |
+> | `mart_sector_snapshot` | `fct_price_daily` → `sector_return_3m` |
+> | `mart_stock_scorecard` | `dim_stock` + `mart_data_quality` → toàn bộ thành phần **an toàn** |
+>
+> Chạy `--select tag:daily` nghĩa là sau mỗi phiên, `fct_price_daily` có giá hôm nay
+> còn `dim_stock.last_close` vẫn là hôm qua, và điểm an toàn của cả 1.589 mã được
+> tính từ thanh khoản cũ. **Không test nào bắt được** — mỗi bảng tự nó đều nhất
+> quán. Đây đúng là hiện tượng review Task 7 đo được (marts trễ 1 phiên, 1.577
+> dòng thiếu).
+>
+> Build toàn DAG mất **~111 giây** đã đo trên production. Không có lý do tiết kiệm.
+>
+> Giữ nguyên các tag `daily` trong model — chúng vẫn hữu ích khi chạy tay lúc phát
+> triển, chỉ không dùng trong CI.
 
 Trong `.github/workflows/warehouse.yml`, sau bước `Build warehouse`, thêm:
 
@@ -3022,13 +3657,17 @@ Trong `.github/workflows/warehouse.yml`, sau bước `Build warehouse`, thêm:
         working-directory: transforms
         run: dbt deps --profiles-dir .
 
-      - name: dbt build (lineage giá)
+      - name: dbt build (toàn DAG — xem ghi chú về tag:daily trong plan)
         working-directory: transforms
         env:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
-        run: dbt build --profiles-dir . --select tag:daily
+        run: dbt build --profiles-dir . --no-partial-parse
 ```
+
+`--no-partial-parse` ở mọi lệnh dbt: cache `partial_parse.msgpack` đã từng âm thầm
+bỏ qua test mới thêm trong dự án này. Trong CI cache thường không tồn tại, nhưng cờ
+này là bảo hiểm miễn phí nếu sau này có ai thêm `actions/cache` cho `target/`.
 
 - [ ] **Step 2: Thêm bước dbt vào workflow weekly và monthly**
 
@@ -3044,14 +3683,14 @@ Trong cả `.github/workflows/warehouse-weekly.yml` và `warehouse-monthly.yml`,
         env:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
-        run: dbt seed --profiles-dir .
+        run: dbt seed --profiles-dir . --no-partial-parse
 
       - name: dbt build (toàn bộ)
         working-directory: transforms
         env:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
-        run: dbt build --profiles-dir .
+        run: dbt build --profiles-dir . --no-partial-parse
 
       - name: dbt source freshness
         working-directory: transforms
@@ -3061,20 +3700,160 @@ Trong cả `.github/workflows/warehouse-weekly.yml` và `warehouse-monthly.yml`,
         run: dbt source freshness --profiles-dir .
 ```
 
-- [ ] **Step 3: Chạy thử workflow bằng tay**
+- [ ] **Step 2b: Thêm smoke check tiêu chí nghiệm thu #8 vào workflow weekly**
 
-Vào tab Actions, chạy `warehouse-weekly` qua **Run workflow**.
-Expected: job xanh; log `dbt build` báo mọi model và test PASS.
+Tiêu chí #8 của spec — `bluechip_dividend` phải có ≥3 ngân hàng trong top 30 — là
+**phép thử trực tiếp cho toàn bộ công việc khử sentinel của A1**. Nếu sentinel quay
+lại vì bất kỳ lý do gì, cả 29 ngân hàng sẽ bị chấm chất lượng bét bảng và biến mất
+khỏi mọi khuyến nghị, mà `dbt build` vẫn xanh vì mọi test đơn lẻ vẫn đúng.
+
+Nó **không** nằm trong bộ test đơn vị vì cần dữ liệu production — 129 test hiện
+chạy 2,3 giây không cần mạng, và cần giữ tính chất đó. Vì vậy nó thuộc CI, sau
+`dbt build`, trong `.github/workflows/warehouse-weekly.yml`:
+
+```yaml
+      - name: Smoke check — tiêu chí nghiệm thu #8 (>=3 ngân hàng trong top 30)
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: |
+          python - <<'PY'
+          from src import warehouse, scoring
+          con = warehouse.get_conn()
+          r = scoring.screen(con, "bluechip_dividend", limit=30)
+          banks = r[r.com_class == "BANK"]
+          print(f"Ngân hàng trong top 30: {len(banks)}")
+          print(banks[["rank", "symbol", "composite_score", "quality_score"]].to_string(index=False))
+          con.close()
+          assert len(banks) >= 3, (
+              f"Tiêu chí nghiệm thu #8 KHÔNG ĐẠT: chỉ {len(banks)} ngân hàng trong "
+              "top 30. Khả năng cao sentinel ngân hàng đã quay lại — kiểm "
+              "stg_financial_ratio và assert_no_bank_sentinel_leak."
+          )
+          PY
+```
+
+Expected khi chạy: in ra **5** ngân hàng (VPB, MBB, TCB, VIB, ACB).
+
+- [ ] **Step 2c: Tạo `.github/workflows/tests.yml` — chạy pytest trong CI**
+
+**Hiện KHÔNG workflow nào chạy `pytest`.** 129 test tồn tại mà không chạy tự động
+lần nào — chúng chỉ bảo vệ khi có người nhớ chạy tay. Đây là lỗ hổng lớn nhất còn
+lại của tầng kiểm chứng.
+
+```yaml
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      # 129 test đơn vị, không cần mạng, không cần MotherDuck.
+      - run: python -m pytest tests/ -q
+
+      # Ràng buộc toàn cục đòi mọi model chạy được trên CẢ DuckDB local lẫn
+      # MotherDuck, nhưng CI chỉ từng chạy MotherDuck — nhiều vòng review đã ghi
+      # "không kiểm được từ diff" cho điểm này. Bước dưới đóng một PHẦN khoản đó.
+      #
+      # GIỚI HẠN, phải nói rõ: `dbt compile` chỉ render Jinja và phân giải ref,
+      # KHÔNG thực thi SQL. Nó bắt được lỗi cấu hình, macro, ref sai — nhưng
+      # KHÔNG chứng minh hai engine cho cùng kết quả. Muốn chứng minh điều đó
+      # phải dựng bộ dữ liệu mẫu cho cả 6 bảng nguồn rồi `dbt build` thật;
+      # đó là việc riêng, ghi thành nợ kỹ thuật.
+      - name: dbt compile trên DuckDB local (không phải MotherDuck)
+        working-directory: transforms
+        env:
+          WAREHOUSE_DB: "/tmp/ci_local.duckdb"
+        run: |
+          dbt deps --profiles-dir .
+          dbt compile --profiles-dir . --no-partial-parse
+```
+
+- [ ] **Step 3: Kiểm tại máy — KHÔNG tự chạy workflow trên GitHub**
+
+Nhánh này chưa được push, và các workflow đều **ghi thẳng lên MotherDuck
+production**. Kích hoạt chúng là hành động hướng ra ngoài, thuộc quyết định của
+chủ repo — **đừng tự chạy**, kể cả khi có `gh` CLI.
+
+Thay vào đó kiểm ba thứ tại máy:
+
+1. **YAML hợp lệ** cho cả bốn file:
+
+```bash
+.venv/bin/python -c "
+import yaml, pathlib, sys
+for f in sorted(pathlib.Path('.github/workflows').glob('*.yml')):
+    d = yaml.safe_load(f.read_text())
+    jobs = list((d.get('jobs') or {}).keys())
+    print(f'{f.name}: OK, jobs={jobs}')
+"
+```
+
+2. **Từng lệnh dbt trong workflow chạy được thật.** Chạy đúng lệnh của bước daily
+   tại máy, trên production, để chắc nó không lỗi cú pháp cờ:
+
+```bash
+cd transforms && ../.venv/bin/dbt build --profiles-dir . --no-partial-parse
+```
+
+Expected: PASS toàn bộ (**107 node**), và các mốc không đổi — `mart_stock_scorecard`
+**1.589 dòng** · 0 cặp có điểm mà `*_weight_coverage < 0.5` · **1.552** mã đạt ≥3/5
+thành phần · **29/29** ngân hàng có `quality_score > 0`.
+
+3. **Smoke check của Step 2b chạy được thật** — chạy đúng đoạn Python đó tại máy.
+   Expected: in **5** ngân hàng và không ném `AssertionError`.
+
+4. **Bước `dbt compile` trên DuckDB local chạy được thật** — đây là điểm chưa từng
+   được kiểm trong cả mảng A2:
+
+```bash
+cd transforms && WAREHOUSE_DB=/tmp/ci_local.duckdb ../.venv/bin/dbt compile \
+  --profiles-dir . --no-partial-parse
+```
+
+Expected: compile thành công toàn bộ model. **Nếu lỗi, đó là phát hiện thật và
+quan trọng** — nghĩa là project chỉ chạy được trên MotherDuck, vi phạm ràng buộc
+toàn cục. Dừng và báo kèm lỗi nguyên văn, đừng tự sửa model.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add .github/workflows/
-git commit -m "ci: chạy dbt build + test sau mỗi lần ingest
+git commit -m "ci: dbt build toan DAG sau moi lan ingest, pytest, smoke check tieu chi 8"
+```
 
-Test fail -> workflow đỏ, chặn dữ liệu hỏng trước khi agent dùng.
+Thông điệp commit đầy đủ (viết vào file rồi `git commit -F` để tránh lỗi trích dẫn
+với dấu ngoặc kép và tiếng Việt):
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+ci: dbt build toàn DAG sau mỗi lần ingest + pytest + smoke check
+
+Workflow daily build TOÀN DAG thay vì --select tag:daily: chỉ 4 model có tag
+daily, nhưng dim_stock, mart_data_quality, mart_sector_snapshot và
+mart_stock_scorecard cũng phụ thuộc giá mà không có tag — dùng --select khiến
+mọi mart trễ 1 phiên mà không test nào bắt được.
+
+Thêm tests.yml chạy 129 test đơn vị: trước đây không workflow nào chạy pytest.
+Kèm dbt compile trên DuckDB local để kiểm ràng buộc "chạy được cả hai engine".
+
+Smoke check tiêu chí nghiệm thu #8 (>=3 ngân hàng trong top 30 bluechip) chạy
+sau dbt build weekly — phép thử trực tiếp cho lỗi sentinel ngân hàng, thứ mà
+dbt test không bắt được vì từng bảng đều tự nhất quán.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
 
 ---

@@ -256,7 +256,7 @@ def run_sql(query: str, limit: int = 200) -> dict:
     Dùng khi 6 tool chuyên biệt không trả lời được câu hỏi. Chỉ chấp nhận
     một câu lệnh SELECT/WITH; mọi lệnh ghi đều bị từ chối.
 
-    Bảng chính: dim_stock, dim_industry, fct_price_daily,
+    Bảng chính: dim_stock, dim_industry_hierarchy, fct_price_daily,
     fct_financial_quarterly, mart_valuation_band, mart_sector_snapshot,
     mart_stock_scorecard, mart_data_quality.
     """

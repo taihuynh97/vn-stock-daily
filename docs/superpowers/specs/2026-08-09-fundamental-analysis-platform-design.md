@@ -174,7 +174,7 @@ INGESTION (Python, giữ pattern hiện tại)
         ▼
   INTERMEDIATE   percentile định giá · chỉ tiêu suy ra · độ bền · tăng trưởng
         ▼
-  MARTS     dim_stock · dim_industry · fct_price_daily · fct_financial_quarterly
+  MARTS     dim_stock · dim_industry_hierarchy · fct_price_daily · fct_financial_quarterly
             mart_valuation_band · mart_sector_snapshot
             mart_stock_scorecard · mart_data_quality
         │
