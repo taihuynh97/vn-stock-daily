@@ -26,6 +26,10 @@ def con(tmp_path):
 # hổng: DuckDB tự phân loại chúng là SELECT vì chúng thật sự chỉ đọc
 # metadata, còn mọi PRAGMA đổi cấu hình (memory_limit=, enable_external_
 # access=, force_checkpoint) vẫn được phân loại SET/PRAGMA và vẫn bị chặn.
+# Vòng 3 (đợt sửa thứ ba) thêm quy tắc TIỀN TỐ `_INTERNAL_FUNC_PATTERN`
+# (`__` đứng đầu tên hàm) để chặn cả họ hàm nội bộ/quản trị của MotherDuck
+# (__MD_*) và DuckDB (__DUCK_PANIC, __internal_*) — thay vì liệt kê từng
+# tên, vì MotherDuck có thể thêm hàm __MD_* mới bất cứ lúc nào.
 MUST_BLOCK = [
     "INSERT INTO t VALUES (9,'q')",
     "update t set a = 5",
@@ -49,6 +53,9 @@ MUST_BLOCK = [
     "PRAGMA enable_external_access=true",                           # đổi cấu hình thật — thử mở lại chính khoá đã đóng ở Task 1 gốc; type=SET, vẫn bị chặn
     "PRAGMA memory_limit='10GB'",                                   # đổi cấu hình thật; type=SET
     "PRAGMA force_checkpoint",                                      # side-effect thật qua cú pháp PRAGMA (không phải gọi hàm); type=PRAGMA
+    "select * from __MD_FORCE_DETACH()",                            # Vòng 3 (đợt 3): hàm nội bộ MotherDuck, chặn bằng _INTERNAL_FUNC_PATTERN (tiền tố "__")
+    "select * from __duck_panic()",                                 # cùng họ, tự thêm case (brief cũ không có)
+    "select * from __MD_RESET_BUFFER_MANAGER()",                    # cùng họ, side-effect quản trị gợi ý qua tên
 ]
 
 MUST_ALLOW = [

@@ -39,6 +39,19 @@ _CALL_PATTERN = re.compile(
     r"\b(" + "|".join(_DANGEROUS_TABLE_FUNCTIONS) + r")\s*\(", re.IGNORECASE
 )
 
+# Quy tắc TIỀN TỐ, khác hẳn danh sách tên cụ thể ở trên. Quét `duckdb_
+# functions()` trên md:vn_market cho tiền tố "__" tìm được 31 hàm nội bộ/
+# quản trị (10 cái họ `__MD_*` riêng của MotherDuck — vd `__MD_FORCE_DETACH`,
+# `__MD_RESET_BUFFER_MANAGER` — cộng các hàm DuckDB nội bộ như
+# `__DUCK_PANIC`, `__RESET_USER_ENVIRONMENT`, `__internal_compress_*`) —
+# TOÀN BỘ đều bắt đầu bằng `__`, không có ngoại lệ. Đây là quy ước "nội bộ/
+# riêng tư" phổ biến (Python, C++, và chính DuckDB/MotherDuck). Danh sách
+# tên cụ thể như `_DANGEROUS_TABLE_FUNCTIONS` không thể theo kịp catalog nội
+# bộ của MotherDuck (họ có thể thêm hàm `__MD_*` mới bất cứ lúc nào, ta
+# không kiểm soát được) — quy tắc tiền tố bắt được cả họ, kể cả hàm tương
+# lai chưa tồn tại, mà không cần liệt kê từng tên.
+_INTERNAL_FUNC_PATTERN = re.compile(r"\b(__[a-z_]+)\s*\(", re.IGNORECASE)
+
 
 class SqlGuardError(RuntimeError):
     """Câu lệnh SQL bị từ chối vì không phải truy vấn đọc."""
@@ -86,6 +99,10 @@ def assert_safe_sql(query: str) -> None:
     if _CALL_PATTERN.search(query):
         raise SqlGuardError(
             "Câu lệnh gọi hàm quản trị bị cấm (checkpoint/force_checkpoint)."
+        )
+    if _INTERNAL_FUNC_PATTERN.search(query):
+        raise SqlGuardError(
+            "Câu lệnh gọi hàm nội bộ/riêng tư bị cấm (tên bắt đầu bằng '__')."
         )
 
 
