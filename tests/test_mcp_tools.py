@@ -24,6 +24,36 @@ def test_search_stocks_returns_ranked_with_as_of(con):
     assert "rejected_counts" in res and "rejected_total" in res
 
 
+# I4 (fix round cuối, trả nợ test parked từ Task 2): min_composite phải lọc
+# trên TOÀN VŨ TRỤ mã hợp lệ của profile, không phải trên top `limit` đã bị
+# screen_report() cắt sẵn bên trong. Universe bluechip_dividend của fixture
+# chỉ có đúng 2 mã đạt điều kiện (AAA composite=76, VCB composite=72.25 —
+# CCC/DDD bị loại vì UPCOM); dùng ngưỡng thấp để cả 2 cùng đạt, xác nhận số
+# kết quả đúng bằng min(limit, số_mã_đạt_ngưỡng), không bị cắt sai vì limit
+# nhỏ được áp trước khi lọc.
+def test_search_stocks_min_composite_returns_min_limit_and_qualifying_count(con):
+    # limit=1 nhưng có 2 mã đạt ngưỡng thấp → chỉ trả 1 (đúng limit), và
+    # phải là mã xếp hạng cao nhất (AAA), không phải bị cắt sai thứ tự.
+    res = tools.search_stocks(con, profile="bluechip_dividend", limit=1, min_composite=1)
+    assert len(res["results"]) == 1
+    assert res["results"][0]["symbol"] == "AAA"
+
+    # limit=5 (thừa so với số mã đạt ngưỡng) → trả đúng cả 2 mã đạt, không
+    # thiếu — đây chính là ca mà lỗi cũ (lọc sau khi head(limit) BÊN TRONG
+    # screen_report với limit gốc) có thể làm lộ, nếu limit gốc nhỏ hơn số
+    # mã thật sự đạt ngưỡng.
+    res5 = tools.search_stocks(con, profile="bluechip_dividend", limit=5, min_composite=1)
+    symbols = [r["symbol"] for r in res5["results"]]
+    assert symbols == ["AAA", "VCB"]
+
+
+def test_search_stocks_min_composite_excludes_below_threshold(con):
+    """Ngưỡng nằm giữa composite của AAA (76) và VCB (72,25) — chỉ AAA đạt."""
+    res = tools.search_stocks(con, profile="bluechip_dividend", limit=10, min_composite=75)
+    symbols = [r["symbol"] for r in res["results"]]
+    assert symbols == ["AAA"]
+
+
 def test_search_stocks_includes_peer_basis_and_facts(con):
     res = tools.search_stocks(con, profile="bluechip_dividend", limit=10)
     first = res["results"][0]
@@ -111,11 +141,38 @@ def test_compare_stocks_reports_missing_symbol(con):
     assert res["not_found"] == ["ZZZ"]
 
 
+# M1 (fix round cuối): compare_stocks lấy data_quality_score nhưng thiếu
+# quality_flags — luật #5 của instructions.md yêu cầu "khi data_quality_score
+# < 60, nêu rõ... và nêu quality_flags", nhưng compare_stocks không thể tuân
+# thủ nếu thiếu cột này, đúng tool dễ chạm ngưỡng nhất (hay so sánh mã nhỏ).
+def test_compare_stocks_includes_quality_flags(con):
+    res = tools.compare_stocks(con, ["AAA", "CCC"])
+    assert all("quality_flags" in s for s in res["stocks"])
+    ccc = next(s for s in res["stocks"] if s["symbol"] == "CCC")
+    assert "thiếu lịch sử" in ccc["quality_flags"]
+
+
 def test_get_sector_snapshot_filters_com_class(con):
     res = tools.get_sector_snapshot(con, com_class="BANK")
     assert len(res["sectors"]) == 1
     assert res["sectors"][0]["industry_lv2"] == "Ngân hàng"
     assert res["sectors"][0]["median_pe"] == 8.6
+
+
+# I2 (fix round cuối): mart_sector_snapshot có sẵn n_pe/n_pb/n_roe (đếm số
+# mã CÓ dữ liệu dùng được cho từng chỉ tiêu, khác n_symbols — tổng số mã
+# trong nhóm) nhưng get_sector_snapshot() từng bỏ sót cả ba khi SELECT.
+# Không có 3 cột này, agent dễ hiểu nhầm median_pe của một nhóm 40 mã là
+# dựa trên đủ 40 mã, trong khi thực tế production đo được 17/21 nhóm lệch.
+def test_get_sector_snapshot_includes_data_coverage_counts(con):
+    res = tools.get_sector_snapshot(con, com_class="NONFIN")
+    sector = res["sectors"][0]
+    assert "n_pe" in sector and "n_pb" in sector and "n_roe" in sector
+    # Fixture cố tình đặt n_pe (32) < n_symbols (40) để mô phỏng đúng ca
+    # thật — thiếu 3 cột này sẽ không lộ ra được sự lệch này.
+    assert sector["n_symbols"] == 40
+    assert sector["n_pe"] == 32
+    assert sector["n_pe"] < sector["n_symbols"]
 
 
 # Fix round 1 (code review): get_valuation_history/get_financial_history

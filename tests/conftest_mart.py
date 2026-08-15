@@ -93,14 +93,23 @@ def build_fake_mart(path: str):
            9.5,1.2,0.9,0.18,0.22,20,18,'rất rẻ'),
           ('AAA',DATE '2026-03-31','NONFIN','1700','Tài nguyên cơ bản',
            10.1,1.3,1.0,0.30,0.35,19,17,'rẻ');
+        -- n_pe/n_pb/n_roe (I2, fix round cuối — fixture cũ THIẾU cả ba cột
+        -- này, đúng lý do I2 lọt qua 4 task trước: get_sector_snapshot() bỏ
+        -- sót SELECT ba cột có sẵn trong mart thật mà test không thể phát
+        -- hiện vì fixture lệch schema production). Đúng thứ tự cột thật
+        -- trong transforms/models/marts/mart_sector_snapshot.sql (n_pe/n_pb/
+        -- n_roe nằm ngay sau n_symbols, trước median_pe). Cố tình đặt
+        -- n_pe/n_pb/n_roe < n_symbols cho nhóm '1700' để mô phỏng đúng ca
+        -- thật A2 đã đo (median không dựa trên toàn bộ n_symbols mã).
         CREATE TABLE mart_sector_snapshot (
             icb_code_lv2 VARCHAR, industry_lv2 VARCHAR, com_class VARCHAR,
-            period_end_date DATE, n_symbols BIGINT, median_pe DOUBLE,
-            median_pb DOUBLE, median_roe DOUBLE, sector_return_3m DOUBLE
+            period_end_date DATE, n_symbols BIGINT, n_pe BIGINT, n_pb BIGINT,
+            n_roe BIGINT, median_pe DOUBLE, median_pb DOUBLE,
+            median_roe DOUBLE, sector_return_3m DOUBLE
         );
         INSERT INTO mart_sector_snapshot VALUES
-          ('1700','Tài nguyên cơ bản','NONFIN',DATE '2026-06-30',40,12.5,1.4,0.13,0.08),
-          ('8300','Ngân hàng','BANK',DATE '2026-06-30',27,8.6,1.3,0.18,0.11);
+          ('1700','Tài nguyên cơ bản','NONFIN',DATE '2026-06-30',40,32,35,38,12.5,1.4,0.13,0.08),
+          ('8300','Ngân hàng','BANK',DATE '2026-06-30',27,27,25,27,8.6,1.3,0.18,0.11);
         -- max_missed_sessions (KHÔNG phải max_price_gap_days — đổi tên ở A2
         -- Task 9: đếm ngày lịch khiến nghỉ Tết 10 ngày suýt báo động giả cho
         -- 891 mã; đếm phiên thị trường bị bỏ thì miễn nhiễm với lịch nghỉ).
