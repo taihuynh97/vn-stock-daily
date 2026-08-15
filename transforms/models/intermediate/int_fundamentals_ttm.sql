@@ -73,7 +73,20 @@ with_lags as (
 with_windows as (
     select
         *,
-        sum(case when is_loss_making then 1 else 0 end) over w12 as loss_quarters_12q
+        sum(case when is_loss_making then 1 else 0 end) over w12 as loss_quarters_raw,
+        -- Fix Minor 5.1 (vòng sửa 3) — CƠ SỞ BẰNG CHỨNG của loss_quarters_raw.
+        --
+        -- `count(is_loss_making)` chứ KHÔNG phải `count(*)`: ta cần số quý THẬT
+        -- SỰ BIẾT được lỗ hay lãi, không phải số quý CÓ DÒNG. Hai con số này
+        -- khác nhau ở 14 mã trên production, và chênh lệch rơi đúng vào ca nặng
+        -- nhất: BLU và HAV có ĐỦ 12 DÒNG trong cửa sổ nhưng 0 quý biết
+        -- (is_loss_making NULL cả 12 — hệ quả Task 8.5 NULL hoá
+        -- after_tax_profit_margin trong 686 "dòng trắng"). Một cổng dựa trên
+        -- count(*) sẽ cho cả hai đi qua và chúng giữ nguyên loss_quarters = 0,
+        -- tức điểm an toàn TỐT NHẤT có thể, dựng trên KHÔNG một quan sát nào.
+        -- Còn 7 mã nữa cùng cảnh: BXT 11 dòng/0 biết, GTK/GQN/TDN 8/0,
+        -- HAW/HUX/HGR 6/0.
+        count(is_loss_making) over w12 as loss_quarters_observed
     from with_lags
     window w12 as (
         partition by symbol order by abs_quarter
@@ -141,8 +154,9 @@ with_growth as (
         -- nên NULL không phải là "phạt", nó là "miễn" — 0,55 trọng số còn lại
         -- (revenue_cagr_3y 0,30 + revenue_yoy 0,15 + growth_consistency 0,10)
         -- vẫn vượt cổng 0,5 và mã đó được chấm trên doanh thu, bỏ qua việc lợi
-        -- nhuận vừa sụp. Ví dụ TCD: lãi 71,1 tỷ cùng kỳ năm trước, lỗ 438,1 tỷ
-        -- kỳ này ⟹ YoY = -7,16. Vế thừa biến con số đó thành NULL.
+        -- nhuận vừa sụp. Ví dụ điển hình là nhóm VTJ / SGI / PEN / SDU: đều vừa
+        -- lật sang lỗ mà vẫn mang growth_score 84-92 khi earnings_yoy bị NULL,
+        -- nay còn 66-74 với YoY âm ở phân vị 0,00-0,08 (gần bét rổ).
         --
         -- Ràng buộc toàn cục của dự án: NULL nghĩa "KHÔNG ĐO ĐƯỢC", không phải
         -- "kém nhất nhóm" (đó là 0). Ở đây ta ĐO ĐƯỢC — nên phải ghi ra số.
@@ -157,6 +171,38 @@ with_growth as (
         case when earnings_12q_ago > 0 and earnings_ttm > 0
              then power(earnings_ttm / earnings_12q_ago, 1.0 / 3) - 1 end as earnings_cagr_3y
     from with_windows
+),
+
+-- Fix Minor 5.1 (vòng sửa 3): growth_consistency mắc CÙNG lỗ hổng cửa sổ mỏng
+-- với loss_quarters_12q, chỉ ở dạng nhẹ hơn. avg() bỏ qua NULL nên nó KHÔNG
+-- bịa ra giá trị khi cả cửa sổ đều trống (ra NULL, đúng) — nhưng với ĐÚNG MỘT
+-- quan sát dương nó cho ra 1,0, tức "nhất quán tăng trưởng HOÀN HẢO 12 quý"
+-- suy từ một quý duy nhất. Đo trên production tại kỳ mới nhất: 416 mã có
+-- growth_consistency dựng trên dưới 6 quan sát, 390 mã dưới 4; trong đó 93 mã
+-- đạt đúng 1,0 và 15 mã đạt 1,0 từ MỘT quan sát (SSF, TAB, CGL, PDT, SCA...).
+-- growth_consistency có scale='direct' + direction='higher' nên 1,0 là điểm
+-- tuyệt đối, chiếm 0,10 trọng số tăng trưởng.
+--
+-- Đây đúng câu mà chính comment cổng chặn của mart_stock_scorecard đã đặt tên:
+-- "Tự tin tối đa từ bằng chứng tối thiểu."
+--
+-- Tách CTE riêng thay vì tính inline ở SELECT cuối để cột đếm quan sát và cột
+-- giá trị dùng CHUNG một định nghĩa cửa sổ, không thể lệch nhau khi sửa sau này.
+with_consistency as (
+    select
+        *,
+        -- Tính nhất quán tăng trưởng: tỉ lệ quý có YoY doanh thu dương trong 12
+        -- quý. Cửa sổ theo LỊCH (`range` trên abs_quarter), không phải 12 dòng
+        -- liền kề — cùng lý do với loss_quarters_12q ở trên (fix round 2).
+        avg(case when revenue_yoy > 0 then 1.0
+                 when revenue_yoy is null then null
+                 else 0.0 end) over w12 as growth_consistency_raw,
+        count(revenue_yoy) over w12 as growth_consistency_observed
+    from with_growth
+    window w12 as (
+        partition by symbol order by abs_quarter
+        range between 11 preceding and current row
+    )
 )
 
 select
@@ -176,20 +222,40 @@ select
     earnings_yoy,
     revenue_cagr_3y,
     earnings_cagr_3y,
-    loss_quarters_12q,
+    -- Fix Minor 5.1 (vòng sửa 3): CỬA SỔ QUÁ MỎNG PHẢI LÀ "KHÔNG ĐO ĐƯỢC",
+    -- KHÔNG PHẢI "CHƯA LỖ QUÝ NÀO".
+    --
+    -- `sum(case when ... then 1 else 0 end)` trên một cửa sổ chỉ có 1-2 quý cho
+    -- ra 0, và `loss_quarters_12q` có direction='lower' với trọng số 0,20 trong
+    -- thành phần an toàn ⟹ 0 là ĐIỂM TUYỆT ĐỐI. Nghĩa là "không quan sát được
+    -- quý nào" đang được đọc thành "chưa lỗ quý nào" — cùng hình thái với bốn
+    -- lỗi của vòng review toàn nhánh: một giá trị KHÔNG BIẾT bị suy thành giá
+    -- trị CÓ LỢI NHẤT.
+    --
+    -- Đo trên production tại kỳ mới nhất của mỗi mã, trước khi sửa: 392 mã chỉ
+    -- có 4-7 quý (286 mã báo "0 quý lỗ") và 121 mã có dưới 4 quý (74 mã báo
+    -- "0 quý lỗ") — tức 360 mã tuyên bố không lỗ quý nào trong khi có dưới 8
+    -- quý dữ liệu. ALC có ĐÚNG 2 quý, báo 0 quý lỗ, nhận safety_score 74,2
+    -- (trên trung vị); CLI có ĐÚNG 1 quý và được 74,1.
+    --
+    -- Ngưỡng: nửa cửa sổ (6/12 quý), đặt ở var window_min_observed_quarters —
+    -- thống nhất với triết lý "phải đo được ít nhất một nửa" của cổng
+    -- weight_coverage >= 0,5 ở mart_stock_scorecard. Đây là con số duy nhất
+    -- cần đổi nếu muốn siết/nới chính sách này.
+    case when loss_quarters_observed >= {{ var('window_min_observed_quarters') }}
+         then loss_quarters_raw end as loss_quarters_12q,
+    -- Phơi cơ sở bằng chứng cạnh chính con số, theo đúng tiền lệ đã bốn lần cần
+    -- tới trong dự án này: pe_quarters_used (Task 6), n_pe (Task 8),
+    -- *_weight_coverage (Task 10), rejected_counts (src/scoring.py). Một con số
+    -- không mang theo cỡ mẫu của nó thì không ai kiểm được nó đáng tin tới đâu.
+    loss_quarters_observed,
     -- Task 10 fix: is_loss_making đã được tính trong CTE `ttm` (dùng để suy
     -- loss_quarters_12q) và trôi qua with_lags/with_windows/with_growth
     -- (đều select *), nhưng bị rớt khỏi SELECT cuối — không model nào cần đến
     -- tới trước mart_stock_scorecard. Phơi lại nguyên giá trị đã tính, không
     -- đổi công thức nào.
     is_loss_making,
-    -- Tính nhất quán tăng trưởng: tỉ lệ quý có YoY doanh thu dương trong 12
-    -- quý. Cửa sổ theo LỊCH (`range` trên abs_quarter), không phải 12 dòng
-    -- liền kề — cùng lý do với loss_quarters_12q ở trên (fix round 2).
-    avg(case when revenue_yoy > 0 then 1.0
-             when revenue_yoy is null then null
-             else 0.0 end) over (
-        partition by symbol order by abs_quarter
-        range between 11 preceding and current row
-    ) as growth_consistency
-from with_growth
+    case when growth_consistency_observed >= {{ var('window_min_observed_quarters') }}
+         then growth_consistency_raw end as growth_consistency,
+    growth_consistency_observed
+from with_consistency

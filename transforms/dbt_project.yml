@@ -104,6 +104,13 @@ vars:
   peer_hard_min: 8
   # Số quý tối thiểu để tính percentile định giá so với chính mã.
   own_history_min_quarters: 12
+  # int_fundamentals_ttm (vòng review toàn nhánh, Minor 5.1): số quan sát tối
+  # thiểu trong cửa sổ 12 quý để loss_quarters_12q/growth_consistency được coi
+  # là đáng tin — nửa cửa sổ, cùng triết lý "phải đo được ít nhất một nửa" với
+  # cổng weight_coverage >= 0,5 ở mart_stock_scorecard. Dưới ngưỡng này, cửa sổ
+  # rỗng/gần rỗng cho ra 0 hoặc 1,0 — điểm TUYỆT ĐỐI dựng trên gần như không có
+  # bằng chứng. Đo trên production: 360 mã báo "0 quý lỗ" với <8 quý dữ liệu.
+  window_min_observed_quarters: 6
   # int_price_features (Task 3, fix round 2): số quan sát daily_return hợp lệ
   # (volume>0 cả hai đầu, không dính khoảng trống >15 ngày) tối thiểu trong
   # cửa sổ 60 phiên để volatility_60d được coi là đáng tin. Dưới ngưỡng này
