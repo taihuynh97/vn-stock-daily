@@ -18,13 +18,14 @@ def con(tmp_path):
 # task-1-report.md, mục "Vòng sửa 1/2/3"). Vòng 3 thay hẳn cơ chế: từ regex
 # tự dò cú pháp SQL sang dùng chính parser DuckDB (duckdb.extract_statements)
 # — chỉ SELECT duy nhất mới qua được, mọi loại câu lệnh khác bị từ chối mặc
-# định (whitelist, không phải blacklist từ khoá).
-#
-# CHÚ Ý: "PRAGMA database_list" (1 trong 13 câu gốc) và
-# "select * from checkpoint()" (thêm ở vòng 2) KHÔNG có trong MUST_BLOCK bên
-# dưới — xem 2 test xfail(strict=True) cuối file, đây là lỗ hổng CHƯA giải
-# quyết được phát hiện ở vòng 3, đã báo cáo cho coordinator, không tự ý loại
-# khỏi yêu cầu hay tự vá bằng regex.
+# định (whitelist, không phải blacklist từ khoá). Vòng 3 (đợt sửa thứ hai)
+# thêm một danh sách hẹp, hữu hạn `_DANGEROUS_TABLE_FUNCTIONS` (checkpoint/
+# force_checkpoint) cho các table-function có side-effect quản trị mà cú
+# pháp SELECT hợp lệ không tự phân biệt được — và xác nhận PRAGMA đọc thông
+# tin thuần (database_list/show_tables/version/table_info) KHÔNG phải lỗ
+# hổng: DuckDB tự phân loại chúng là SELECT vì chúng thật sự chỉ đọc
+# metadata, còn mọi PRAGMA đổi cấu hình (memory_limit=, enable_external_
+# access=, force_checkpoint) vẫn được phân loại SET/PRAGMA và vẫn bị chặn.
 MUST_BLOCK = [
     "INSERT INTO t VALUES (9,'q')",
     "update t set a = 5",
@@ -43,6 +44,11 @@ MUST_BLOCK = [
     "select '--' as c from t; delete from t",                       # Vòng 2: '--' trong chuỗi không được nuốt mất ';'
     "select $$x'$$ ; drop table t; -- $$y'$$ as z from t",          # Vòng 3: dollar-quote không được regex string-literal cũ nhận diện
     "select E'\\'' as c from t; delete from t",                     # Vòng 3: escape-string DuckDB, cùng lớp lỗi với dollar-quote
+    "select * from checkpoint()",                                   # Vòng 3 (đợt 2): table-function side-effect thật, chặn bằng _DANGEROUS_TABLE_FUNCTIONS
+    "select * from force_checkpoint()",                             # cùng họ với checkpoint(), tự thêm case (brief cũ không có)
+    "PRAGMA enable_external_access=true",                           # đổi cấu hình thật — thử mở lại chính khoá đã đóng ở Task 1 gốc; type=SET, vẫn bị chặn
+    "PRAGMA memory_limit='10GB'",                                   # đổi cấu hình thật; type=SET
+    "PRAGMA force_checkpoint",                                      # side-effect thật qua cú pháp PRAGMA (không phải gọi hàm); type=PRAGMA
 ]
 
 MUST_ALLOW = [
@@ -58,6 +64,10 @@ MUST_ALLOW = [
     "select (replace(a,'x','y')) as x from t",      # Vòng 3: phát hiện — allowlist vòng 2 chỉ trừ khỏi 1 trong 2 nhánh regex, bọc thêm ngoặc lại bị chặn nhầm
     "with x as (select replace(a,'x','y') from t) select * from x",
     "select $$hello$$ as x from t",                 # dollar-quote hợp lệ, không phải tấn công
+    "PRAGMA database_list",                         # đọc thông tin thuần — DuckDB tự viết lại thành SELECT * FROM pragma_database_list(), không side-effect
+    "PRAGMA show_tables",
+    "PRAGMA version",
+    "PRAGMA table_info('t')",
 ]
 
 
@@ -125,6 +135,26 @@ def test_escape_string_delete_survives_direct_execution_without_run_query(con):
     assert con.execute("SELECT count(*) FROM t").fetchone()[0] == 3
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "Phát hiện khi tự kiểm chứng #6 của vòng sửa 3 (đợt 2) qua giao thức "
+    "MCP thật: assert_safe_sql cho qua PRAGMA database_list/show_tables/"
+    "version/table_info đúng (không phải lỗ hổng — DuckDB coi đây là SELECT "
+    "thật). Nhưng run_query() bọc mọi câu bằng "
+    "'SELECT * FROM (<sql>) LIMIT n', và cú pháp PRAGMA rút gọn (không có "
+    "dấu = hay ngoặc thay thế) KHÔNG thể nhúng làm subquery trong ngoặc — "
+    "DuckDB báo 'Parser Error: syntax error at or near \")\"'. Chạy trực "
+    "tiếp (không bọc) thì đúng: con.execute('PRAGMA database_list') chạy "
+    "được. Đây là lỗi CHỨC NĂNG của run_query, không phải lỗ hổng an ninh "
+    "(không có gì bị mở quyền thêm — ngược lại, một câu đã được xác nhận an "
+    "toàn lại không dùng được qua run_sql). Nằm ngoài phạm vi 'vá hẹp "
+    "assert_safe_sql' được giao ở vòng này — báo cáo cho coordinator quyết "
+    "định thay vì tự sửa run_query() ngoài yêu cầu."
+))
+def test_run_query_pragma_shorthand_fails_due_to_select_wrapping(con):
+    db.assert_safe_sql("PRAGMA database_list")  # xác nhận: guard cho qua đúng
+    db.run_query(con, "PRAGMA database_list")   # nhưng thực thi qua run_query thì lỗi
+
+
 def test_get_readonly_conn_blocks_file_system_access(tmp_path, monkeypatch):
     """Vòng 1: assert_safe_sql không (và không cần) bắt read_text/glob/
     read_csv — đây là hàm bảng đọc file, không phải lệnh ghi. Lớp chặn đúng
@@ -143,42 +173,12 @@ def test_get_readonly_conn_blocks_file_system_access(tmp_path, monkeypatch):
         con.close()
 
 
-# --- Lỗ hổng ĐÃ BIẾT, CHƯA giải quyết (phát hiện ở vòng sửa 3) ---
-#
-# Cả hai test dưới đây dùng xfail(strict=True) thay vì bị âm thầm loại khỏi
-# MUST_BLOCK hoặc "nới" thành pass giả: nếu ai đó sau này vô tình sửa
-# assert_safe_sql theo hướng chặn được 2 case này, strict=True sẽ làm test
-# suite BÁO LỖI (XPASS) để bắt buộc rà lại và gỡ marker — không để một fix
-# âm thầm trôi qua mà không ai để ý, và không để lỗ hổng âm thầm trôi qua
-# mà không ai để ý.
-
-@pytest.mark.xfail(strict=True, reason=(
-    "checkpoint() là table function DuckDB thật (flush WAL ra đĩa — "
-    "side-effect thật). Nhưng cú pháp 'SELECT * FROM checkpoint()' được "
-    "duckdb.extract_statements phân loại statement.type=SELECT, giống hệt "
-    "'SELECT * FROM read_csv(...)' — whitelist theo statement.type không "
-    "phân biệt được. read_only=True và enable_external_access=false đều "
-    "không chặn (đã tự kiểm thực nghiệm: checkpoint() chạy thành công trên "
-    "cả hai). Không có quy tắc regex nào vá được việc này đáng tin cậy hơn "
-    "— đó chính là lý do rời bỏ regex ở vòng 3. Đã báo cáo cho coordinator, "
-    "không tự chế thêm quy tắc để vá."
-))
-def test_assert_safe_sql_blocks_checkpoint_function_call():
-    with pytest.raises(db.SqlGuardError):
-        db.assert_safe_sql("select * from checkpoint()")
-
-
-@pytest.mark.xfail(strict=True, reason=(
-    "PRAGMA database_list là 1 trong 13 câu gốc yêu cầu 'phải vẫn chặn'. "
-    "Nhưng DuckDB tự viết lại các PRAGMA đọc thuần dạng gọi-hàm (database_"
-    "list, show_tables, version, table_info) thành 'SELECT * FROM pragma_"
-    "xxx()' ngay ở tầng parser — statement.type trả về là SELECT. Khác với "
-    "PRAGMA có side-effect thật (vd 'PRAGMA memory_limit=...', 'PRAGMA "
-    "force_checkpoint') vẫn được phân loại đúng là SET/PRAGMA và vẫn bị "
-    "chặn — đã tự kiểm thực nghiệm cả hai nhóm. Không tự ý loại câu này "
-    "khỏi MUST_BLOCK dù tin rằng nó vô hại (đọc thuần, không side-effect) "
-    "— đây là quyết định của coordinator, không phải của người triển khai."
-))
-def test_assert_safe_sql_blocks_pragma_database_list():
-    with pytest.raises(db.SqlGuardError):
-        db.assert_safe_sql("PRAGMA database_list")
+def test_dangerous_table_function_check_does_not_false_positive_on_replace(con):
+    """_DANGEROUS_TABLE_FUNCTIONS chỉ chứa {"checkpoint", "force_checkpoint"}
+    — xác nhận không hồi quy với "replace" (tên hàm không nằm trong danh
+    sách này, đây là danh sách đóng dựa trên duckdb_functions(), không phải
+    quét từ khoá chung chung)."""
+    sql = "select replace(b,'x','y') as x from t"
+    db.assert_safe_sql(sql)  # không ném lỗi
+    rows = db.run_query(con, sql)
+    assert rows == [{"x": "y"}, {"x": "y"}, {"x": "z"}]
