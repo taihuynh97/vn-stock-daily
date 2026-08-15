@@ -116,3 +116,21 @@ def test_get_sector_snapshot_filters_com_class(con):
     assert len(res["sectors"]) == 1
     assert res["sectors"][0]["industry_lv2"] == "Ngân hàng"
     assert res["sectors"][0]["median_pe"] == 8.6
+
+
+# Fix round 1 (code review): get_valuation_history/get_financial_history
+# thiếu trường data_quality — Global Constraint của kế hoạch A3 yêu cầu MỌI
+# tool trả kèm as_of và data_quality. Khoá lại hành vi sau khi vá, cùng
+# pattern với test_get_stock_profile_has_quality_and_as_of đã có.
+def test_get_valuation_history_includes_data_quality(con):
+    res = tools.get_valuation_history(con, "AAA", years=5)
+    assert "data_quality" in res
+    assert res["data_quality"]["data_quality_score"] == 90
+    assert res["data_quality"]["reliable"] is True
+
+
+def test_get_financial_history_includes_data_quality(con):
+    res = tools.get_financial_history(con, "AAA", quarters=12)
+    assert "data_quality" in res
+    assert res["data_quality"]["data_quality_score"] == 90
+    assert res["data_quality"]["reliable"] is True

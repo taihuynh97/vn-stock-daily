@@ -62,6 +62,41 @@ def _date_str(v):
     return str(v)
 
 
+def _data_quality(con, sym: str) -> dict:
+    """Tín hiệu chất lượng dữ liệu cho một mã — cùng khuôn dict với
+    `data_quality` của `get_stock_profile` ({data_quality_score,
+    quality_flags, reliable}), tái dùng cho cả `get_valuation_history` và
+    `get_financial_history` (fix round 1: reviewer phát hiện 2 hàm này
+    thiếu tín hiệu `data_quality` mà Global Constraint của kế hoạch A3 yêu
+    cầu MỌI tool phải trả kèm `as_of` và `data_quality`).
+
+    Dùng một query riêng vào `mart_data_quality` — nguồn canonical cho chỉ
+    tiêu này (liệt kê riêng trong docstring `run_sql`, tách khỏi
+    `mart_stock_scorecard`) — thay vì JOIN thẳng vào query lịch sử của 2
+    hàm gọi nó. Data quality là thuộc tính của MÃ tại thời điểm hiện tại,
+    không phải của từng kỳ quá khứ; JOIN theo từng dòng `history` sẽ lặp
+    lại đúng một giá trị trên mọi dòng và dễ khiến agent hội thoại hiểu
+    nhầm nó thay đổi theo quý — để ở top-level của response tránh nhầm lẫn
+    này, đúng gợi ý của reviewer.
+
+    Không có dòng khớp (mã không có trong `mart_data_quality`) → trả về
+    điểm 0/`reliable=False` thay vì lỗi, cùng cách `get_stock_profile` xử
+    lý `data_quality_score` NULL (`r.get(...) or 0`)."""
+    rows = db.run_query(
+        con,
+        "SELECT data_quality_score, quality_flags FROM mart_data_quality WHERE symbol = ?",
+        params=[sym],
+        limit=1,
+    )
+    dq_score = (rows[0].get("data_quality_score") or 0) if rows else 0
+    flags = (rows[0].get("quality_flags") or "") if rows else ""
+    return {
+        "data_quality_score": dq_score,
+        "quality_flags": flags,
+        "reliable": dq_score >= RELIABLE_MIN,
+    }
+
+
 def search_stocks(con, profile: str = None, limit: int = 20,
                   min_composite: float = None) -> dict:
     """Chạy screener theo profile, trả danh sách xếp hạng."""
@@ -213,6 +248,7 @@ def get_valuation_history(con, symbol: str, years: int = 5) -> dict:
         "com_class": rows[0].get("com_class"),
         "industry": rows[0].get("industry_lv2"),
         "history": _clean(rows),
+        "data_quality": _data_quality(con, sym),
         "note": "pe_pct_own_5y là percentile P/E so với CHÍNH MÃ trong 5 năm "
                 "qua (0 = rẻ nhất lịch sử của nó), không phải so với thị trường.",
         **db.as_of(con),
@@ -243,6 +279,7 @@ def get_financial_history(con, symbol: str, quarters: int = 12) -> dict:
     return {
         "symbol": sym,
         "history": _clean(rows),
+        "data_quality": _data_quality(con, sym),
         "note": "Doanh thu và lợi nhuận là chỉ tiêu SUY RA từ market_cap/ps và "
                 "market_cap/pe, không đọc trực tiếp từ báo cáo tài chính. "
                 "Đối chiếu HPG 2024 cho kết quả khớp, nhưng nên nói rõ khi "
