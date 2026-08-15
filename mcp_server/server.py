@@ -8,6 +8,7 @@ Chạy:
 Tắt luồng này: xoá khai báo trong .mcp.json. Warehouse và job báo cáo
 không bị ảnh hưởng.
 """
+import functools
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -30,7 +31,27 @@ def conn():
     return _CON
 
 
+def _safe_tool(fn):
+    """Bọc mọi tool: bắt toàn bộ exception, trả {"error": ..., "rows": []}.
+
+    Agent hội thoại gõ sai tên bảng/cột là chuyện thường — lỗi đó phải trả
+    về dạng lỗi sạch để agent tự sửa câu hỏi, không phải làm tool sập
+    (SqlGuardError chỉ là một loại lỗi trong nhiều loại có thể xảy ra:
+    tên bảng/cột sai, bảng chưa tồn tại khi as_of() truy vấn, v.v.).
+    Task 2/3 thêm tool mới nên dùng lại decorator này thay vì tự viết
+    try/except riêng.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            return {"error": str(e), "rows": []}
+    return wrapper
+
+
 @mcp.tool()
+@_safe_tool
 def run_sql(query: str, limit: int = 200) -> dict:
     """Chạy một truy vấn SELECT read-only trên warehouse.
 
@@ -42,10 +63,7 @@ def run_sql(query: str, limit: int = 200) -> dict:
     mart_stock_scorecard, mart_data_quality.
     """
     c = conn()
-    try:
-        rows = db.run_query(c, query, limit=min(limit, 1000))
-    except db.SqlGuardError as e:
-        return {"error": str(e), "rows": []}
+    rows = db.run_query(c, query, limit=min(limit, 1000))
     return {"rows": rows, "row_count": len(rows), **db.as_of(c)}
 
 

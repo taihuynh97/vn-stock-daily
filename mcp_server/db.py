@@ -1,8 +1,11 @@
 """Kết nối read-only và rào chắn SQL cho MCP server.
 
-Hai lớp bảo vệ độc lập:
+Ba lớp bảo vệ độc lập:
   1. Kết nối read-only ở tầng DuckDB (nếu backend hỗ trợ).
-  2. Rào chắn từ khoá ở tầng ứng dụng — luôn áp dụng, kể cả khi (1) thất bại.
+  2. `enable_external_access=false` — chặn mọi hàm bảng đọc file/mạng của
+     DuckDB (read_text, read_csv, glob, httpfs, ...). Từ khoá SQL không bắt
+     được các hàm này vì chúng không phải lệnh ghi; đây là lớp chặn đúng chỗ.
+  3. Rào chắn từ khoá ở tầng ứng dụng — luôn áp dụng, kể cả khi (1)/(2) thất bại.
 """
 import os
 import re
@@ -17,6 +20,13 @@ FORBIDDEN = {
 }
 _WORD = re.compile(r"[a-z_]+")
 _STRING_LITERAL = re.compile(r"'[^']*'")
+_LINE_COMMENT = re.compile(r"--[^\n]*")
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+# Từ khoá cấm chỉ tính khi đứng đầu câu (words[0], kiểm riêng bên dưới) hoặc
+# ngay sau một dấu "(" mở đầu — vị trí một CTE/sub-statement bắt đầu (có thể
+# có "AS" ngay trước dấu "("). Đứng ở vị trí khác (tên hàm đang gọi, tên cột
+# trong SELECT list, ...) là vô hại và KHÔNG bị chặn.
+_PAREN_WORD = re.compile(r"\(\s*([a-z_]+)")
 
 
 class SqlGuardError(RuntimeError):
@@ -28,20 +38,25 @@ def assert_safe_sql(query: str) -> None:
     if not query or not query.strip():
         raise SqlGuardError("Câu truy vấn rỗng.")
 
-    # Bỏ chuỗi ký tự để từ khoá bên trong chuỗi không bị bắt nhầm.
-    stripped = _STRING_LITERAL.sub("''", query)
+    # Bỏ comment rồi bỏ chuỗi ký tự để từ khoá bên trong không bị bắt nhầm.
+    # Thứ tự: comment trước (chuỗi trong comment có thể có dấu nháy đơn lẻ,
+    # xử lý string literal trước sẽ khiến regex string literal ăn lố).
+    no_comments = _BLOCK_COMMENT.sub(" ", query)
+    no_comments = _LINE_COMMENT.sub(" ", no_comments)
+    stripped = _STRING_LITERAL.sub("''", no_comments)
     body = stripped.strip().rstrip(";")
 
     if ";" in body:
         raise SqlGuardError("Chỉ cho phép một câu lệnh duy nhất.")
 
-    words = _WORD.findall(body.lower())
+    lowered = body.lower()
+    words = _WORD.findall(lowered)
     if not words or words[0] not in {"select", "with"}:
         raise SqlGuardError("Chỉ chấp nhận câu lệnh bắt đầu bằng SELECT hoặc WITH.")
 
-    hit = sorted(set(words) & FORBIDDEN)
+    hit = {m.group(1) for m in _PAREN_WORD.finditer(lowered)} & FORBIDDEN
     if hit:
-        raise SqlGuardError(f"Câu lệnh chứa từ khoá bị cấm: {hit}")
+        raise SqlGuardError(f"Câu lệnh chứa từ khoá bị cấm: {sorted(hit)}")
 
 
 def get_readonly_conn():
@@ -49,13 +64,22 @@ def get_readonly_conn():
 
     MotherDuck có thể không nhận read_only — khi đó vẫn kết nối được nhưng
     is_readonly=False, và rào chắn SQL ở tầng ứng dụng là lớp bảo vệ duy nhất.
+
+    Cả hai nhánh đều tắt enable_external_access ngay sau khi connect (không
+    được truyền qua config= lúc connect — làm MotherDuck lỗi khi nạp
+    extension). Đây là chặn đọc file/mạng (read_text, read_csv, glob,
+    httpfs, ...) — độc lập với rào chắn từ khoá ghi ở assert_safe_sql.
     """
     root = Path(__file__).resolve().parent.parent
     dbpath = os.getenv("WAREHOUSE_DB", str(root / "data" / "warehouse.duckdb"))
     try:
-        return duckdb.connect(dbpath, read_only=True), True
+        con = duckdb.connect(dbpath, read_only=True)
+        is_readonly = True
     except Exception:
-        return duckdb.connect(dbpath), False
+        con = duckdb.connect(dbpath)
+        is_readonly = False
+    con.execute("SET enable_external_access=false")
+    return con, is_readonly
 
 
 def run_query(con, sql: str, params=None, limit: int = 1000) -> list[dict]:
