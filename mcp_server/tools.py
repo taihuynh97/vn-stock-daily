@@ -1,6 +1,7 @@
 """Cài đặt các tool — tách khỏi server.py để test được mà không cần MCP runtime."""
 import json
 
+import numpy as np
 import pandas as pd
 
 from mcp_server import db
@@ -8,16 +9,34 @@ from src import scoring
 
 RELIABLE_MIN = 60
 
+# search_stocks(min_composite=...) cần lọc trên TOÀN VŨ TRỤ mã hợp lệ của
+# profile trước khi cắt về `limit` — screen_report() tự head(limit) bên
+# trong, nên phải gọi nó với một limit đủ lớn để không cắt mất mã đạt
+# ngưỡng trước khi lọc (xem search_stocks() bên dưới). ~1.600 mã niêm yết
+# HOSE+HNX+UPCOM hiện tại trên VN, hằng số này chừa dư nhiều lần.
+_SCREEN_LIMIT_FOR_FILTER = 10_000
+
 
 def _clean(obj):
-    """Đưa giá trị pandas/numpy về kiểu JSON được."""
+    """Đưa giá trị pandas/numpy về kiểu JSON được.
+
+    Cột kiểu LIST/ARRAY của DuckDB đọc qua `.df()` ra `numpy.ndarray`, KHÔNG
+    phải `list` Python — bản cũ chỉ kiểm `isinstance(obj, list)` nên một
+    ndarray lọt xuống nhánh `pd.isna(obj)` gọi trên cả mảng, trả về một mảng
+    bool (không phải một giá trị đơn), rồi `if <mảng nhiều phần tử>:` (ẩn
+    trong biểu thức điều kiện) ném ValueError "truth value of an array...
+    is ambiguous". Tái tạo bằng `select [1,2,3] as l` qua `run_sql` — lộ ra
+    khi I1 cho `run_sql` đi qua `_clean()` (agent có thể SELECT một cột
+    LIST bất kỳ lúc nào). Sửa bằng cách gộp `list`/`np.ndarray` vào MỘT
+    nhánh đệ quy theo phần tử, đặt TRƯỚC mọi lời gọi `pd.isna()` — nhánh đó
+    không bao giờ còn nhận một mảng làm tham số."""
     if isinstance(obj, dict):
         return {k: _clean(v) for k, v in obj.items()}
-    if isinstance(obj, list):
+    if isinstance(obj, (list, np.ndarray)):
         return [_clean(v) for v in obj]
-    if obj is None or (isinstance(obj, float) and pd.isna(obj)):
+    if obj is None:
         return None
-    if pd.isna(obj) if not isinstance(obj, (list, dict, str)) else False:
+    if pd.isna(obj):
         return None
     if hasattr(obj, "item"):
         return obj.item()
@@ -99,11 +118,27 @@ def _data_quality(con, sym: str) -> dict:
 
 def search_stocks(con, profile: str = None, limit: int = 20,
                   min_composite: float = None) -> dict:
-    """Chạy screener theo profile, trả danh sách xếp hạng."""
-    report = scoring.screen_report(con, profile, limit=limit)
+    """Chạy screener theo profile, trả danh sách xếp hạng.
+
+    `min_composite` (nếu có) phải lọc trên TOÀN VŨ TRỤ mã hợp lệ của
+    profile, không phải trên top `limit` mã đã bị `screen_report()` cắt sẵn
+    — `screen_report()` tự `.head(limit)` bên trong TRƯỚC khi trả về
+    (src/scoring.py). Gọi thẳng nó với `limit` gốc rồi mới lọc
+    `min_composite` sẽ khiến một mã đạt ngưỡng nhưng xếp hạng ngoài top
+    `limit` (theo composite thô, chưa lọc) bị cắt mất trước khi kịp lọc —
+    agent hội thoại dễ đọc `len(results) < limit` thành "chỉ có từng đó mã
+    đạt ngưỡng" trong khi thực ra chưa chắc đã quét hết vũ trụ. Khi có
+    `min_composite`, gọi `screen_report` với `_SCREEN_LIMIT_FOR_FILTER`
+    (đủ lớn để phủ toàn bộ vũ trụ mã thực tế) để lọc trên tập ĐẦY ĐỦ, rồi
+    mới cắt về `limit` gốc SAU KHI lọc — giữ đúng `rank`/thứ tự composite
+    giảm dần đã có sẵn từ `screen_report`."""
+    screen_limit = _SCREEN_LIMIT_FOR_FILTER if min_composite is not None else limit
+    report = scoring.screen_report(con, profile, limit=screen_limit)
     ranked = report["ranked"]
-    if min_composite is not None and not ranked.empty:
-        ranked = ranked[ranked["composite_score"] >= min_composite]
+    if min_composite is not None:
+        if not ranked.empty:
+            ranked = ranked[ranked["composite_score"] >= min_composite]
+        ranked = ranked.head(limit).reset_index(drop=True)
 
     cols = [
         "rank", "symbol", "company_name", "exchange", "com_class",
@@ -299,7 +334,8 @@ def compare_stocks(con, symbols: list[str]) -> dict:
                value_score, quality_score, growth_score, dividend_score,
                safety_score, pe, pb, pe_pct_own_5y, valuation_band,
                roe_avg_8q, dividend_years_consecutive, market_cap,
-               avg_turnover_20d, peer_basis, peer_count, data_quality_score
+               avg_turnover_20d, peer_basis, peer_count, data_quality_score,
+               quality_flags
         FROM mart_stock_scorecard
         WHERE symbol IN ({placeholders})
         """,
@@ -328,7 +364,8 @@ def get_sector_snapshot(con, com_class: str = None) -> dict:
     """Bức tranh định giá theo ngành ICB cấp 2 ở kỳ mới nhất."""
     sql = """
         SELECT icb_code_lv2, industry_lv2, com_class, period_end_date,
-               n_symbols, median_pe, median_pb, median_roe, sector_return_3m
+               n_symbols, n_pe, n_pb, n_roe, median_pe, median_pb,
+               median_roe, sector_return_3m
         FROM mart_sector_snapshot
         WHERE period_end_date = (SELECT max(period_end_date) FROM mart_sector_snapshot)
     """
@@ -343,5 +380,8 @@ def get_sector_snapshot(con, com_class: str = None) -> dict:
         r["period_end_date"] = _date_str(r.get("period_end_date"))
     return {"sectors": _clean(rows),
             "note": "Trung vị tính trong cùng com_class — không so ngân hàng "
-                    "với doanh nghiệp sản xuất.",
+                    "với doanh nghiệp sản xuất. n_symbols là TỔNG số mã trong "
+                    "nhóm; n_pe/n_pb/n_roe là số mã CÓ dữ liệu dùng được cho "
+                    "từng chỉ tiêu (luôn <= n_symbols) — nêu con số này khi "
+                    "nói về median, đừng ngầm hiểu median dựa trên n_symbols mã.",
             **db.as_of(con)}

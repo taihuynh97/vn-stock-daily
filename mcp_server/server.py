@@ -36,7 +36,7 @@ def conn():
 
 
 def _safe_tool(fn):
-    """Bọc mọi tool: bắt toàn bộ exception, trả {"error": ..., "rows": []}.
+    """Bọc mọi tool: bắt toàn bộ exception, trả {"error": ...}.
 
     Agent hội thoại gõ sai tên bảng/cột là chuyện thường — lỗi đó phải trả
     về dạng lỗi sạch để agent tự sửa câu hỏi, không phải làm tool sập
@@ -44,13 +44,21 @@ def _safe_tool(fn):
     tên bảng/cột sai, bảng chưa tồn tại khi as_of() truy vấn, v.v.).
     Task 2/3 thêm tool mới nên dùng lại decorator này thay vì tự viết
     try/except riêng.
+
+    Payload lỗi CHỈ có khoá "error" (fix round cuối, M2): bản trước kèm
+    thêm "rows": [] cho MỌI tool, nhưng 6/7 tool không dùng khoá "rows"
+    trong response THÀNH CÔNG của chúng (dùng "results"/"history"/
+    "stocks"/"sectors") — agent đọc {"rows": []} từ, vd, get_sector_snapshot
+    dễ hiểu nhầm thành "ngành không có dữ liệu" thay vì "tool bị lỗi". Bỏ
+    khoá dữ liệu khỏi payload lỗi chung; "error" đã đủ để agent nhận biết
+    và tự sửa câu hỏi.
     """
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
         except Exception as e:
-            return {"error": str(e), "rows": []}
+            return {"error": str(e)}
     return wrapper
 
 
@@ -68,6 +76,19 @@ def run_sql(query: str, limit: int = 200) -> dict:
     """
     c = conn()
     rows = db.run_query(c, query, limit=min(limit, 1000))
+    # I1 (fix round cuối): run_sql là tool DUY NHẤT từng trả thẳng dòng thô
+    # từ db.run_query (df.to_dict()) — không qua tools._clean() như 6 tool
+    # còn lại. Cột DATE NULL đọc qua .df() ra pandas.NaT; cột double NULL ra
+    # float('nan'); FastMCP serialize response qua JSON ở TẦNG SAU khi hàm
+    # đã return — NaT làm nó CRASH thật (ToolError: "'float' object cannot
+    # be interpreted as an integer"), NaN lọt ra ngoài thành literal `NaN`
+    # (JSON không hợp lệ theo RFC 8259). _safe_tool KHÔNG bắt được lớp lỗi
+    # này vì nó xảy ra sau khi run_sql đã return xong. Cho rows đi qua
+    # _clean() để đóng cả hai: NaT/NaN → None. Ca DATE literal không NULL sẽ
+    # còn lộ artifact "T00:00:00" (Timestamp.isoformat()) — chấp nhận được,
+    # vì run_sql chạy SQL tuỳ ý, không biết trước cột nào là DATE để tự cắt
+    # bằng _date_str() như 6 tool chuyên biệt kia.
+    rows = tools._clean(rows)
     return {"rows": rows, "row_count": len(rows), **db.as_of(c)}
 
 
@@ -80,6 +101,12 @@ def search_stocks(profile: str = "bluechip_dividend", limit: int = 20,
     profile: 'bluechip_dividend' (bluechip + cổ tức, dài hạn),
              'deep_value' (định giá sâu, mở rộng xuống mid-cap),
              'quality_growth' (chất lượng + tăng trưởng).
+    min_composite: lọc composite_score >= ngưỡng này trên TOÀN VŨ TRỤ mã hợp
+             lệ của profile (mọi mã đã qua sàng lọc universe, không chỉ
+             top `limit`), RỒI mới cắt kết quả về `limit`. VD limit=20,
+             min_composite=70 có thể trả ít hơn 20 mã nếu không đủ mã đạt
+             ngưỡng, nhưng không bao giờ bỏ sót một mã đạt ngưỡng chỉ vì nó
+             xếp ngoài top-20 theo composite thô.
 
     Kết quả gồm 5 điểm thành phần (0-100, percentile trong nhóm tương đương),
     'facts' là các phát biểu số liệu đã tính sẵn — chỉ diễn giải, không tự tính
