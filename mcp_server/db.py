@@ -17,21 +17,29 @@ Ba lớp bảo vệ độc lập:
 GIỚI HẠN ĐÃ BIẾT, CHƯA GIẢI QUYẾT (vòng sửa 5, xem task-1-report.md): lớp
 (3) chỉ kiểm TABLE-FUNCTION (hàm xuất hiện trong mệnh đề FROM, sinh node
 "Function" riêng trong physical plan). HÀM SCALAR (dùng trong SELECT list,
-vd `some_dangerous_scalar_fn(...)`) — nếu có alias (`AS bất_kỳ_tên_gì`,
-cực kỳ phổ biến trong SQL thật) — bị DuckDB ẩn hoàn toàn khỏi output
-`EXPLAIN` (kể cả `explain_output='ALL'`, ở mọi giai đoạn plan: logical,
-logical_opt, physical): trường "Projections"/"Expressions" chỉ hiển thị
-TÊN ALIAS, không hiển thị biểu thức gốc. Đã tự kiểm thực nghiệm — không có
-cách nào qua `EXPLAIN` hay API Python hiện có của `duckdb` (đã thử cả
-`duckdb_dependencies()` sau `PREPARE`, không track lời gọi hàm ad-hoc) để
-lấy lại tên hàm scalar một khi đã bị alias che. Nghĩa là hàm scalar có
-side-effect thật trên MotherDuck (vd `MD_INTERRUPT_SERVER_CONNECTION`,
-`write_log`, `set_bit`) KHÔNG bị lớp (3) chặn nếu được gọi kèm alias —
-residual risk thật, đã báo cáo, chưa có giải pháp trong phạm vi cơ chế
-EXPLAIN-based này.
+vd `some_dangerous_scalar_fn(...)`) — dù có alias (`AS bất_kỳ_tên_gì`) hay
+KHÔNG — không sinh node "Function" trong plan nên không bao giờ lọt vào
+diện được lớp (3) kiểm; đây là giới hạn của bản thân cơ chế (chỉ đọc field
+`extra_info.Function` của node table-function), không phải một khe hở chỉ
+mở ra khi có alias. Alias làm vấn đề RÕ RÀNG HƠN (dù có/không alias, hàm
+scalar cũng bị bỏ qua như nhau) vì khi có alias, `EXPLAIN` (kể cả
+`explain_output='ALL'`, ở mọi giai đoạn plan: logical, logical_opt,
+physical) còn ẩn cả TÊN biểu thức gốc khỏi phần "Projections"/
+"Expressions" (chỉ hiển thị tên alias) — nên ngay cả nếu MUỐN tự vá bằng
+cách đọc text/JSON của EXPLAIN để suy luận tên hàm scalar, ca có alias cũng
+không còn tên để đọc. Đã tự kiểm thực nghiệm cả hai chiều: `select
+write_log('hi')` (không alias) và `select write_log('hi') as x` (có alias)
+— CẢ HAI đều ALLOW như nhau; không có cách nào qua `EXPLAIN` hay API Python
+hiện có của `duckdb` (đã thử cả `duckdb_dependencies()` sau `PREPARE`,
+không track lời gọi hàm ad-hoc) để bắt hàm scalar ở diện này. Nghĩa là hàm
+scalar có side-effect thật trên MotherDuck (vd
+`MD_INTERRUPT_SERVER_CONNECTION`, `write_log`, `set_bit`) KHÔNG bị lớp (3)
+chặn, có alias hay không — residual risk thật, đã báo cáo, chưa có giải
+pháp trong phạm vi cơ chế EXPLAIN-based này.
 """
 import json
 import os
+import threading
 from pathlib import Path
 
 import duckdb
@@ -236,11 +244,36 @@ def get_readonly_conn():
     return con, is_readonly
 
 
+_QUERY_TIMEOUT_SECONDS = 30
+
+
 def run_query(con, sql: str, params=None, limit: int = 1000) -> list[dict]:
-    """Chạy truy vấn đọc, trả tối đa `limit` dòng dưới dạng list[dict]."""
+    """Chạy truy vấn đọc, trả tối đa `limit` dòng dưới dạng list[dict].
+
+    Timeout 30 giây (I3, Global Constraint của plan A3: "giới hạn 1.000
+    dòng; timeout 30 giây" — giới hạn dòng đã có qua tham số `limit`, timeout
+    thì chưa). DuckDB KHÔNG có `statement_timeout` built-in cho một câu lệnh
+    đơn (khác Postgres/MySQL) — không có tham số nào truyền vào
+    `execute()`/`connect()` để tự huỷ sau N giây. Cách chuẩn của DuckDB là
+    gọi `con.interrupt()` từ MỘT LUỒNG KHÁC trong khi luồng chính đang bị
+    chặn (block) ở `execute()`; `threading.Timer` là cách gọn nhất để lên
+    lịch việc đó mà không cần tự quản một thread pool. Start timer TRƯỚC
+    `execute()`, cancel nó trong `finally` (dù thành công hay lỗi) — bắt
+    buộc phải cancel khi xong sớm, nếu không timer vẫn sống và có thể
+    `interrupt()` nhầm một câu truy vấn KHÁC chạy sau đó trên cùng
+    connection (singleton `_CON` dùng chung mọi request MCP). Nếu bị
+    interrupt, DuckDB tự ném exception — không bắt riêng ở đây, để
+    `_safe_tool` ở tầng server.py bắt và trả `{"error": ...}` như mọi lỗi
+    khác.
+    """
     assert_safe_sql(con, sql, params)
     wrapped = f"SELECT * FROM ({sql.rstrip().rstrip(';')}) LIMIT {int(limit)}"
-    df = con.execute(wrapped, params or []).df()
+    timer = threading.Timer(_QUERY_TIMEOUT_SECONDS, con.interrupt)
+    timer.start()
+    try:
+        df = con.execute(wrapped, params or []).df()
+    finally:
+        timer.cancel()
     return df.to_dict(orient="records")
 
 
