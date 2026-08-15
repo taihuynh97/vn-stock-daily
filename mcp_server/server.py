@@ -14,6 +14,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server import db
+from mcp_server import tools
 
 ROOT = Path(__file__).resolve().parent.parent
 INSTRUCTIONS = (ROOT / "mcp_server" / "instructions.md").read_text(encoding="utf-8")
@@ -65,6 +66,33 @@ def run_sql(query: str, limit: int = 200) -> dict:
     c = conn()
     rows = db.run_query(c, query, limit=min(limit, 1000))
     return {"rows": rows, "row_count": len(rows), **db.as_of(c)}
+
+
+@mcp.tool()
+@_safe_tool
+def search_stocks(profile: str = "bluechip_dividend", limit: int = 20,
+                  min_composite: float = None) -> dict:
+    """Quét toàn thị trường theo hồ sơ đầu tư, trả danh sách xếp hạng.
+
+    profile: 'bluechip_dividend' (bluechip + cổ tức, dài hạn),
+             'deep_value' (định giá sâu, mở rộng xuống mid-cap),
+             'quality_growth' (chất lượng + tăng trưởng).
+
+    Kết quả gồm 5 điểm thành phần (0-100, percentile trong nhóm tương đương),
+    'facts' là các phát biểu số liệu đã tính sẵn — chỉ diễn giải, không tự tính
+    số mới. 'rejected_counts' cho biết vì sao các mã khác bị loại.
+    """
+    return tools.search_stocks(conn(), profile, limit, min_composite)
+
+
+@mcp.tool()
+@_safe_tool
+def get_stock_profile(symbol: str) -> dict:
+    """Hồ sơ đầy đủ một mã: ngành, loại hình, 5 điểm, định giá, chất lượng dữ liệu.
+
+    Luôn kiểm tra data_quality.reliable trước khi kết luận về mã này.
+    """
+    return tools.get_stock_profile(conn(), symbol)
 
 
 if __name__ == "__main__":

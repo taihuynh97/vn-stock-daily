@@ -64,7 +64,7 @@ _ALLOWED_TABLE_FUNCTIONS = {
 }
 
 
-def _called_table_functions(con, query: str) -> set[str]:
+def _called_table_functions(con, query: str, params=None) -> set[str]:
     """Tên (viết hoa) của mọi table-function THẬT SỰ xuất hiện trong physical
     plan của `query`, đã qua resolve/chuẩn hoá của chính DuckDB — miễn nhiễm
     với cách viết gốc (dấu ngoặc kép quanh tên, comment chen giữa, qualify
@@ -91,8 +91,20 @@ def _called_table_functions(con, query: str) -> set[str]:
     node kiểu này (nó là một biểu thức trong PROJECTION, không phải một
     node quét riêng), nên không cần allowlist cho `replace` như các vòng
     sửa trước — đã tự xác minh thực nghiệm cả dạng trần lẫn bọc ngoặc.
+
+    `params` (Task 2): câu có placeholder `?` (vd `WHERE symbol = ?`, dùng
+    trong `get_stock_profile`) khiến `EXPLAIN` tự nó ném
+    "Values were not provided for the following prepared statement
+    parameters" nếu không bind giá trị — DuckDB cần giá trị thật để
+    resolve kiểu/lập kế hoạch, kể cả khi chỉ EXPLAIN chứ không chạy. Bind
+    cùng `params` truyền cho `run_query`/`con.execute` thật, không phải
+    giá trị giả — nếu không, một điều kiện lọc theo giá trị tham số (hiếm
+    nhưng có thể xảy ra qua CASE/kiểu dữ liệu phụ thuộc giá trị) có thể
+    làm plan EXPLAIN khác plan thật sự chạy. Đã tự xác minh thực nghiệm:
+    `EXPLAIN` không thực thi câu lệnh (xem đoạn SEQUENCE ở trên) nên bind
+    giá trị thật ở đây an toàn, không có side-effect.
     """
-    plan_rows = con.execute(f"EXPLAIN (FORMAT JSON) {query}").fetchall()
+    plan_rows = con.execute(f"EXPLAIN (FORMAT JSON) {query}", params or []).fetchall()
     names: set[str] = set()
     for _label, plan_json in plan_rows:
         try:
@@ -117,9 +129,14 @@ class SqlGuardError(RuntimeError):
     """Câu lệnh SQL bị từ chối vì không phải truy vấn đọc."""
 
 
-def assert_safe_sql(con, query: str) -> None:
+def assert_safe_sql(con, query: str, params=None) -> None:
     """Chỉ cho phép đúng một câu SELECT duy nhất, không gọi hàm bảng nguy
     hiểm (dù viết theo cách nào).
+
+    `params`: giá trị bind cho placeholder `?` trong `query` (nếu có) — cần
+    truyền xuống `_called_table_functions` để bước `EXPLAIN` không ném lỗi
+    "thiếu giá trị tham số". Mọi lời gọi hiện có (không dùng placeholder)
+    không cần đổi, mặc định `None` tương đương `[]`.
 
     Cần `con` (khác vòng sửa trước) vì bước cuối dùng `EXPLAIN` — cần một
     connection thật để DuckDB resolve/bind hàm trong catalog, đặc biệt
@@ -186,7 +203,7 @@ def assert_safe_sql(con, query: str) -> None:
     # thường (không phải PRAGMA), `.query` giống hệt văn bản gốc nên không
     # đổi hành vi chặn các biến thể quote/comment/qualify.
     try:
-        called = _called_table_functions(con, statements[0].query)
+        called = _called_table_functions(con, statements[0].query, params)
     except duckdb.Error as e:
         raise SqlGuardError(f"Không phân tích được kế hoạch truy vấn: {e}") from e
     not_allowed = {f for f in called if f.lower() not in _ALLOWED_TABLE_FUNCTIONS}
@@ -221,7 +238,7 @@ def get_readonly_conn():
 
 def run_query(con, sql: str, params=None, limit: int = 1000) -> list[dict]:
     """Chạy truy vấn đọc, trả tối đa `limit` dòng dưới dạng list[dict]."""
-    assert_safe_sql(con, sql)
+    assert_safe_sql(con, sql, params)
     wrapped = f"SELECT * FROM ({sql.rstrip().rstrip(';')}) LIMIT {int(limit)}"
     df = con.execute(wrapped, params or []).df()
     return df.to_dict(orient="records")
