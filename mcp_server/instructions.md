@@ -33,3 +33,19 @@
   nhưng vẫn nên nói rõ khi người dùng cần độ chính xác tuyệt đối.
 - `dividend_yield` bằng 0 có thể là "không trả cổ tức" hoặc "nguồn không có
   dữ liệu" — không khẳng định chắc chắn doanh nghiệp không trả cổ tức.
+
+## Giới hạn đã biết của `run_sql`
+
+`run_sql` chặn được mọi câu không phải SELECT, và mọi lời gọi hàm-bảng
+(hàm dùng trong mệnh đề `FROM`) không nằm trong danh sách cho phép
+(`duckdb_databases`, `duckdb_tables`, `duckdb_views`, `pragma_table_info`,
+`pragma_version`, `range`, `generate_series`, `unnest`, `repeat`). Nó
+KHÔNG thể chặn mọi hàm vô hướng (hàm tính giá trị, dùng trong danh sách
+`SELECT`) có tác dụng phụ — đây là giới hạn kỹ thuật thật của công cụ phân
+tích câu lệnh, không phải sơ suất.
+
+**Không bao giờ gọi một hàm hệ thống/nội bộ lạ qua `run_sql`**, dù rào
+chắn kỹ thuật có cho phép hay không — đặc biệt bất kỳ tên nào gợi ý quản
+trị, ngắt kết nối, xoá, reset, hay bắt đầu bằng `md_`/`__`. Nếu không chắc
+một hàm có an toàn không, đừng gọi nó. Chỉ dùng `run_sql` để đọc dữ liệu
+từ các bảng đã liệt kê trong mô tả của tool.
