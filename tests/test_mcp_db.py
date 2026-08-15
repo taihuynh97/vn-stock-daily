@@ -29,6 +29,8 @@ def con(tmp_path):
     "SET threads = 1",
     "select 1; drop table t",          # nhiều câu lệnh
     "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",  # CTE ghi (DuckDB)
+    "select * from checkpoint()",      # Vòng sửa 2: table function có side effect thật (flush WAL)
+    "select '--' as c from t; delete from t",  # Vòng sửa 2: '--' trong chuỗi không được nuốt mất ';'
 ])
 def test_assert_safe_sql_blocks_writes(sql):
     with pytest.raises(db.SqlGuardError):
@@ -42,6 +44,7 @@ def test_assert_safe_sql_blocks_writes(sql):
     "select 'update me' as note from t",    # từ khoá nằm trong chuỗi, không phải lệnh
     "select replace(a, 'x', 'y') from t",   # "replace" là tên hàm đang gọi
     "select update, delete, drop, insert from t",  # tên cột trùng từ khoá cấm
+    "select 1 -- it's a comment\nfrom t",   # Vòng sửa 2: dấu nháy đơn trong comment thật không bị hiểu nhầm thành string literal
 ])
 def test_assert_safe_sql_allows_reads(sql):
     db.assert_safe_sql(sql)
@@ -60,6 +63,20 @@ def test_run_query_applies_limit(con):
 def test_run_query_rejects_write(con):
     with pytest.raises(db.SqlGuardError):
         db.run_query(con, "DELETE FROM t")
+    assert con.execute("SELECT count(*) FROM t").fetchone()[0] == 3
+
+
+def test_assert_safe_sql_survives_direct_execution_without_run_query(con):
+    """Vòng sửa 2: assert_safe_sql tự nó phải là rào chắn đủ, không được
+    phép chỉ 'an toàn nhờ' lớp bọc SELECT * FROM (...) LIMIT của run_query.
+    Trước khi sửa: câu này qua được assert_safe_sql, và nếu code gọi
+    con.execute() trực tiếp (không qua run_query) thì bảng bị xoá thật."""
+    sql = "select '--' as c from t; delete from t"
+    with pytest.raises(db.SqlGuardError):
+        db.assert_safe_sql(sql)
+    # Không thực thi trực tiếp vì assert_safe_sql đã chặn ở trên — xác nhận
+    # dữ liệu còn nguyên (giả lập code gọi con.execute(sql) không qua
+    # run_query sẽ không bao giờ tới được vì assert_safe_sql chặn trước).
     assert con.execute("SELECT count(*) FROM t").fetchone()[0] == 3
 
 

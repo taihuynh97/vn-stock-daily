@@ -18,15 +18,48 @@ FORBIDDEN = {
     "detach", "copy", "install", "load", "pragma", "set", "export",
     "import", "truncate", "replace", "call", "checkpoint", "vacuum",
 }
+# Đã tra `duckdb_functions()` trên md:vn_market thật cho toàn bộ 20 từ trong
+# FORBIDDEN (không chỉ vá đúng checkpoint). Chỉ 2 cái trùng tên với một hàm/
+# table-function DuckDB thật:
+#   - checkpoint (table function, has_side_effects, flush WAL ra đĩa) —
+#     nguy hiểm thật, KHÔNG thêm vào allowlist, vẫn bị chặn khi gọi
+#     checkpoint(...).
+#   - replace (scalar function thuần, "Replaces any occurrences of source
+#     with target in string") — vô hại, đã xác minh trên dữ liệu thật
+#     (replace(symbol,'A','B') trên mart_stock_scorecard).
+# 18 từ còn lại (insert/update/delete/drop/create/alter/attach/detach/copy/
+# install/load/pragma/set/export/import/truncate/call/vacuum) không phải
+# tên hàm/table-function nào trong duckdb_functions() — chúng chỉ có nghĩa
+# như từ khoá đầu câu lệnh SQL, không có cú pháp gọi word(...) nào để lo.
+SAFE_FUNCTIONS = {"replace"}
 _WORD = re.compile(r"[a-z_]+")
-_STRING_LITERAL = re.compile(r"'[^']*'")
-_LINE_COMMENT = re.compile(r"--[^\n]*")
-_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-# Từ khoá cấm chỉ tính khi đứng đầu câu (words[0], kiểm riêng bên dưới) hoặc
-# ngay sau một dấu "(" mở đầu — vị trí một CTE/sub-statement bắt đầu (có thể
-# có "AS" ngay trước dấu "("). Đứng ở vị trí khác (tên hàm đang gọi, tên cột
-# trong SELECT list, ...) là vô hại và KHÔNG bị chặn.
+# Một lượt duy nhất cho cả string literal / line comment / block comment —
+# tránh nhập nhằng thứ tự (regex chạy tuần tự trước đó khiến `--` bên trong
+# chuỗi '--' bị hiểu nhầm thành comment thật, ăn lố qua cả dấu ';' và lệnh
+# ghi phía sau). Alternation quét trái sang phải, mỗi vị trí chỉ khớp đúng
+# MỘT khả năng dựa vào ký tự thật tại đó — giống lexer thật, không có
+# trường hợp pattern sau "nhìn xuyên" qua pattern trước.
+_NOISE = re.compile(r"(?P<string>'[^']*')|(?P<line>--[^\n]*)|(?P<block>/\*.*?\*/)", re.DOTALL)
+# Từ khoá cấm chỉ tính khi:
+#   (a) đứng đầu câu (words[0], kiểm riêng bên dưới), hoặc
+#   (b) đứng ngay sau một dấu "(" mở đầu — vị trí CTE/sub-statement bắt đầu
+#       (kiểu "AS (DELETE ...)"), hoặc
+#   (c) đứng ngay TRƯỚC dấu "(" của chính nó — đang được gọi như hàm/
+#       table-function (kiểu "checkpoint()"), trừ khi nằm trong
+#       SAFE_FUNCTIONS.
+# Đứng ở vị trí khác (tên cột trong SELECT list, ...) là vô hại và KHÔNG bị
+# chặn.
 _PAREN_WORD = re.compile(r"\(\s*([a-z_]+)")
+_CALL_WORD = re.compile(r"([a-z_]+)\s*\(")
+
+
+def _strip_noise(query: str) -> str:
+    """Xoá string literal + comment (--, /* */) trong một lượt quét."""
+    def repl(m: re.Match) -> str:
+        if m.group("string") is not None:
+            return "''"
+        return " "
+    return _NOISE.sub(repl, query)
 
 
 class SqlGuardError(RuntimeError):
@@ -38,12 +71,7 @@ def assert_safe_sql(query: str) -> None:
     if not query or not query.strip():
         raise SqlGuardError("Câu truy vấn rỗng.")
 
-    # Bỏ comment rồi bỏ chuỗi ký tự để từ khoá bên trong không bị bắt nhầm.
-    # Thứ tự: comment trước (chuỗi trong comment có thể có dấu nháy đơn lẻ,
-    # xử lý string literal trước sẽ khiến regex string literal ăn lố).
-    no_comments = _BLOCK_COMMENT.sub(" ", query)
-    no_comments = _LINE_COMMENT.sub(" ", no_comments)
-    stripped = _STRING_LITERAL.sub("''", no_comments)
+    stripped = _strip_noise(query)
     body = stripped.strip().rstrip(";")
 
     if ";" in body:
@@ -54,7 +82,9 @@ def assert_safe_sql(query: str) -> None:
     if not words or words[0] not in {"select", "with"}:
         raise SqlGuardError("Chỉ chấp nhận câu lệnh bắt đầu bằng SELECT hoặc WITH.")
 
-    hit = {m.group(1) for m in _PAREN_WORD.finditer(lowered)} & FORBIDDEN
+    paren_hit = {m.group(1) for m in _PAREN_WORD.finditer(lowered)} & FORBIDDEN
+    call_hit = ({m.group(1) for m in _CALL_WORD.finditer(lowered)} & FORBIDDEN) - SAFE_FUNCTIONS
+    hit = paren_hit | call_hit
     if hit:
         raise SqlGuardError(f"Câu lệnh chứa từ khoá bị cấm: {sorted(hit)}")
 
