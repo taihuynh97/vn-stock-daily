@@ -95,5 +95,39 @@ def get_stock_profile(symbol: str) -> dict:
     return tools.get_stock_profile(conn(), symbol)
 
 
+@mcp.tool()
+@_safe_tool
+def get_valuation_history(symbol: str, years: int = 5) -> dict:
+    """P/E, P/B theo quý kèm percentile so với chính mã và nhãn vùng định giá.
+
+    Dùng để trả lời "mã này đang rẻ hay đắt so với quá khứ của chính nó".
+    """
+    return tools.get_valuation_history(conn(), symbol, years)
+
+
+@mcp.tool()
+@_safe_tool
+def get_financial_history(symbol: str, quarters: int = 12) -> dict:
+    """Tỷ số theo quý + doanh thu/LNST suy ra + tăng trưởng YoY."""
+    return tools.get_financial_history(conn(), symbol, quarters)
+
+
+@mcp.tool()
+@_safe_tool
+def compare_stocks(symbols: list[str]) -> dict:
+    """So sánh nhiều mã cạnh nhau. Cảnh báo khi các mã khác loại hình DN."""
+    return tools.compare_stocks(conn(), symbols)
+
+
+@mcp.tool()
+@_safe_tool
+def get_sector_snapshot(com_class: str = None) -> dict:
+    """Trung vị P/E, P/B, ROE và suất sinh lời 3 tháng theo ngành ICB cấp 2.
+
+    com_class: để trống = mọi loại hình; 'BANK' / 'NONFIN' / 'OTHERFIN'.
+    """
+    return tools.get_sector_snapshot(conn(), com_class)
+
+
 if __name__ == "__main__":
     mcp.run()

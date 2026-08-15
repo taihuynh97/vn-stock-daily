@@ -182,3 +182,129 @@ def get_stock_profile(con, symbol: str) -> dict:
         "ratio_as_of": _date_str(raw.get("ratio_as_of")),
         "price_as_of": _date_str(raw.get("price_as_of")),
     }
+
+
+def get_valuation_history(con, symbol: str, years: int = 5) -> dict:
+    """Chuỗi P/E, P/B theo quý kèm percentile so với chính mã và nhãn vùng."""
+    sym = symbol.upper().strip()
+    rows = db.run_query(
+        con,
+        """
+        SELECT period_end_date, pe, pb, ps, pe_pct_own_5y, pb_pct_own_5y,
+               pe_quarters_used, pb_quarters_used, valuation_band, com_class, industry_lv2
+        FROM mart_valuation_band
+        WHERE symbol = ?
+          AND period_end_date >= current_date - (? * 365) * INTERVAL 1 DAY
+        ORDER BY period_end_date DESC
+        """,
+        params=[sym, years],
+        limit=4 * years + 4,
+    )
+    if not rows:
+        return {"error": f"Không có dữ liệu định giá cho {sym}.", **db.as_of(con)}
+    # `period_end_date` là cột DATE đọc qua `.df()` nên ra `pandas.Timestamp`
+    # — `_clean()` sẽ gọi `.isoformat()` trên nó và rò rỉ artifact
+    # "T00:00:00" (xem docstring `_date_str`). Chuẩn hoá từng dòng trước khi
+    # `_clean()` để tái dùng đúng helper thay vì lặp lại logic tương tự.
+    for r in rows:
+        r["period_end_date"] = _date_str(r.get("period_end_date"))
+    return {
+        "symbol": sym,
+        "com_class": rows[0].get("com_class"),
+        "industry": rows[0].get("industry_lv2"),
+        "history": _clean(rows),
+        "note": "pe_pct_own_5y là percentile P/E so với CHÍNH MÃ trong 5 năm "
+                "qua (0 = rẻ nhất lịch sử của nó), không phải so với thị trường.",
+        **db.as_of(con),
+    }
+
+
+def get_financial_history(con, symbol: str, quarters: int = 12) -> dict:
+    """Tỷ số theo quý + doanh thu/LNST suy ra + tăng trưởng."""
+    sym = symbol.upper().strip()
+    rows = db.run_query(
+        con,
+        """
+        SELECT year, quarter, period_end_date, com_class,
+               pe, pb, roe, revenue_ttm, earnings_ttm,
+               revenue_yoy, earnings_yoy
+        FROM fct_financial_quarterly
+        WHERE symbol = ? AND quarter BETWEEN 1 AND 4
+        ORDER BY period_end_date DESC
+        """,
+        params=[sym],
+        limit=quarters,
+    )
+    if not rows:
+        return {"error": f"Không có dữ liệu tài chính cho {sym}.", **db.as_of(con)}
+    # Cùng lý do chuẩn hoá DATE như get_valuation_history ở trên.
+    for r in rows:
+        r["period_end_date"] = _date_str(r.get("period_end_date"))
+    return {
+        "symbol": sym,
+        "history": _clean(rows),
+        "note": "Doanh thu và lợi nhuận là chỉ tiêu SUY RA từ market_cap/ps và "
+                "market_cap/pe, không đọc trực tiếp từ báo cáo tài chính. "
+                "Đối chiếu HPG 2024 cho kết quả khớp, nhưng nên nói rõ khi "
+                "người dùng cần độ chính xác tuyệt đối.",
+        **db.as_of(con),
+    }
+
+
+def compare_stocks(con, symbols: list[str]) -> dict:
+    """So sánh nhiều mã cạnh nhau, cảnh báo nếu khác loại hình doanh nghiệp."""
+    syms = [s.upper().strip() for s in symbols]
+    placeholders = ", ".join("?" for _ in syms)
+    rows = db.run_query(
+        con,
+        f"""
+        SELECT symbol, company_name, exchange, com_class, industry_lv2,
+               value_score, quality_score, growth_score, dividend_score,
+               safety_score, pe, pb, pe_pct_own_5y, valuation_band,
+               roe_avg_8q, dividend_years_consecutive, market_cap,
+               avg_turnover_20d, peer_basis, peer_count, data_quality_score
+        FROM mart_stock_scorecard
+        WHERE symbol IN ({placeholders})
+        """,
+        params=syms,
+        limit=len(syms),
+    )
+    found = {r["symbol"] for r in rows}
+    classes = {r["com_class"] for r in rows}
+    comparable = len(classes) <= 1
+    return {
+        "stocks": _clean(rows),
+        "not_found": [s for s in syms if s not in found],
+        "com_classes": sorted(classes),
+        "comparable": comparable,
+        "warning": "" if comparable else (
+            "Các mã thuộc loại hình doanh nghiệp khác nhau "
+            f"({', '.join(sorted(classes))}) — chỉ tiêu KHÔNG tương đương. "
+            "Ngân hàng vốn dĩ đòn bẩy cao và không có ROIC hay hệ số thanh "
+            "toán hiện hành; đừng so trực tiếp các con số này."
+        ),
+        **db.as_of(con),
+    }
+
+
+def get_sector_snapshot(con, com_class: str = None) -> dict:
+    """Bức tranh định giá theo ngành ICB cấp 2 ở kỳ mới nhất."""
+    sql = """
+        SELECT icb_code_lv2, industry_lv2, com_class, period_end_date,
+               n_symbols, median_pe, median_pb, median_roe, sector_return_3m
+        FROM mart_sector_snapshot
+        WHERE period_end_date = (SELECT max(period_end_date) FROM mart_sector_snapshot)
+    """
+    params = []
+    if com_class:
+        sql += " AND com_class = ?"
+        params.append(com_class.upper().strip())
+    sql += " ORDER BY n_symbols DESC"
+    rows = db.run_query(con, sql, params=params, limit=200)
+    # Cùng lý do chuẩn hoá DATE như get_valuation_history ở trên.
+    for r in rows:
+        r["period_end_date"] = _date_str(r.get("period_end_date"))
+    return {"sectors": _clean(rows),
+            "note": "Trung vị tính trong cùng com_class — không so ngân hàng "
+                    "với doanh nghiệp sản xuất.",
+            **db.as_of(con)}
