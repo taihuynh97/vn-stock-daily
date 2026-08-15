@@ -84,8 +84,36 @@ with_windows as (
 with_growth as (
     select
         *,
-        revenue_ttm  / nullif(revenue_4q_ago, 0)  - 1 as revenue_yoy,
-        earnings_ttm / nullif(earnings_4q_ago, 0) - 1 as earnings_yoy,
+        -- revenue_yoy: rào chắn mốc gốc dương ở đây là RÀO CHẮN CẤU TRÚC, không
+        -- phải bản vá dữ liệu. Đã đo trên production trước khi thêm: 0/36.676
+        -- dòng có revenue_ttm < 0 — không thể khác, vì revenue_ttm =
+        -- market_cap / ps chỉ được tính khi ps > 0 (xem CTE `ttm`) và market_cap
+        -- đã nullif(0) ở stg. Nên mệnh đề này KHÔNG đổi một giá trị nào hôm nay
+        -- (kiểm chứng: số dòng revenue_yoy non-null trước/sau phải bằng nhau);
+        -- nó tồn tại để mệnh đề "mốc gốc phải dương" là bất biến TƯỜNG MINH của
+        -- cả bốn chỉ tiêu tăng trưởng, thay vì một sự trùng hợp phải suy ra từ
+        -- hai model khác.
+        case when revenue_4q_ago > 0
+             then revenue_ttm / revenue_4q_ago - 1 end  as revenue_yoy,
+        -- Fix vòng review toàn nhánh (Important #2): YoY phải chịu CÙNG rào chắn
+        -- "mốc gốc dương" như earnings_cagr_3y ngay dưới. Bản cũ
+        -- `earnings_ttm / nullif(earnings_4q_ago, 0) - 1` chia cho một mốc ÂM,
+        -- làm LẬT DẤU tăng trưởng: lỗ PHÌNH TO đọc thành tăng trưởng đỉnh bảng.
+        --
+        -- Đo trên production trước khi sửa (kỳ mới nhất, 1.585 mã): 165 mã tính
+        -- YoY qua mốc gốc <= 0, trong đó 37 mã ĐANG LỖ mà nhận earnings_yoy
+        -- DƯƠNG — TSC lỗ 36 tỷ nhận YoY +93,9 và pct_peer = 1,000, tức ĐỨNG ĐẦU
+        -- rổ tăng trưởng của ngành; KVC và ICF cũng 1,000. Chiều ngược lại: 352
+        -- mã ĐANG CÓ LÃI nhận YoY âm vì mốc gốc âm. earnings_yoy có
+        -- direction = 'higher', trọng số 0,15 trong thành phần tăng trưởng của
+        -- cả NONFIN, OTHERFIN lẫn BANK.
+        --
+        -- Lỗi ranh giới: model này GHI earnings_yoy như một tỉ số đại số (đúng
+        -- về số học), còn int_metric_percentile ĐỌC nó như một thang có thứ tự
+        -- "cao là tốt". Mỗi bên đọc riêng đều đúng — nên 13 vòng review
+        -- từng-task bỏ sót.
+        case when earnings_4q_ago > 0 and earnings_ttm > 0
+             then earnings_ttm / earnings_4q_ago - 1 end as earnings_yoy,
         -- CAGR 3 năm chỉ có nghĩa khi mốc gốc dương.
         case when revenue_12q_ago > 0 and revenue_ttm > 0
              then power(revenue_ttm / revenue_12q_ago, 1.0 / 3) - 1 end as revenue_cagr_3y,

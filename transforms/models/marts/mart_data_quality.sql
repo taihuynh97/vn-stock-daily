@@ -49,13 +49,29 @@ price_stats as (
 
 -- Ngân hàng phải có NIM và NPL; phi tài chính phải có ROIC. Thiếu = sentinel
 -- chưa được xử lý đúng hoặc nguồn không trả dữ liệu.
+--
+-- OTHERFIN (công ty chứng khoán, bảo hiểm) dùng CHUNG bộ chỉ tiêu với NONFIN
+-- theo phán quyết ở Task 2, nên phải chịu CÙNG phép kiểm. Bản đầu viết `else 1`
+-- cho nhóm này: 54 mã tự động đạt mà không kiểm gì, nhưng vẫn ăn trọn 15% trọng
+-- số của `data_quality_score` — và cột đó chảy thẳng vào `mart_stock_scorecard`
+-- lẫn ngưỡng lọc `min_data_quality_score` của screener, nên 15 điểm cho không
+-- có thể đẩy một mã qua mốc 60. Một phép kiểm không bao giờ trượt thì tệ hơn
+-- không có phép kiểm, vì nó tạo cảm giác an toàn.
+--
+-- Đã đo trên production trước khi sửa: cả 54 mã OTHERFIN đều có `roic` ở kỳ mới
+-- nhất, nên thay đổi này KHÔNG đổi điểm mã nào hôm nay. Giá trị của nó là bịt
+-- lỗ hổng cho mai sau.
+--
+-- `UNKNOWN` giữ `else 1` vì nhóm này không có dòng nào trong stg_financial_ratio
+-- (10 mã thiếu hồ sơ) nên không bao giờ tới được nhánh đó; chúng nhận 0 qua
+-- `coalesce` ở CTE `scored`.
 required_ok as (
     select
         f.symbol,
         max(case
             when f.com_class = 'BANK'
                 then (f.net_interest_margin is not null and f.npl is not null)::int
-            when f.com_class = 'NONFIN'
+            when f.com_class in ('NONFIN', 'OTHERFIN')
                 then (f.roic is not null)::int
             else 1
         end) as has_required_metrics
