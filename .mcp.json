@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "vn-stock-analysis": {
+      "command": ".venv/bin/python",
+      "args": ["-m", "mcp_server.server"],
+      "env": {
+        "WAREHOUSE_DB": "md:vn_market"
+      }
+    }
+  }
+}

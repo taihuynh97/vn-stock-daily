@@ -11,7 +11,10 @@ không bị ảnh hưởng.
 import functools
 from pathlib import Path
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+
+load_dotenv()
 
 from mcp_server import db
 from mcp_server import tools
