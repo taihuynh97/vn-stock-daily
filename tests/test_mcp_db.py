@@ -14,21 +14,31 @@ def con(tmp_path):
     c.close()
 
 
-# Danh sách tích luỹ qua 4 vòng sửa của assert_safe_sql (lịch sử chi tiết ở
-# task-1-report.md, mục "Vòng sửa 1/2/3/4"). Vòng 3 thay hẳn cơ chế
+# Danh sách tích luỹ qua 5 vòng sửa của assert_safe_sql (lịch sử chi tiết ở
+# task-1-report.md, mục "Vòng sửa 1-5"). Vòng 3 thay hẳn cơ chế
 # statement-type: từ regex tự dò cú pháp SQL sang dùng chính parser DuckDB
 # (duckdb.extract_statements) — chỉ SELECT duy nhất mới qua được. Vòng 3
-# (đợt 2/3) thêm _DANGEROUS_TABLE_FUNCTIONS (checkpoint/force_checkpoint) và
-# quy tắc tiền tố "__" (hàm nội bộ MotherDuck/DuckDB) — nhưng CẢ HAI vẫn
-# dùng regex đoán TÊN HÀM từ chuỗi ký tự thô, và bị vượt qua bằng
-# "checkpoint"() (quote), checkpoint/**/() (comment chen giữa),
-# main."checkpoint"() (qualify schema) — Vòng 4 phát hiện đây là CÙNG một
-# lớp vấn đề với "đoán cấu trúc câu lệnh" mà vòng 3 đã từ bỏ regex để giải
-# quyết, chỉ khác chỗ áp dụng. Sửa: dùng EXPLAIN (FORMAT JSON) để lấy tên
-# hàm bảng ĐÃ ĐƯỢC DUCKDB RESOLVE XONG trong physical plan — miễn nhiễm với
-# mọi cách viết vì không còn đọc chuỗi ký tự gốc nữa. `assert_safe_sql` giờ
-# cần một connection (`con`) vì EXPLAIN cần bind vào catalog thật — đặc biệt
-# quan trọng với hàm chỉ tồn tại trên MotherDuck (`__MD_*`).
+# (đợt 2/3) thêm blocklist _DANGEROUS_TABLE_FUNCTIONS (checkpoint/
+# force_checkpoint) và quy tắc tiền tố "__" — nhưng CẢ HAI vẫn dùng regex
+# đoán TÊN HÀM từ chuỗi ký tự thô, bị vượt qua bằng "checkpoint"() (quote),
+# checkpoint/**/() (comment chen giữa), main."checkpoint"() (qualify
+# schema). Vòng 4 sửa bằng EXPLAIN (FORMAT JSON) — đọc tên hàm ĐÃ ĐƯỢC
+# DUCKDB RESOLVE trong physical plan, miễn nhiễm cách viết — nhưng VẪN LÀ
+# BLOCKLIST tên hàm. Vòng 5 phát hiện blocklist (dù đọc tên đúng) vẫn không
+# đủ: catalog MotherDuck có 193 table-function, blocklist cũ chỉ chặn 12 —
+# lọt 52 hàm họ MD_* không có tiền tố "__" (vd MD_DROP_DATABASE) và
+# json_execute_serialized_sql (giấu một plan SQL khác, kể cả checkpoint(),
+# làm tham số). Đảo hẳn thành ALLOWLIST (_ALLOWED_TABLE_FUNCTIONS trong
+# mcp_server/db.py) — mặc định chặn mọi table-function không nằm trong
+# danh sách cho phép. `assert_safe_sql` cần một connection (`con`) vì
+# EXPLAIN cần bind vào catalog thật — đặc biệt quan trọng với hàm chỉ tồn
+# tại trên MotherDuck.
+#
+# GIỚI HẠN CÒN LẠI (vòng 5, chưa giải quyết): cơ chế EXPLAIN chỉ bắt được
+# TABLE-FUNCTION (hàm trong FROM). HÀM SCALAR có alias (`AS bất_kỳ_gì`) bị
+# DuckDB ẩn hoàn toàn khỏi output EXPLAIN — xem
+# `test_scalar_function_with_alias_is_not_blocked_known_gap` và
+# task-1-report.md mục "Vòng sửa 5" để biết chi tiết + bằng chứng.
 MUST_BLOCK = [
     "INSERT INTO t VALUES (9,'q')",
     "update t set a = 5",
@@ -58,6 +68,10 @@ MUST_BLOCK = [
     "select * from __MD_FORCE_DETACH()",                            # Vòng 3 (đợt 3): hàm nội bộ MotherDuck — không tồn tại trên DuckDB local nên bị chặn qua nhánh "không phân tích được kế hoạch" (fail-closed), hành vi thật (dựa trên tên) đã xác nhận riêng trên md:vn_market, xem báo cáo
     "select * from __duck_panic()",                                 # cùng họ, tự thêm case
     "select * from __MD_RESET_BUFFER_MANAGER()",                    # cùng họ
+    "select * from json_execute_serialized_sql(json_serialize_sql('select 41+1'))",  # Vòng 5, C1: nhận một plan SQL serialize làm tham số — có thể giấu checkpoint()/hàm nguy hiểm khác BÊN TRONG mà EXPLAIN câu ngoài không thấy (plan trong chưa deserialize); chặn được vì bản thân json_execute_serialized_sql không nằm trong allowlist — không cần biết nội dung serialize là gì
+    "select * from md_is_connected()",                              # Vòng 5, C2: hàm MD_* KHÔNG dùng tiền tố "__" — blocklist vòng 4 bỏ lọt cả họ 52 hàm này; hàm này bản thân vô hại (đã xác nhận thực thi thật trả True) nhưng giờ vẫn bị chặn có chủ đích vì không nằm trong allowlist — KHÔNG PHẢI hồi quy
+    "select * from md_pragma_version()",                            # cùng họ MD_* không tiền tố "__"
+    "select * from enable_profiling()",                             # Vòng 5, I1: pragma-function đổi state connection dùng chung (_CON singleton) — guard vòng 4 cho qua vì không phải checkpoint/force_checkpoint và không có tiền tố "__"
 ]
 
 MUST_ALLOW = [
@@ -204,12 +218,50 @@ def test_get_readonly_conn_blocks_file_system_access(tmp_path, monkeypatch):
         con.close()
 
 
-def test_dangerous_table_function_check_does_not_false_positive_on_replace(con):
-    """_DANGEROUS_TABLE_FUNCTIONS chỉ chứa {"checkpoint", "force_checkpoint"}
-    — xác nhận không hồi quy với "replace" (không nằm trong danh sách này và
-    không sinh node "Function" trong EXPLAIN plan vì là hàm scalar, không
-    phải table-function)."""
+def test_table_function_allowlist_does_not_false_positive_on_replace(con):
+    """"replace" là hàm scalar (dùng trong SELECT list), không sinh node
+    "Function" trong EXPLAIN plan (đó là node của table-function trong FROM)
+    — nên không bao giờ bị so với `_ALLOWED_TABLE_FUNCTIONS`, không cần có
+    mặt trong allowlist đó."""
     sql = "select replace(b,'x','y') as x from t"
     db.assert_safe_sql(con, sql)  # không ném lỗi
     rows = db.run_query(con, sql)
     assert rows == [{"x": "y"}, {"x": "y"}, {"x": "z"}]
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "Lỗ hổng CHƯA giải quyết (vòng sửa 5): hàm scalar có alias bị DuckDB "
+    "ẩn hoàn toàn khỏi mọi giai đoạn output EXPLAIN (đã tự kiểm "
+    "logical_plan/logical_opt/physical_plan qua explain_output='ALL', và "
+    "duckdb_dependencies() sau PREPARE — không có API nào giữ lại tên hàm "
+    "gốc một khi có alias). Không có cách chặn đáng tin cậy trong phạm vi "
+    "cơ chế EXPLAIN/plan-text — báo cáo cho coordinator, không tự vá bằng "
+    "regex trên text Projections (đã kiểm thêm: quy ước quote tên hàm "
+    "trong Projections cũng không nhất quán — vd write_log('hi') không có "
+    "ngoặc kép quanh tên hàm dù replace(...) thì có, và DuckDB tự "
+    "hằng-số-hoá/constant-fold một số hàm scalar thuần trước khi tới "
+    "EXPLAIN, nên ngay cả không có alias, việc trích tên hàm từ text cũng "
+    "không đáng tin cậy)."
+))
+def test_scalar_function_with_alias_is_not_blocked_known_gap(con):
+    """Vòng 5 — giới hạn CHƯA giải quyết của cơ chế EXPLAIN-based: cơ chế chỉ
+    kiểm TABLE-FUNCTION (node "Function" trong plan, sinh ra khi hàm được
+    gọi trong mệnh đề FROM). Hàm SCALAR (gọi trong SELECT list, như
+    `write_log(...)` — hàm DuckDB thật, side-effect ghi log) khi có alias
+    (`AS bất_kỳ_tên_gì`) bị DuckDB ẩn HOÀN TOÀN khỏi output EXPLAIN — đã tự
+    kiểm ở cả 3 giai đoạn plan (`explain_output='ALL'`: logical_plan,
+    logical_opt, physical_plan) và qua `duckdb_dependencies()` sau
+    `PREPARE` — không giai đoạn/API nào giữ lại tên hàm gốc một khi có
+    alias, chỉ còn lại chuỗi alias.
+
+    Test này CỐ TÌNH assert hành vi AN TOÀN mong muốn (chặn) rồi đánh dấu
+    xfail — không phải vì đã có cách chặn, mà để ghi nhận công khai đây là
+    lỗ hổng CHƯA có giải pháp trong phạm vi cơ chế EXPLAIN/plan-text, không
+    lặng lẽ bỏ qua. `write_log` dùng làm hàm thay thế cho các hàm MotherDuck
+    có side-effect thật cùng lớp (`MD_INTERRUPT_SERVER_CONNECTION`, `set_bit`)
+    — đã tự xác nhận riêng trên md:vn_market qua `assert_safe_sql` (không
+    thực thi) rằng `select md_interrupt_server_connection(<uuid>)` (cả có
+    và không có alias) cũng KHÔNG bị chặn, cùng nguyên nhân."""
+    sql = "select write_log('hi') as x"
+    with pytest.raises(db.SqlGuardError):
+        db.assert_safe_sql(con, sql)

@@ -9,8 +9,26 @@ Ba lớp bảo vệ độc lập:
   3. Rào chắn cú pháp ở tầng ứng dụng — luôn áp dụng, kể cả khi (1)/(2)
      thất bại. Dùng chính parser của DuckDB (`duckdb.extract_statements`)
      cho statement-type, và chính PLAN của DuckDB (`EXPLAIN (FORMAT JSON)`)
-     cho tên hàm bảng thật sự được gọi — KHÔNG tự viết regex đoán cú pháp
-     SQL/tên hàm từ chuỗi ký tự thô. Xem lịch sử ở `assert_safe_sql`.
+     cho tên TABLE-FUNCTION thật sự được gọi (đối chiếu ALLOWLIST, không
+     phải blocklist — xem `_ALLOWED_TABLE_FUNCTIONS`) — KHÔNG tự viết regex
+     đoán cú pháp SQL/tên hàm từ chuỗi ký tự thô. Xem lịch sử ở
+     `assert_safe_sql`.
+
+GIỚI HẠN ĐÃ BIẾT, CHƯA GIẢI QUYẾT (vòng sửa 5, xem task-1-report.md): lớp
+(3) chỉ kiểm TABLE-FUNCTION (hàm xuất hiện trong mệnh đề FROM, sinh node
+"Function" riêng trong physical plan). HÀM SCALAR (dùng trong SELECT list,
+vd `some_dangerous_scalar_fn(...)`) — nếu có alias (`AS bất_kỳ_tên_gì`,
+cực kỳ phổ biến trong SQL thật) — bị DuckDB ẩn hoàn toàn khỏi output
+`EXPLAIN` (kể cả `explain_output='ALL'`, ở mọi giai đoạn plan: logical,
+logical_opt, physical): trường "Projections"/"Expressions" chỉ hiển thị
+TÊN ALIAS, không hiển thị biểu thức gốc. Đã tự kiểm thực nghiệm — không có
+cách nào qua `EXPLAIN` hay API Python hiện có của `duckdb` (đã thử cả
+`duckdb_dependencies()` sau `PREPARE`, không track lời gọi hàm ad-hoc) để
+lấy lại tên hàm scalar một khi đã bị alias che. Nghĩa là hàm scalar có
+side-effect thật trên MotherDuck (vd `MD_INTERRUPT_SERVER_CONNECTION`,
+`write_log`, `set_bit`) KHÔNG bị lớp (3) chặn nếu được gọi kèm alias —
+residual risk thật, đã báo cáo, chưa có giải pháp trong phạm vi cơ chế
+EXPLAIN-based này.
 """
 import json
 import os
@@ -18,13 +36,32 @@ from pathlib import Path
 
 import duckdb
 
-# Danh sách ĐÓNG, HỮU HẠN các tên hàm bảng công khai có side-effect quản trị
-# — đã tra `duckdb_functions()` trên md:vn_market thật (where function_type=
-# 'table'), lọc theo has_side_effects=true và theo tên gợi ý quản trị
-# (checkpoint/vacuum/force/flush/write): chỉ 2 cái ngoài phạm vi đọc dữ
-# liệu — `checkpoint()` (flush WAL ra đĩa) và `force_checkpoint()` (cùng
-# họ, ép checkpoint bỏ qua điều kiện threshold).
-_DANGEROUS_TABLE_FUNCTIONS = {"checkpoint", "force_checkpoint"}
+# ALLOWLIST — không phải blocklist. Vòng sửa 4 dùng blocklist
+# (_DANGEROUS_TABLE_FUNCTIONS + tiền tố "__") và bị vượt qua: quét
+# `duckdb_functions()` trên md:vn_market thật cho thấy 193 table-function,
+# blocklist cũ chỉ chặn 12 — 181 hàm lọt qua, gồm 52 hàm họ `MD_*` KHÔNG
+# dùng tiền tố "__" (vd `MD_DROP_DATABASE`, `MD_CREATE_FLIGHT` — mô tả
+# catalog: "chạy mã tuỳ ý theo lịch cron") và
+# `json_execute_serialized_sql` (nhận một plan SQL đã serialize làm tham
+# số — có thể giấu một lời gọi checkpoint()/hàm nguy hiểm khác BÊN TRONG
+# tham số, EXPLAIN câu ngoài không thấy được vì plan trong chưa deserialize
+# tại thời điểm EXPLAIN).
+#
+# Bài học sau 3 lần liên tiếp blocklist bị vượt qua (vòng 2: quên
+# force_checkpoint dạng gọi hàm; vòng 3: quên toàn bộ họ MD_* không có
+# tiền tố __; vòng 4 → giờ: quên hàm nhận SQL lồng làm tham số): liệt kê
+# CÁI GÌ NGUY HIỂM không bao giờ đủ vì catalog MotherDuck ngoài tầm kiểm
+# soát, có thể thêm hàm mới bất cứ lúc nào. Đảo lại: liệt kê CÁI GÌ ĐƯỢC
+# PHÉP — mặc định chặn mọi thứ không nằm trong danh sách, không cần biết
+# trước tên hàm nguy hiểm là gì. Đã xác nhận: toàn bộ trường hợp
+# MUST_ALLOW tích luỹ qua các vòng (4 pragma đọc thông tin) chỉ cần đúng
+# 5 hàm bảng đầu tiên bên dưới; 4 hàm còn lại là tiện ích phân tích thuần,
+# không side-effect, dự phòng cho SQL tự do (Task 2/3 hoặc agent tự viết).
+_ALLOWED_TABLE_FUNCTIONS = {
+    "duckdb_databases", "duckdb_tables", "duckdb_views",
+    "pragma_table_info", "pragma_version",
+    "range", "generate_series", "unnest", "repeat",
+}
 
 
 def _called_table_functions(con, query: str) -> set[str]:
@@ -105,13 +142,23 @@ def assert_safe_sql(con, query: str) -> None:
         nhận diện. → Chuyển statement-type sang `duckdb.extract_statements`
         (chính parser DuckDB), nhưng vẫn giữ regex `_CALL_PATTERN`/
         `_INTERNAL_FUNC_PATTERN` để đoán TÊN HÀM đang được gọi từ chuỗi thô.
-      - Vòng 4 (dẫn tới lần viết lại này): chính hai regex đoán-tên-hàm đó
-        bị vượt qua bằng `"checkpoint"()` (quote), `checkpoint/**/()`
-        (comment chen giữa), `main."checkpoint"()` (qualify schema) — vì
-        "đoán TÊN HÀM đang được gọi" là CÙNG một lớp vấn đề với "đoán cấu
-        trúc câu lệnh", cần CÙNG một loại giải pháp: hỏi thẳng DuckDB thay
-        vì đoán từ text. `EXPLAIN` cho tên hàm đã resolve xong, miễn nhiễm
-        với mọi cách viết — xem `_called_table_functions`.
+      - Vòng 4: chính hai regex đoán-tên-hàm đó bị vượt qua bằng
+        `"checkpoint"()` (quote), `checkpoint/**/()` (comment chen giữa),
+        `main."checkpoint"()` (qualify schema) — vì "đoán TÊN HÀM đang được
+        gọi" là CÙNG một lớp vấn đề với "đoán cấu trúc câu lệnh", cần CÙNG
+        một loại giải pháp: hỏi thẳng DuckDB thay vì đoán từ text. Chuyển
+        sang dùng `EXPLAIN` để lấy tên hàm đã resolve xong — nhưng vẫn là
+        BLOCKLIST (`_DANGEROUS_TABLE_FUNCTIONS` + tiền tố `__`).
+      - Vòng 5 (dẫn tới thiết kế hiện tại): blocklist tên hàm — dù đã đọc
+        đúng tên từ EXPLAIN — vẫn là blocklist, và catalog MotherDuck có
+        193 table-function, blocklist cũ chỉ chặn 12; 52 hàm họ `MD_*`
+        không dùng tiền tố `__` (vd `MD_DROP_DATABASE`) và
+        `json_execute_serialized_sql` (giấu một plan SQL khác — kể cả
+        checkpoint() — làm tham số, EXPLAIN câu ngoài không thấy plan
+        trong vì nó chưa deserialize) đều lọt qua. Đảo hẳn thành ALLOWLIST
+        (`_ALLOWED_TABLE_FUNCTIONS`) — mặc định chặn mọi table-function
+        không nằm trong danh sách cho phép, không cần biết trước tên hàm
+        nguy hiểm là gì, không thể bị "quên liệt kê" một hàm mới.
     """
     if not query or not query.strip():
         raise SqlGuardError("Câu truy vấn rỗng.")
@@ -132,21 +179,20 @@ def assert_safe_sql(con, query: str) -> None:
     # (`PRAGMA database_list`) tuy có statement.type=SELECT nhưng bản thân
     # `EXPLAIN PRAGMA database_list` bị DuckDB từ chối ("PRAGMA function does
     # not have a function specified") vì EXPLAIN không hiểu cú pháp PRAGMA
-    # thô; `statements[0].query` cho dạng đã viết lại
-    # (`SELECT * FROM pragma_database_list();`), EXPLAIN được bình thường.
-    # Với mọi câu SELECT thường (không phải PRAGMA), `.query` giống hệt văn
-    # bản gốc nên không đổi hành vi chặn các biến thể quote/comment/qualify.
+    # thô; `statements[0].query` cho dạng đã viết lại (vd với
+    # "PRAGMA database_list" là `SELECT * FROM duckdb_databases();` — DuckDB
+    # rewrite thẳng ra bảng hệ thống, không phải qua một hàm tên
+    # "pragma_database_list"), EXPLAIN được bình thường. Với mọi câu SELECT
+    # thường (không phải PRAGMA), `.query` giống hệt văn bản gốc nên không
+    # đổi hành vi chặn các biến thể quote/comment/qualify.
     try:
         called = _called_table_functions(con, statements[0].query)
     except duckdb.Error as e:
         raise SqlGuardError(f"Không phân tích được kế hoạch truy vấn: {e}") from e
-    dangerous = {
-        f for f in called
-        if f.lower() in _DANGEROUS_TABLE_FUNCTIONS or f.startswith("__")
-    }
-    if dangerous:
+    not_allowed = {f for f in called if f.lower() not in _ALLOWED_TABLE_FUNCTIONS}
+    if not_allowed:
         raise SqlGuardError(
-            f"Câu lệnh gọi hàm quản trị/nội bộ bị cấm: {sorted(dangerous)}"
+            f"Câu lệnh gọi hàm bảng không nằm trong allowlist: {sorted(not_allowed)}"
         )
 
 
