@@ -3,63 +3,17 @@
 Ba lớp bảo vệ độc lập:
   1. Kết nối read-only ở tầng DuckDB (nếu backend hỗ trợ).
   2. `enable_external_access=false` — chặn mọi hàm bảng đọc file/mạng của
-     DuckDB (read_text, read_csv, glob, httpfs, ...). Từ khoá SQL không bắt
-     được các hàm này vì chúng không phải lệnh ghi; đây là lớp chặn đúng chỗ.
-  3. Rào chắn từ khoá ở tầng ứng dụng — luôn áp dụng, kể cả khi (1)/(2) thất bại.
+     DuckDB (read_text, read_csv, glob, httpfs, ...). Rào chắn cú pháp ở
+     (3) không bắt được các hàm này vì về mặt cú pháp chúng là SELECT hợp
+     lệ; đây là lớp chặn đúng chỗ cho nhóm rủi ro này.
+  3. Rào chắn cú pháp ở tầng ứng dụng — luôn áp dụng, kể cả khi (1)/(2)
+     thất bại. Dùng chính parser của DuckDB (`duckdb.extract_statements`),
+     KHÔNG tự viết regex mô phỏng lexer SQL — xem lịch sử ở assert_safe_sql.
 """
 import os
-import re
 from pathlib import Path
 
 import duckdb
-
-FORBIDDEN = {
-    "insert", "update", "delete", "drop", "create", "alter", "attach",
-    "detach", "copy", "install", "load", "pragma", "set", "export",
-    "import", "truncate", "replace", "call", "checkpoint", "vacuum",
-}
-# Đã tra `duckdb_functions()` trên md:vn_market thật cho toàn bộ 20 từ trong
-# FORBIDDEN (không chỉ vá đúng checkpoint). Chỉ 2 cái trùng tên với một hàm/
-# table-function DuckDB thật:
-#   - checkpoint (table function, has_side_effects, flush WAL ra đĩa) —
-#     nguy hiểm thật, KHÔNG thêm vào allowlist, vẫn bị chặn khi gọi
-#     checkpoint(...).
-#   - replace (scalar function thuần, "Replaces any occurrences of source
-#     with target in string") — vô hại, đã xác minh trên dữ liệu thật
-#     (replace(symbol,'A','B') trên mart_stock_scorecard).
-# 18 từ còn lại (insert/update/delete/drop/create/alter/attach/detach/copy/
-# install/load/pragma/set/export/import/truncate/call/vacuum) không phải
-# tên hàm/table-function nào trong duckdb_functions() — chúng chỉ có nghĩa
-# như từ khoá đầu câu lệnh SQL, không có cú pháp gọi word(...) nào để lo.
-SAFE_FUNCTIONS = {"replace"}
-_WORD = re.compile(r"[a-z_]+")
-# Một lượt duy nhất cho cả string literal / line comment / block comment —
-# tránh nhập nhằng thứ tự (regex chạy tuần tự trước đó khiến `--` bên trong
-# chuỗi '--' bị hiểu nhầm thành comment thật, ăn lố qua cả dấu ';' và lệnh
-# ghi phía sau). Alternation quét trái sang phải, mỗi vị trí chỉ khớp đúng
-# MỘT khả năng dựa vào ký tự thật tại đó — giống lexer thật, không có
-# trường hợp pattern sau "nhìn xuyên" qua pattern trước.
-_NOISE = re.compile(r"(?P<string>'[^']*')|(?P<line>--[^\n]*)|(?P<block>/\*.*?\*/)", re.DOTALL)
-# Từ khoá cấm chỉ tính khi:
-#   (a) đứng đầu câu (words[0], kiểm riêng bên dưới), hoặc
-#   (b) đứng ngay sau một dấu "(" mở đầu — vị trí CTE/sub-statement bắt đầu
-#       (kiểu "AS (DELETE ...)"), hoặc
-#   (c) đứng ngay TRƯỚC dấu "(" của chính nó — đang được gọi như hàm/
-#       table-function (kiểu "checkpoint()"), trừ khi nằm trong
-#       SAFE_FUNCTIONS.
-# Đứng ở vị trí khác (tên cột trong SELECT list, ...) là vô hại và KHÔNG bị
-# chặn.
-_PAREN_WORD = re.compile(r"\(\s*([a-z_]+)")
-_CALL_WORD = re.compile(r"([a-z_]+)\s*\(")
-
-
-def _strip_noise(query: str) -> str:
-    """Xoá string literal + comment (--, /* */) trong một lượt quét."""
-    def repl(m: re.Match) -> str:
-        if m.group("string") is not None:
-            return "''"
-        return " "
-    return _NOISE.sub(repl, query)
 
 
 class SqlGuardError(RuntimeError):
@@ -67,26 +21,45 @@ class SqlGuardError(RuntimeError):
 
 
 def assert_safe_sql(query: str) -> None:
-    """Chỉ cho phép một câu SELECT/WITH duy nhất."""
+    """Chỉ cho phép đúng một câu SELECT duy nhất.
+
+    Dùng chính parser của DuckDB (`duckdb.extract_statements`) thay vì tự
+    dò bằng regex. Lịch sử ba vòng regex trước đó, mỗi vòng bỏ sót một lớp
+    cú pháp khác nhau:
+      - Vòng 1: quét toàn bộ từ trong câu — chặn nhầm tên hàm/tên cột trùng
+        từ khoá cấm (`replace(...)`, cột tên `update`).
+      - Vòng 2: sau khi thu hẹp theo vị trí — bỏ sót `checkpoint()` gọi như
+        hàm, và thứ tự strip comment/string sai khiến `--` trong chuỗi
+        `'--'` nuốt luôn `;` và lệnh ghi phía sau.
+      - Vòng 3 (phát hiện dẫn tới lần viết lại này): allowlist tên hàm chỉ
+        áp cho một nhánh regex nên `(replace(...))` bọc thêm ngoặc lại bị
+        chặn nhầm; và cú pháp trích dẫn `$$...$$` / `E'...'` của DuckDB
+        không được regex string-literal nhận diện, cho `; drop table t`
+        lọt qua dưới dạng "bên trong chuỗi".
+    `duckdb.extract_statements` hiểu đúng MỌI cú pháp trích dẫn DuckDB hỗ
+    trợ vì nó CHÍNH LÀ DuckDB, không phải một xấp xỉ của DuckDB — không thể
+    bỏ sót một lớp cú pháp thứ tư theo kiểu trên.
+
+    Lưu ý đã biết (không phải hồi quy, xem task-1-report.md mục "Vòng sửa
+    3"): `select * from checkpoint()` được parser phân loại type=SELECT
+    (checkpoint() chỉ là một table function trong mệnh đề FROM, giống
+    read_csv(...)) nên vẫn "qua" được whitelist này. Không có lớp regex
+    nào vá được việc này một cách đáng tin cậy hơn — xem báo cáo.
+    """
     if not query or not query.strip():
         raise SqlGuardError("Câu truy vấn rỗng.")
-
-    stripped = _strip_noise(query)
-    body = stripped.strip().rstrip(";")
-
-    if ";" in body:
-        raise SqlGuardError("Chỉ cho phép một câu lệnh duy nhất.")
-
-    lowered = body.lower()
-    words = _WORD.findall(lowered)
-    if not words or words[0] not in {"select", "with"}:
-        raise SqlGuardError("Chỉ chấp nhận câu lệnh bắt đầu bằng SELECT hoặc WITH.")
-
-    paren_hit = {m.group(1) for m in _PAREN_WORD.finditer(lowered)} & FORBIDDEN
-    call_hit = ({m.group(1) for m in _CALL_WORD.finditer(lowered)} & FORBIDDEN) - SAFE_FUNCTIONS
-    hit = paren_hit | call_hit
-    if hit:
-        raise SqlGuardError(f"Câu lệnh chứa từ khoá bị cấm: {sorted(hit)}")
+    try:
+        statements = duckdb.extract_statements(query)
+    except duckdb.Error as e:
+        raise SqlGuardError(f"Không phân tích được câu lệnh: {e}") from e
+    if len(statements) != 1:
+        raise SqlGuardError(
+            f"Chỉ cho phép đúng một câu lệnh, tìm thấy {len(statements)}."
+        )
+    if statements[0].type != duckdb.StatementType.SELECT:
+        raise SqlGuardError(
+            f"Chỉ chấp nhận câu lệnh SELECT, nhận được {statements[0].type}."
+        )
 
 
 def get_readonly_conn():
