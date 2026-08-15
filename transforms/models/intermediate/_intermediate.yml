@@ -1,0 +1,71 @@
+version: 2
+
+models:
+  - name: int_price_features
+    description: "Chỉ báo giá, thanh khoản và biến động theo phiên."
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: trade_date
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, trade_date]
+
+  - name: int_fundamentals_ttm
+    description: "Doanh thu/LNST/vốn chủ suy ra từ market_cap và ps/pe/pb, kèm tăng trưởng."
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: period_end_date
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, period_end_date]
+
+  - name: int_quality_metrics
+    columns:
+      - name: symbol
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, period_end_date]
+
+  - name: int_dividend_history
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+
+  - name: int_metric_long
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: metric
+        tests: [not_null]
+      - name: value
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, metric]
+
+  - name: int_valuation_percentile
+    columns:
+      - name: symbol
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, period_end_date]
+
+  - name: int_metric_percentile
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: metric
+        tests: [not_null]
+      - name: peer_basis
+        tests:
+          - accepted_values:
+              values: ['com_class+icb_lv2', 'com_class']
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, metric]

@@ -1,0 +1,69 @@
+version: 2
+
+models:
+  - name: stg_price_daily
+    description: "Giá EOD đã chuẩn hoá đơn vị VNĐ, khử trùng theo (symbol, trade_date)."
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: trade_date
+        tests: [not_null]
+      - name: close
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, trade_date]
+
+  - name: stg_index_daily
+    description: "Chỉ số thị trường. KHÔNG đổi đơn vị."
+    columns:
+      - name: index_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['VNINDEX', 'VN30', 'HNXINDEX']
+      - name: trade_date
+        tests: [not_null]
+
+  - name: stg_company_info
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: com_class
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['NONFIN', 'BANK', 'OTHERFIN', 'UNKNOWN']
+
+  - name: stg_industry
+    columns:
+      - name: icb_code
+        tests: [not_null, unique]
+      - name: level
+        tests:
+          - accepted_values:
+              values: [1, 2, 3, 4]
+              quote: false
+
+  - name: stg_financial_ratio
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: period_end_date
+        tests: [not_null]
+      - name: period_type
+        tests:
+          - accepted_values:
+              values: ['quarter', 'year']
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, year, quarter]
+      # Fix round 1 (review I1): khoá mà tầng sau (Task 5/6, window function)
+      # thực sự dùng là (symbol, period_end_date) — nhưng quarter 4 (TTM) và
+      # quarter 5 (cả năm) cho CÙNG period_end_date (31/12) với giá trị khác
+      # nhau (VCB 2024: pe=14,8188 ở q4, pe=10,3303 ở q5). Test [symbol,
+      # year, quarter] ở trên không bảo vệ khoá này. period_type phân biệt
+      # được (quarter 1-4 -> 'quarter', quarter 5 -> 'year') nên tổ hợp dưới
+      # đây mới đúng là khoá duy nhất thật sự.
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, period_end_date, period_type]

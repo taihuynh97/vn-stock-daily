@@ -27,3 +27,14 @@ jobs:
           VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
           VNSTOCK_MIN_INTERVAL: "1.05"
         run: python build_warehouse.py
+
+      - name: dbt deps
+        working-directory: transforms
+        run: dbt deps --profiles-dir .
+
+      - name: dbt build (toàn DAG — xem ghi chú về tag:daily trong plan)
+        working-directory: transforms
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: dbt build --profiles-dir . --no-partial-parse

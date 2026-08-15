@@ -1,0 +1,61 @@
+# Hồ sơ chấm điểm — ĐÂY LÀ CHỖ BẠN DÒ RA "GU" ĐẦU TƯ CỦA MÌNH.
+#
+# Điểm thành phần (0-100) do dbt tính sẵn trong mart_stock_scorecard.
+# File này chỉ quyết định TRỌNG SỐ và ĐIỀU KIỆN LỌC, được áp lúc đọc —
+# nên sửa xong chạy lại screener trong vài giây, không cần chạy lại dbt.
+#
+# Cách dùng: chạy cả 3 profile, so sánh danh sách kết quả, xem cái nào
+# khớp trực giác của bạn nhất, rồi tinh chỉnh trọng số của cái đó.
+
+default_profile: bluechip_dividend
+
+# Áp cho mọi profile, có thể ghi đè trong từng profile.
+universe_defaults:
+  exchanges: [HOSE, HNX]
+  min_quarters_history: 12
+  min_data_quality_score: 60
+
+profiles:
+
+  bluechip_dividend:
+    label: "Bluechip cổ tức — tích sản dài hạn"
+    universe:
+      min_market_cap_vnd: 5_000_000_000_000        # 5.000 tỷ
+      min_avg_turnover_20d_vnd: 5_000_000_000      # 5 tỷ/phiên
+    weights:
+      value: 0.25
+      quality: 0.30
+      dividend: 0.30
+      growth: 0.05
+      safety: 0.10
+    require:
+      dividend_years_min: 3
+      roe_avg_8q_min: 0.12
+
+  deep_value:
+    label: "Định giá sâu — mở rộng xuống mid-cap"
+    universe:
+      min_market_cap_vnd: 500_000_000_000          # 500 tỷ
+      min_avg_turnover_20d_vnd: 1_000_000_000      # 1 tỷ/phiên
+    weights:
+      value: 0.45
+      quality: 0.25
+      dividend: 0.10
+      growth: 0.05
+      safety: 0.15
+    require:
+      exclude_loss_making: true
+
+  quality_growth:
+    label: "Chất lượng & tăng trưởng"
+    universe:
+      min_market_cap_vnd: 2_000_000_000_000        # 2.000 tỷ
+      min_avg_turnover_20d_vnd: 3_000_000_000      # 3 tỷ/phiên
+    weights:
+      value: 0.15
+      quality: 0.35
+      dividend: 0.05
+      growth: 0.35
+      safety: 0.10
+    require:
+      roe_avg_8q_min: 0.15

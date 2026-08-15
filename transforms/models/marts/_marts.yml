@@ -1,0 +1,106 @@
+version: 2
+
+models:
+  - name: dim_stock
+    description: "Một dòng mỗi mã: hồ sơ, ngành, loại hình, thanh khoản."
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: com_class
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['NONFIN', 'BANK', 'OTHERFIN', 'UNKNOWN']
+
+  - name: dim_industry_hierarchy
+    description: "1 dòng/ngành ICB cấp 4, kèm tên cấp 3 và cấp 2. Tên KHÁC bảng nguồn dim_industry để dbt không ghi đè bảng đó."
+    columns:
+      - name: icb_code_lv4
+        tests: [not_null, unique]
+
+  - name: fct_price_daily
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_stock')
+              field: symbol
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, trade_date]
+
+  - name: fct_financial_quarterly
+    columns:
+      - name: symbol
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, year, quarter]
+
+  - name: mart_valuation_band
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: valuation_band
+        tests:
+          - accepted_values:
+              values: ['rất rẻ', 'rẻ', 'hợp lý', 'đắt', 'rất đắt']
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, period_end_date]
+
+  - name: mart_sector_snapshot
+    columns:
+      - name: icb_code_lv2
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [icb_code_lv2, com_class, period_end_date]
+
+  - name: mart_data_quality
+    description: "1 dòng/mã: điểm tin cậy dữ liệu (0-100). Agent phải đọc bảng này trước khi phát biểu về một mã."
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: data_quality_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+  - name: mart_stock_scorecard
+    description: "Điểm thành phần từng mã. KHÔNG chứa điểm tổng hợp — điểm đó do src/scoring.py tính theo profile."
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: value_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "value_score is not null"
+      - name: quality_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "quality_score is not null"
+      - name: growth_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "growth_score is not null"
+      - name: dividend_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "dividend_score is not null"
+      - name: safety_score
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              where: "safety_score is not null"
