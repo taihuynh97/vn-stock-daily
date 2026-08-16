@@ -74,3 +74,52 @@ def test_bo_qua_dong_id_null(con):
 def test_df_rong_tra_0(con):
     assert insert_corporate_events(con, pd.DataFrame()) == 0
     assert insert_corporate_events(con, None) == 0
+
+
+from src.warehouse import (OFFICER_COLS, SHAREHOLDER_COLS,
+                           upsert_officers, upsert_shareholders)
+
+
+def _sh_row(holder: str, pct: float, snap: str, symbol: str = "AAA") -> dict:
+    return {"symbol": symbol, "share_holder": holder, "quantity": 1000.0,
+            "share_own_percent": pct, "update_date": "2026-07-01",
+            "snapshot_date": snap}
+
+
+def test_shareholder_chay_lai_cung_ngay_la_idempotent(con):
+    df = pd.DataFrame([_sh_row("Ông A", 0.25, "2026-08-01")])[SHAREHOLDER_COLS]
+    upsert_shareholders(con, df)
+    upsert_shareholders(con, df)
+    assert con.execute("SELECT count(*) FROM raw_shareholder").fetchone()[0] == 1
+
+
+def test_shareholder_giu_lich_su_qua_cac_snapshot(con):
+    """Đây là lý do tồn tại của snapshot: thấy được sở hữu ĐỔI theo thời gian.
+
+    Nếu đổi khoá chính thành (symbol, share_holder) — bỏ snapshot_date —
+    thì test này đỏ vì bản tháng 9 sẽ ghi đè bản tháng 8.
+    """
+    upsert_shareholders(
+        con, pd.DataFrame([_sh_row("Ông A", 0.25, "2026-08-01")])[SHAREHOLDER_COLS])
+    upsert_shareholders(
+        con, pd.DataFrame([_sh_row("Ông A", 0.18, "2026-09-01")])[SHAREHOLDER_COLS])
+
+    rows = con.execute(
+        "SELECT snapshot_date, share_own_percent FROM raw_shareholder "
+        "WHERE share_holder = 'Ông A' ORDER BY snapshot_date"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0][1] == pytest.approx(0.25)
+    assert rows[1][1] == pytest.approx(0.18)
+
+
+def test_officer_giu_lich_su_qua_cac_snapshot(con):
+    def row(pct, snap):
+        return {"symbol": "AAA", "officer_name": "Bà B",
+                "officer_position": "Chủ tịch HĐQT", "officer_own_percent": pct,
+                "officer_own_quantity": 500.0, "update_date": "2026-07-01",
+                "snapshot_date": snap}
+
+    upsert_officers(con, pd.DataFrame([row(0.05, "2026-08-01")])[OFFICER_COLS])
+    upsert_officers(con, pd.DataFrame([row(0.07, "2026-09-01")])[OFFICER_COLS])
+    assert con.execute("SELECT count(*) FROM raw_officer").fetchone()[0] == 2

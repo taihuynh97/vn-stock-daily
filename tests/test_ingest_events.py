@@ -19,6 +19,15 @@ def reset_event_state():
     im._printed_event_cols = False
 
 
+@pytest.fixture(autouse=True)
+def reset_ownership_state():
+    im._printed_shareholder_cols = False
+    im._printed_officer_cols = False
+    yield
+    im._printed_shareholder_cols = False
+    im._printed_officer_cols = False
+
+
 def _raw_df(**kw) -> pd.DataFrame:
     """Dựng DataFrame giống nguyên trạng nguồn trả về (22 cột, có cả cột *_en
     mà ta cố ý không lấy)."""
@@ -153,3 +162,155 @@ def test_fetch_corporate_events_khu_trung_id_noi_bo_me():
         result = fetch_corporate_events(["AAA"])
     assert len(result) == 1
     assert result.iloc[0]["id"] == "dup-1"
+
+
+from src.ingest_market import (_normalize_officers, _normalize_shareholders,
+                               fetch_officers, fetch_shareholders)
+from src.warehouse import OFFICER_COLS, SHAREHOLDER_COLS
+
+
+def test_normalize_shareholders_tra_dung_bo_cot_va_gan_snapshot():
+    raw = pd.DataFrame([
+        {"symbol": "HPG", "share_holder": "Trần Đình Long", "quantity": 1.6e9,
+         "share_own_percent": 0.2580, "update_date": "2026-07-15"},
+    ])
+    out = _normalize_shareholders(raw, "HPG", "2026-08-01")
+    assert list(out.columns) == SHAREHOLDER_COLS
+    assert out.loc[0, "snapshot_date"] == "2026-08-01"
+    assert out.loc[0, "share_own_percent"] == pytest.approx(0.2580)
+
+
+def test_normalize_shareholders_khu_trung_ten_co_dong():
+    """PRIMARY KEY (symbol, share_holder, snapshot_date) — nguồn trả trùng
+    tên trong cùng mã sẽ ném ConstraintException giết cả job monthly. Khử
+    trùng ngay ở normalize."""
+    raw = pd.DataFrame([
+        {"symbol": "HPG", "share_holder": "Ông A", "quantity": 1.0,
+         "share_own_percent": 0.10, "update_date": "2026-07-15"},
+        {"symbol": "HPG", "share_holder": "Ông A", "quantity": 2.0,
+         "share_own_percent": 0.20, "update_date": "2026-07-15"},
+    ])
+    out = _normalize_shareholders(raw, "HPG", "2026-08-01")
+    assert len(out) == 1
+
+
+def test_normalize_officers_tra_dung_bo_cot():
+    raw = pd.DataFrame([
+        {"symbol": "HPG", "officer_name": "Trần Đình Long",
+         "officer_position": "Chủ tịch HĐQT", "officer_own_percent": 0.2580,
+         "officer_own_quantity": 1.6e9, "update_date": "2026-07-15"},
+    ])
+    out = _normalize_officers(raw, "HPG", "2026-08-01")
+    assert list(out.columns) == OFFICER_COLS
+    assert out.loc[0, "officer_position"] == "Chủ tịch HĐQT"
+
+
+def test_normalize_shareholders_thieu_cot_bat_buoc_raise():
+    raw = pd.DataFrame([{"symbol": "HPG", "quantity": 1.0}])
+    with pytest.raises(dq.SchemaError):
+        _normalize_shareholders(raw, "HPG", "2026-08-01")
+
+
+# --- Test wrapper fetch_shareholders/fetch_officers (mock Company(...).shareholders()/
+# officers()) --- Chủ động bổ sung theo đúng bài học review round 1 của
+# fetch_corporate_events: _normalize_shareholders/_normalize_officers (hàm chuẩn hoá
+# thuần) đã có test ở trên, nhưng wrapper — vòng lặp bắt dq.SchemaError theo từng mã,
+# raise lại nếu vượt ngưỡng dq.status_for — thì chưa. Cùng pattern
+# side_effect_factory của tests/test_ingest_financials.py
+# (test_fetch_company_info_one_bad_symbol_among_many_is_skipped_not_raised,
+# test_fetch_company_info_majority_bad_symbols_raises).
+
+
+def _sh_raw(symbol: str, holder: str = "Ông A") -> pd.DataFrame:
+    return pd.DataFrame([{
+        "symbol": symbol, "share_holder": holder, "quantity": 1.0e6,
+        "share_own_percent": 0.10, "update_date": "2026-07-15",
+    }])
+
+
+def test_fetch_shareholders_mot_ma_loi_giua_nhieu_ma_tot_bi_bo_qua():
+    """Một mã dị thường (thiếu share_holder/share_own_percent) giữa 20 mã tốt
+    -> 1/21 ~ 4.76% < ngưỡng degraded 5% -> mã đó bị bỏ qua (KHÔNG raise), 20
+    mã còn lại vẫn trả về đầy đủ."""
+    good_symbols = [f"S{i:03d}" for i in range(1, 21)]
+
+    def side_effect_factory(symbol, source):
+        mock = MagicMock()
+        if symbol == "BAD":
+            mock.shareholders.return_value = pd.DataFrame([{"quantity": 1.0}])
+        else:
+            mock.shareholders.return_value = _sh_raw(symbol)
+        return mock
+
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+         patch("src.ingest_market.ingest._throttle"):
+        result = fetch_shareholders(["BAD"] + good_symbols, snapshot_date="2026-08-01")
+    assert len(result) == 20
+    assert "BAD" not in set(result["symbol"])
+    assert set(result["symbol"]) == set(good_symbols)
+
+
+def test_fetch_shareholders_da_so_ma_loi_raise():
+    """Đa số mã (3/4 = 75%) sai schema -> nguồn có thể đã đổi -> raise to,
+    KHÔNG âm thầm trả về 1 mã tốt còn lại."""
+    def side_effect_factory(symbol, source):
+        mock = MagicMock()
+        if symbol == "GOOD":
+            mock.shareholders.return_value = _sh_raw(symbol)
+        else:
+            mock.shareholders.return_value = pd.DataFrame([{"quantity": 1.0}])
+        return mock
+
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+         patch("src.ingest_market.ingest._throttle"):
+        with pytest.raises(dq.SchemaError) as exc:
+            fetch_shareholders(["BAD1", "BAD2", "BAD3", "GOOD"], snapshot_date="2026-08-01")
+    assert "3/4" in str(exc.value)
+
+
+def _of_raw(symbol: str, name: str = "Bà B") -> pd.DataFrame:
+    return pd.DataFrame([{
+        "symbol": symbol, "officer_name": name, "officer_position": "Chủ tịch HĐQT",
+        "officer_own_percent": 0.05, "officer_own_quantity": 5.0e5,
+        "update_date": "2026-07-15",
+    }])
+
+
+def test_fetch_officers_mot_ma_loi_giua_nhieu_ma_tot_bi_bo_qua():
+    """Một mã dị thường (thiếu officer_name/officer_position) giữa 20 mã tốt
+    -> 1/21 ~ 4.76% < ngưỡng degraded 5% -> mã đó bị bỏ qua (KHÔNG raise), 20
+    mã còn lại vẫn trả về đầy đủ."""
+    good_symbols = [f"S{i:03d}" for i in range(1, 21)]
+
+    def side_effect_factory(symbol, source):
+        mock = MagicMock()
+        if symbol == "BAD":
+            mock.officers.return_value = pd.DataFrame([{"officer_own_percent": 0.05}])
+        else:
+            mock.officers.return_value = _of_raw(symbol)
+        return mock
+
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+         patch("src.ingest_market.ingest._throttle"):
+        result = fetch_officers(["BAD"] + good_symbols, snapshot_date="2026-08-01")
+    assert len(result) == 20
+    assert "BAD" not in set(result["symbol"])
+    assert set(result["symbol"]) == set(good_symbols)
+
+
+def test_fetch_officers_da_so_ma_loi_raise():
+    """Đa số mã (3/4 = 75%) sai schema -> nguồn có thể đã đổi -> raise to,
+    KHÔNG âm thầm trả về 1 mã tốt còn lại."""
+    def side_effect_factory(symbol, source):
+        mock = MagicMock()
+        if symbol == "GOOD":
+            mock.officers.return_value = _of_raw(symbol)
+        else:
+            mock.officers.return_value = pd.DataFrame([{"officer_own_percent": 0.05}])
+        return mock
+
+    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+         patch("src.ingest_market.ingest._throttle"):
+        with pytest.raises(dq.SchemaError) as exc:
+            fetch_officers(["BAD1", "BAD2", "BAD3", "GOOD"], snapshot_date="2026-08-01")
+    assert "3/4" in str(exc.value)

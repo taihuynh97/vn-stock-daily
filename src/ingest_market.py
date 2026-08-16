@@ -578,3 +578,124 @@ def _date_col(df, col):
         return None
     parsed = pd.to_datetime(df[col], errors="coerce")
     return parsed.dt.strftime("%Y-%m-%d").where(parsed.notna(), None)
+
+
+_printed_shareholder_cols = False
+_printed_officer_cols = False
+
+_SHAREHOLDER_REQUIRED = ["share_holder", "share_own_percent"]
+_OFFICER_REQUIRED = ["officer_name", "officer_position"]
+
+
+def fetch_shareholders(symbols: list[str], source: str = "VCI",
+                       snapshot_date: str = None) -> pd.DataFrame:
+    """Cơ cấu cổ đông đã công bố qua Company.shareholders().
+
+    LƯU Ý về ngữ nghĩa dữ liệu (đo 2026-08-16): tổng share_own_percent
+    KHÔNG bằng 100% — HPG 51,9% (66 dòng), VNM 81,0% (93), VCB 91,0% (29),
+    và có cả dòng 0,0002%. Đây là danh sách cổ đông ĐÃ CÔNG BỐ ở nhiều quy
+    mô, không phải chỉ cổ đông lớn >5%. Phần thiếu là cổ đông không công bố
+    và KHÔNG đồng nghĩa free float (raw_company_info.free_float_percentage
+    là con số khác, từ nguồn khác).
+
+    snapshot_date do JOB gán, mặc định hôm nay — xem docstring
+    warehouse.upsert_shareholders để biết vì sao bảng này snapshot theo
+    ngày thay vì cộng dồn.
+    """
+    global _printed_shareholder_cols
+    snap = snapshot_date or date.today().isoformat()
+    frames, rejected = [], 0
+    for symbol in symbols:
+        ingest._throttle()
+        try:
+            df = Company(symbol=symbol, source=source).shareholders()
+        except Exception as e:
+            print(f"[shareholders] {symbol}: {e}")
+            continue
+        if df is None or len(df) == 0:
+            continue
+        df.columns = [str(c).lower() for c in df.columns]
+        if not _printed_shareholder_cols:
+            print(f"[shareholders] cột thật ({symbol}): {list(df.columns)}")
+            _printed_shareholder_cols = True
+        try:
+            frames.append(_normalize_shareholders(df, symbol, snap))
+        except dq.SchemaError as e:
+            print(f"[shareholders] {symbol}: {e}")
+            rejected += 1
+            continue
+    if rejected and dq.status_for(len(frames), rejected) == "degraded":
+        raise dq.SchemaError(
+            f"[Company.shareholders] {rejected}/{len(symbols)} mã sai schema "
+            "— nguồn có thể đã đổi"
+        )
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _normalize_shareholders(df, symbol, snapshot_date: str) -> pd.DataFrame:
+    dq.assert_columns(df, _SHAREHOLDER_REQUIRED,
+                      f"Company.shareholders({symbol})")
+    out = pd.DataFrame({
+        "symbol":            symbol.upper().strip(),
+        "share_holder":      df["share_holder"].astype(str).str.strip(),
+        "quantity":          (pd.to_numeric(df["quantity"], errors="coerce")
+                              if "quantity" in df.columns else float("nan")),
+        "share_own_percent": pd.to_numeric(df["share_own_percent"], errors="coerce"),
+        "update_date":       _date_col(df, "update_date"),
+        "snapshot_date":     snapshot_date,
+    })
+    # Khử trùng theo tên: PRIMARY KEY là (symbol, share_holder, snapshot_date),
+    # nguồn trả trùng tên sẽ ném ConstraintException giết cả job monthly.
+    out = out.drop_duplicates(subset=["symbol", "share_holder"])
+    return out[warehouse.SHAREHOLDER_COLS].reset_index(drop=True)
+
+
+def fetch_officers(symbols: list[str], source: str = "VCI",
+                   snapshot_date: str = None) -> pd.DataFrame:
+    """Ban lãnh đạo + tỉ lệ sở hữu qua Company.officers(). Cùng cơ chế
+    snapshot như fetch_shareholders."""
+    global _printed_officer_cols
+    snap = snapshot_date or date.today().isoformat()
+    frames, rejected = [], 0
+    for symbol in symbols:
+        ingest._throttle()
+        try:
+            df = Company(symbol=symbol, source=source).officers()
+        except Exception as e:
+            print(f"[officers] {symbol}: {e}")
+            continue
+        if df is None or len(df) == 0:
+            continue
+        df.columns = [str(c).lower() for c in df.columns]
+        if not _printed_officer_cols:
+            print(f"[officers] cột thật ({symbol}): {list(df.columns)}")
+            _printed_officer_cols = True
+        try:
+            frames.append(_normalize_officers(df, symbol, snap))
+        except dq.SchemaError as e:
+            print(f"[officers] {symbol}: {e}")
+            rejected += 1
+            continue
+    if rejected and dq.status_for(len(frames), rejected) == "degraded":
+        raise dq.SchemaError(
+            f"[Company.officers] {rejected}/{len(symbols)} mã sai schema "
+            "— nguồn có thể đã đổi"
+        )
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _normalize_officers(df, symbol, snapshot_date: str) -> pd.DataFrame:
+    dq.assert_columns(df, _OFFICER_REQUIRED, f"Company.officers({symbol})")
+    out = pd.DataFrame({
+        "symbol":               symbol.upper().strip(),
+        "officer_name":         df["officer_name"].astype(str).str.strip(),
+        "officer_position":     df["officer_position"].astype(str).str.strip(),
+        "officer_own_percent":  (pd.to_numeric(df["officer_own_percent"], errors="coerce")
+                                 if "officer_own_percent" in df.columns else float("nan")),
+        "officer_own_quantity": (pd.to_numeric(df["officer_own_quantity"], errors="coerce")
+                                 if "officer_own_quantity" in df.columns else float("nan")),
+        "update_date":          _date_col(df, "update_date"),
+        "snapshot_date":        snapshot_date,
+    })
+    out = out.drop_duplicates(subset=["symbol", "officer_name"])
+    return out[warehouse.OFFICER_COLS].reset_index(drop=True)

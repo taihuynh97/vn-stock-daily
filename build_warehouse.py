@@ -123,6 +123,21 @@ def main():
                            notes="sync exchange tu raw_company_info")
         print(f"dim_symbols.exchange: cập nhật {n_exch} mã")
 
+        print(f"Bắt đầu fetch cơ cấu sở hữu ({len(symbols)} mã)...")
+        sh = ingest_market.fetch_shareholders(symbols, source, run_date)
+        n_sh = warehouse.upsert_shareholders(con, sh)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_shareholder",
+                           n_sh, "ok" if n_sh else "empty", watermark=run_date,
+                           notes=f"snapshot {run_date}")
+        print(f"raw_shareholder: {n_sh} dòng (snapshot {run_date})")
+
+        of = ingest_market.fetch_officers(symbols, source, run_date)
+        n_of = warehouse.upsert_officers(con, of)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_officer",
+                           n_of, "ok" if n_of else "empty", watermark=run_date,
+                           notes=f"snapshot {run_date}")
+        print(f"raw_officer: {n_of} dòng (snapshot {run_date})")
+
     con.close()
     print(f"Xong warehouse job ({args.mode}).")
 
