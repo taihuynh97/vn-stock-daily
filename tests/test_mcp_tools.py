@@ -191,3 +191,74 @@ def test_get_financial_history_includes_data_quality(con):
     assert "data_quality" in res
     assert res["data_quality"]["data_quality_score"] == 90
     assert res["data_quality"]["reliable"] is True
+
+
+def test_get_distribution_history_tra_hai_khoi_tach_bach(con):
+    """Hướng A của spec: KHÔNG ép ghép hai trục thời gian.
+
+    dividend_yield gán theo NĂM TÀI CHÍNH, sự kiện gán theo NGÀY GDKHQ —
+    cổ tức 'cả năm 2021' của HPG chi trả 17/06/2022. Trả hai khối riêng,
+    mỗi khối ghi rõ trục của nó.
+    """
+    res = tools.get_distribution_history(con, "AAA", years=5)
+    assert res["symbol"] == "AAA"
+    assert "cash_dividend_by_fiscal_year" in res
+    assert "distribution_events" in res
+    assert len(res["distribution_events"]) == 3
+    assert "KHÔNG cộng gộp" in res["note"]
+
+
+def test_get_distribution_history_phan_biet_tien_mat_va_co_phieu(con):
+    res = tools.get_distribution_history(con, "AAA", years=5)
+    by_type = {e["distribution_type"]: e for e in res["distribution_events"]}
+    assert by_type["CASH_DIVIDEND"]["cash_per_share"] == 500.0
+    assert by_type["CASH_DIVIDEND"]["stock_ratio"] is None
+    assert by_type["STOCK_DIVIDEND"]["stock_ratio"] == 0.10
+    assert by_type["STOCK_DIVIDEND"]["cash_per_share"] is None
+
+
+def test_get_distribution_history_phoi_do_sau_cua_so(con):
+    """event_window_years là trường BẮT BUỘC — chính con số này phân biệt
+    'VNM mới trả cổ tức 3 năm nay' (sai) với 'cửa sổ chỉ nhìn được 1,5 năm'
+    (đúng)."""
+    res = tools.get_distribution_history(con, "AAA", years=5)
+    dq_block = res["data_quality"]
+    assert "event_window_years" in dq_block
+    assert "event_window_start" in dq_block
+    assert dq_block["n_events"] == 3
+
+
+def test_get_distribution_history_ngay_dung_dinh_dang_iso(con):
+    """Bài học A3: cột DATE qua .df() thành Timestamp, isoformat() ra kèm
+    'T00:00:00'."""
+    res = tools.get_distribution_history(con, "AAA", years=5)
+    assert res["distribution_events"][0]["exright_date"] == "2026-05-25"
+
+
+def test_get_distribution_history_ma_khong_ton_tai(con):
+    res = tools.get_distribution_history(con, "ZZZ", years=5)
+    assert "error" in res
+    assert "ZZZ" in res["error"]
+
+
+def test_get_ownership_tra_co_dong_va_ban_lanh_dao(con):
+    res = tools.get_ownership(con, "AAA")
+    assert res["symbol"] == "AAA"
+    assert len(res["major_shareholders"]) == 3
+    assert res["major_shareholders"][0]["percent"] == 0.2580
+    assert len(res["officers"]) == 2
+    assert res["snapshot_date"] == "2026-08-01"
+
+
+def test_get_ownership_phoi_tong_phan_tram_cong_bo(con):
+    """total_disclosed_pct phải hiện rõ: tổng KHÔNG bằng 100%, giấu đi thì
+    agent suy ra sai 'phần còn lại là free float'."""
+    res = tools.get_ownership(con, "AAA")
+    assert res["concentration"]["total_disclosed_pct"] == 0.5189
+    assert res["concentration"]["n_disclosed"] == 66
+    assert "free float" in res["note"]
+
+
+def test_get_ownership_ma_khong_ton_tai(con):
+    res = tools.get_ownership(con, "ZZZ")
+    assert "error" in res

@@ -140,4 +140,58 @@ def build_fake_mart(path: str):
           ('CCC','Cty C','UPCOM','NONFIN','Tài nguyên cơ bản',6e11,2e8,8000,
            DATE '2026-08-07',0.30,0.02,DATE '2022-01-10',4,-0.05,-0.12,-0.30,15000,7500);
     """)
+    # --- B1: sự kiện phân phối + sở hữu ---
+    # Fixture phải khớp schema thật (bài học A3 I2: fixture thiếu 3 cột
+    # n_pe/n_pb/n_roe khiến lỗi lọt qua 4 task). Giá trị cố tình đặt
+    # total_disclosed_pct < 1.0 để mô phỏng đúng ca thật (HPG 51,9%).
+    con.execute("""
+        CREATE TABLE int_distribution_event (
+            symbol VARCHAR, event_id VARCHAR, exright_date DATE,
+            record_date DATE, payout_date DATE, distribution_type VARCHAR,
+            cash_per_share DOUBLE, stock_ratio DOUBLE, event_title_vi VARCHAR
+        );
+        INSERT INTO int_distribution_event VALUES
+          ('AAA','e1',DATE '2026-05-11',DATE '2026-05-12',DATE '2026-06-30',
+           'CASH_DIVIDEND',500.0,NULL,'Trả cổ tức bằng tiền mặt - Cả năm 2025 - 500 VND'),
+          ('AAA','e2',DATE '2026-05-25',DATE '2026-05-26',NULL,
+           'STOCK_DIVIDEND',NULL,0.10,'Phát hành cổ phiếu - Trả Cổ tức bằng Cổ phiếu tỉ lệ 10.0%'),
+          ('AAA','e3',DATE '2022-06-17',DATE '2022-06-18',NULL,
+           'BONUS_SHARE',NULL,0.30,'Phát hành cổ phiếu - Cổ phiếu thưởng tỉ lệ 30.0%');
+        CREATE TABLE int_ownership_snapshot (
+            symbol VARCHAR, snapshot_date DATE, n_disclosed BIGINT,
+            total_disclosed_pct DOUBLE, top1_pct DOUBLE, top5_pct DOUBLE,
+            insider_pct DOUBLE
+        );
+        INSERT INTO int_ownership_snapshot VALUES
+          ('AAA',DATE '2026-08-01',66,0.5189,0.2580,0.3872,0.3105),
+          ('VCB',DATE '2026-08-01',29,0.9101,0.7480,0.9096,0.0002);
+        CREATE TABLE stg_shareholder (
+            symbol VARCHAR, share_holder VARCHAR, quantity DOUBLE,
+            share_own_percent DOUBLE, update_date DATE, snapshot_date DATE
+        );
+        INSERT INTO stg_shareholder VALUES
+          ('AAA','Ông Nguyễn Văn A',1.6e9,0.2580,DATE '2026-07-15',DATE '2026-08-01'),
+          ('AAA','Bà Trần Thị B',4.2e8,0.0688,DATE '2026-07-15',DATE '2026-08-01'),
+          ('AAA','Quỹ ngoại C',1.7e8,0.0273,DATE '2026-07-15',DATE '2026-08-01');
+        CREATE TABLE stg_officer (
+            symbol VARCHAR, officer_name VARCHAR, officer_position VARCHAR,
+            officer_own_percent DOUBLE, officer_own_quantity DOUBLE,
+            update_date DATE, snapshot_date DATE
+        );
+        INSERT INTO stg_officer VALUES
+          ('AAA','Ông Nguyễn Văn A','Chủ tịch HĐQT',0.2580,1.6e9,
+           DATE '2026-07-15',DATE '2026-08-01'),
+          ('AAA','Bà Trần Thị B','Thành viên HĐQT',0.0525,3.2e8,
+           DATE '2026-07-15',DATE '2026-08-01');
+        CREATE TABLE stg_financial_ratio (
+            symbol VARCHAR, year INTEGER, quarter INTEGER,
+            dividend_yield DOUBLE
+        );
+        INSERT INTO stg_financial_ratio VALUES
+          ('AAA',2025,5,0.0235),
+          ('AAA',2024,5,0.0),
+          ('AAA',2023,5,0.0),
+          ('AAA',2022,5,0.0),
+          ('AAA',2021,5,0.0278);
+    """)
     con.close()
