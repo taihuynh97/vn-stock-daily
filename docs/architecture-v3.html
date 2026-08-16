@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VN Market — Kiến trúc nền tảng phân tích cơ bản</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-raised: #f6f8fa;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --text-dim: #59636e;
+    --text-faint: #8c959f;
+    --accent-raw: #9a6700;    --accent-raw-bg: #fff8c5;
+    --accent-stg: #0969da;    --accent-stg-bg: #ddf4ff;
+    --accent-int: #8250df;    --accent-int-bg: #fbefff;
+    --accent-mart: #1a7f37;   --accent-mart-bg: #dafbe1;
+    --accent-score: #cf222e;  --accent-score-bg: #ffebe9;
+    --accent-next: #656d76;   --accent-next-bg: #f6f8fa;
+    --mono: 'SF Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1117; --bg-raised: #161b22; --border: #30363d;
+      --text: #e6edf3; --text-dim: #9198a1; --text-faint: #6e7681;
+      --accent-raw: #d29922;   --accent-raw-bg: #2b2111;
+      --accent-stg: #4493f8;   --accent-stg-bg: #0d2a4a;
+      --accent-int: #a371f7;   --accent-int-bg: #2a1a3d;
+      --accent-mart: #3fb950;  --accent-mart-bg: #0d2818;
+      --accent-score: #ff7b72; --accent-score-bg: #3d1416;
+      --accent-next: #8b949e;  --accent-next-bg: #161b22;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --bg-raised: #161b22; --border: #30363d;
+    --text: #e6edf3; --text-dim: #9198a1; --text-faint: #6e7681;
+    --accent-raw: #d29922;   --accent-raw-bg: #2b2111;
+    --accent-stg: #4493f8;   --accent-stg-bg: #0d2a4a;
+    --accent-int: #a371f7;   --accent-int-bg: #2a1a3d;
+    --accent-mart: #3fb950;  --accent-mart-bg: #0d2818;
+    --accent-score: #ff7b72; --accent-score-bg: #3d1416;
+    --accent-next: #8b949e;  --accent-next-bg: #161b22;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); }
+  body {
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 32px 20px 80px;
+    line-height: 1.55;
+  }
+  h1 { font-size: 22px; font-weight: 650; margin: 0 0 4px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 4px; }
+  .asof { color: var(--text-faint); font-size: 12px; font-family: var(--mono); margin-bottom: 28px; }
+  h2 {
+    font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-dim); margin: 44px 0 14px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 .badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; letter-spacing: .02em; text-transform: none; font-weight: 600; margin-left: 8px; vertical-align: 1px; }
+  p.lede { color: var(--text-dim); font-size: 14px; margin: -6px 0 16px; max-width: 680px; }
+
+  /* Sơ đồ luồng dữ liệu — thuần HTML/CSS, không phụ thuộc thư viện ngoài */
+  .flow { display: flex; flex-direction: column; gap: 0; margin-bottom: 8px; }
+  .flow-layer {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+    background: var(--bg-raised);
+  }
+  .flow-layer .flow-title { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); margin-bottom: 8px; }
+  .flow-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .flow-chip {
+    font-family: var(--mono); font-size: 11px; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid; white-space: nowrap;
+  }
+  .flow-chip.raw   { background: var(--accent-raw-bg);   border-color: var(--accent-raw);   color: var(--accent-raw); }
+  .flow-chip.stg   { background: var(--accent-stg-bg);   border-color: var(--accent-stg);   color: var(--accent-stg); }
+  .flow-chip.int   { background: var(--accent-int-bg);   border-color: var(--accent-int);   color: var(--accent-int); }
+  .flow-chip.mart  { background: var(--accent-mart-bg);  border-color: var(--accent-mart);  color: var(--accent-mart); }
+  .flow-chip.score { background: var(--accent-score-bg); border-color: var(--accent-score); color: var(--accent-score); }
+  .flow-chip.next  { background: var(--accent-next-bg);  border-color: var(--accent-next);  color: var(--accent-next); border-style: dashed; }
+  .flow-arrow { text-align: center; color: var(--text-faint); font-size: 13px; padding: 5px 0; }
+  .flow-arrow.dashed { font-style: italic; font-size: 11px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-bottom: 8px; }
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px; font-size: 12.5px; background: var(--bg-raised); }
+  .card .name { font-family: var(--mono); font-weight: 650; font-size: 12.5px; margin-bottom: 3px; }
+  .card .desc { color: var(--text-dim); font-size: 11.5px; line-height: 1.4; }
+  .card.raw   { border-left: 3px solid var(--accent-raw); }   .card.raw .name   { color: var(--accent-raw); }
+  .card.stg   { border-left: 3px solid var(--accent-stg); }   .card.stg .name   { color: var(--accent-stg); }
+  .card.int   { border-left: 3px solid var(--accent-int); }   .card.int .name   { color: var(--accent-int); }
+  .card.mart  { border-left: 3px solid var(--accent-mart); }  .card.mart .name  { color: var(--accent-mart); }
+  .card.score { border-left: 3px solid var(--accent-score); } .card.score .name { color: var(--accent-score); }
+  .card.next  { border-left: 3px dashed var(--accent-next); opacity: .82; } .card.next .name { color: var(--accent-next); }
+
+  .stat-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 18px; }
+  .stat { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; min-width: 108px; }
+  .stat .v { font-family: var(--mono); font-size: 17px; font-weight: 700; }
+  .stat .l { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; margin-top: 1px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 8px; }
+  th { text-align: left; color: var(--text-faint); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  td.mono, code { font-family: var(--mono); }
+  code { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 11.5px; }
+
+  .badge-done { background: var(--accent-mart-bg); color: var(--accent-mart); }
+  .badge-next { background: var(--accent-next-bg); color: var(--accent-next); border: 1px dashed var(--accent-next); }
+
+  .callout { border: 1px solid var(--border); border-left: 3px solid var(--accent-score); background: var(--accent-score-bg); border-radius: 8px; padding: 12px 15px; font-size: 12.5px; margin: 10px 0 20px; }
+  .callout b { color: var(--accent-score); }
+
+  footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-faint); }
+
+  @media (max-width: 640px) {
+    .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    body { overflow-x: hidden; }
+  }
+</style>
+</head>
+<body>
+
+<h1>VN Market — Nền tảng phân tích cơ bản</h1>
+<div class="subtitle">Warehouse DuckDB/MotherDuck · dbt · tầng chấm điểm Python</div>
+<div class="asof">trạng thái sau khi merge A2 · main@35f09fd</div>
+
+<h2>Luồng dữ liệu</h2>
+<p class="lede">Sáu tầng, mỗi tầng chỉ đọc tầng ngay trước nó. Nguồn duy nhất là vnstock (VCI) — không gọi lại API ở bất kỳ tầng nào phía sau RAW.</p>
+
+<div class="flow">
+  <div class="flow-layer">
+    <div class="flow-title">Nguồn — vnstock (VCI)</div>
+    <div class="flow-row">
+      <span class="flow-chip next">Trading.price_board</span>
+      <span class="flow-chip next">Finance.ratio</span>
+      <span class="flow-chip next">Company.overview</span>
+      <span class="flow-chip next">Listing / ICB</span>
+    </div>
+  </div>
+  <div class="flow-arrow">↓ ghi trực tiếp</div>
+
+  <div class="flow-layer">
+    <div class="flow-title">① RAW — Python ghi, immutable</div>
+    <div class="flow-row">
+      <span class="flow-chip raw">raw_price_daily</span>
+      <span class="flow-chip raw">raw_financial_ratio (50 cột)</span>
+      <span class="flow-chip raw">raw_company_info</span>
+      <span class="flow-chip raw">dim_industry (177 dòng)</span>
+      <span class="flow-chip raw">dim_symbols</span>
+      <span class="flow-chip raw">raw_index_daily</span>
+    </div>
+  </div>
+  <div class="flow-arrow">↓ dbt — khử sentinel 0.0</div>
+
+  <div class="flow-layer">
+    <div class="flow-title">② STAGING — dbt</div>
+    <div class="flow-row">
+      <span class="flow-chip stg">stg_price_daily</span>
+      <span class="flow-chip stg">stg_financial_ratio</span>
+      <span class="flow-chip stg">stg_company_info</span>
+      <span class="flow-chip stg">stg_industry</span>
+      <span class="flow-chip stg">stg_index_daily</span>
+    </div>
+  </div>
+  <div class="flow-arrow">↓ dbt — ghép theo lịch, suy chỉ tiêu</div>
+
+  <div class="flow-layer">
+    <div class="flow-title">③ INTERMEDIATE — dbt</div>
+    <div class="flow-row">
+      <span class="flow-chip int">int_price_features</span>
+      <span class="flow-chip int">int_fundamentals_ttm</span>
+      <span class="flow-chip int">int_quality_metrics</span>
+      <span class="flow-chip int">int_dividend_history</span>
+      <span class="flow-chip int">int_metric_long</span>
+      <span class="flow-chip int">int_metric_percentile</span>
+      <span class="flow-chip int">int_valuation_percentile</span>
+    </div>
+  </div>
+  <div class="flow-arrow">↓ dbt — business-ready</div>
+
+  <div class="flow-layer">
+    <div class="flow-title">④ MARTS — dbt</div>
+    <div class="flow-row">
+      <span class="flow-chip mart">dim_stock</span>
+      <span class="flow-chip mart">dim_industry_hierarchy</span>
+      <span class="flow-chip mart">fct_price_daily</span>
+      <span class="flow-chip mart">fct_financial_quarterly</span>
+      <span class="flow-chip mart">mart_valuation_band</span>
+      <span class="flow-chip mart">mart_sector_snapshot</span>
+      <span class="flow-chip mart">mart_data_quality</span>
+      <span class="flow-chip mart">mart_stock_scorecard</span>
+    </div>
+  </div>
+  <div class="flow-arrow">↓ Python — đọc lúc runtime</div>
+
+  <div class="flow-layer">
+    <div class="flow-title">⑤ SCORING — src/scoring.py</div>
+    <div class="flow-row">
+      <span class="flow-chip score">scoring_profiles.yml</span>
+      <span class="flow-chip score">screen() → xếp hạng</span>
+    </div>
+  </div>
+  <div class="flow-arrow">↓</div>
+
+  <div class="flow-layer">
+    <div class="flow-title">Đầu ra</div>
+    <div class="flow-row">
+      <span class="flow-chip score">bảng xếp hạng theo hồ sơ đầu tư</span>
+      <span class="flow-chip next">MCP server — A3, sắp tới</span>
+    </div>
+  </div>
+</div>
+
+<div class="stat-row">
+  <div class="stat"><div class="v">1.599</div><div class="l">mã theo dõi</div></div>
+  <div class="stat"><div class="v">1,25M</div><div class="l">dòng giá</div></div>
+  <div class="stat"><div class="v">48.103</div><div class="l">dòng tỷ số</div></div>
+  <div class="stat"><div class="v">20</div><div class="l">model dbt</div></div>
+  <div class="stat"><div class="v">111</div><div class="l">test dbt PASS</div></div>
+  <div class="stat"><div class="v">129</div><div class="l">test pytest</div></div>
+</div>
+
+<h2>① RAW <span class="badge badge-done">A1</span></h2>
+<p class="lede">Python ghi trực tiếp từ vnstock, không qua dbt. Bất khả xâm phạm với mọi model phía sau — không dbt model nào được DROP/ALTER các bảng này.</p>
+<div class="grid">
+  <div class="card raw"><div class="name">raw_price_daily</div><div class="desc">OHLCV theo mã × phiên. Giá trị (value) đơn vị triệu VNĐ.</div></div>
+  <div class="card raw"><div class="name">raw_financial_ratio</div><div class="desc">50 cột (mở rộng từ 13 ở A1). Sentinel <code>0.0</code> giữ nguyên ở tầng này — khử ở staging.</div></div>
+  <div class="card raw"><div class="name">raw_company_info</div><div class="desc">Hồ sơ DN, ngành ICB cấp 2/4, com_type_code.</div></div>
+  <div class="card raw"><div class="name">dim_industry</div><div class="desc">177 dòng, phân cấp ICB 1–4. Nguồn — không phải mart cùng tên.</div></div>
+  <div class="card raw"><div class="name">dim_symbols</div><div class="desc">Vũ trụ mã đầy đủ — tập cha của mọi mã có giá hoặc có tỷ số.</div></div>
+  <div class="card raw"><div class="name">raw_index_daily</div><div class="desc">VNINDEX, HNXINDEX, UPCOMINDEX.</div></div>
+</div>
+
+<h2>② STAGING <span class="badge badge-done">A1 · A2</span></h2>
+<p class="lede">Khử sentinel <code>0.0</code> theo 3 trục độc lập: <code>com_class</code> (ngân hàng vs phi tài chính), kỳ báo cáo (quý 1/3/4 vs quý 2 vs dòng năm), và chỉ tiêu COMMON dùng chung cả hai nhóm (ROE âm-vốn-chủ). Suy <code>com_class</code> = NONFIN / BANK / OTHERFIN / UNKNOWN.</p>
+<div class="grid">
+  <div class="card stg"><div class="name">stg_price_daily</div><div class="desc">Nhân 1e6 giá trị giao dịch, gắn cờ nghi vấn.</div></div>
+  <div class="card stg"><div class="name">stg_financial_ratio</div><div class="desc">Bậc NULL hoá tách riêng khỏi bậc suy diễn cờ (<code>pe_meaningful</code>, <code>is_loss_making</code>).</div></div>
+  <div class="card stg"><div class="name">stg_company_info</div><div class="desc"><code>com_class</code> coalesce về UNKNOWN, không mặc định NONFIN.</div></div>
+  <div class="card stg"><div class="name">stg_industry</div><div class="desc">Chuẩn hoá tên ngành ICB.</div></div>
+  <div class="card stg"><div class="name">stg_index_daily</div><div class="desc">Không nhân đơn vị như giá cổ phiếu.</div></div>
+</div>
+
+<h2>③ INTERMEDIATE <span class="badge badge-done">A2</span></h2>
+<p class="lede">Tầng hoàn toàn mới của A2. Mọi phép tăng trưởng/TTM ghép theo <b>lịch</b> (năm×4+quý), không theo vị trí dòng — 87% mã có khoảng trống trong chuỗi quý. Mọi cửa sổ percentile yêu cầu số quan sát tối thiểu trước khi cho ra giá trị.</p>
+<div class="grid">
+  <div class="card int"><div class="name">int_price_features</div><div class="desc">MA20/50/200, return, biến động 60 phiên, chặn khoảng trống giao dịch.</div></div>
+  <div class="card int"><div class="name">int_fundamentals_ttm</div><div class="desc">Doanh thu/LNST suy từ market_cap÷ps, market_cap÷pe. Đối chiếu HPG 2024 khớp BCTC 0,008%.</div></div>
+  <div class="card int"><div class="name">int_quality_metrics</div><div class="desc">ROE trung bình 8 quý, độ bền, xu hướng biên lợi nhuận.</div></div>
+  <div class="card int"><div class="name">int_dividend_history</div><div class="desc">Số năm trả cổ tức liên tiếp, tỷ suất trung bình 5 năm.</div></div>
+  <div class="card int"><div class="name">int_metric_long</div><div class="desc">Unpivot 44 chỉ tiêu → dạng dài để tính phân vị.</div></div>
+  <div class="card int"><div class="name">int_metric_percentile</div><div class="desc">Phân vị so với nhóm ngang hàng (com_class + ICB lv2).</div></div>
+  <div class="card int"><div class="name">int_valuation_percentile</div><div class="desc">P/E, P/B so với chính lịch sử 5 năm của mã.</div></div>
+</div>
+
+<h2>④ MARTS <span class="badge badge-done">A2</span></h2>
+<p class="lede">Business-ready — nơi agent phân tích và người dùng thật sự đọc. <code>dim_stock</code> lấy gốc từ <code>dim_symbols</code> (không phải <code>stg_company_info</code>) để không bỏ sót mã mới niêm yết chưa có hồ sơ.</p>
+<div class="grid">
+  <div class="card mart"><div class="name">dim_stock</div><div class="desc">1 dòng/mã · 1.599 dòng. Ngành, loại hình, thanh khoản, có cờ has_profile.</div></div>
+  <div class="card mart"><div class="name">dim_industry_hierarchy</div><div class="desc">1 dòng/ngành ICB cấp 4, kèm tên cấp 2–3. Đổi tên để không đè bảng nguồn.</div></div>
+  <div class="card mart"><div class="name">fct_price_daily</div><div class="desc">Mã × phiên, 1,25 triệu dòng.</div></div>
+  <div class="card mart"><div class="name">fct_financial_quarterly</div><div class="desc">Mã × quý, chỉ dòng quý mang số TTM (dòng năm để NULL).</div></div>
+  <div class="card mart"><div class="name">mart_valuation_band</div><div class="desc">Nhãn "rất rẻ…rất đắt" theo percentile lịch sử của chính mã.</div></div>
+  <div class="card mart"><div class="name">mart_sector_snapshot</div><div class="desc">P/E, P/B, ROE trung vị theo ngành × com_class.</div></div>
+  <div class="card mart"><div class="name">mart_data_quality</div><div class="desc">Điểm tin cậy 0–100/mã — đọc trước khi phát biểu về một mã.</div></div>
+  <div class="card mart"><div class="name">mart_stock_scorecard</div><div class="desc">5 điểm thành phần (định giá/chất lượng/tăng trưởng/cổ tức/an toàn), mỗi điểm kèm % trọng số đo được.</div></div>
+</div>
+
+<h2>⑤ SCORING <span class="badge badge-done">A2</span></h2>
+<p class="lede">Cố ý đặt ngoài dbt: đổi trọng số hồ sơ đầu tư chạy lại trong vài giây, không cần build lại warehouse.</p>
+<div class="grid">
+  <div class="card score"><div class="name">config/scoring_profiles.yml</div><div class="desc">3 hồ sơ: bluechip_dividend, deep_value, quality_growth. Khoá lạ trong config ném lỗi ngay khi nạp.</div></div>
+  <div class="card score"><div class="name">src/scoring.py</div><div class="desc"><code>screen()</code> lọc universe → chấm composite → xếp hạng. NULL ở thành phần có trọng số &gt;0 → không chấm, không phải 0 điểm.</div></div>
+</div>
+
+<div class="callout">
+  <b>Tiêu chí nghiệm thu quyết định:</b> hồ sơ <code>bluechip_dividend</code> phải có ≥3 ngân hàng trong top 30 — phép thử trực tiếp cho việc khử sentinel ngân hàng ở A1/A2. Hiện đạt <b>5 ngân hàng</b> (MBB, VPB, VIB, ACB, TCB).
+</div>
+
+<h2>⑥ Vận hành &amp; kiểm chứng <span class="badge badge-done">A2</span></h2>
+<div style="overflow-x: auto;">
+<table>
+  <tr><th>Workflow</th><th>Lịch chạy</th><th>Làm gì</th></tr>
+  <tr><td class="mono">warehouse.yml</td><td>T2–T6, 08:30 UTC</td><td>Nạp giá EOD + <code>dbt build</code> toàn DAG</td></tr>
+  <tr><td class="mono">warehouse-weekly.yml</td><td>Thứ 7, 08:30 UTC</td><td>Nạp tỷ số tài chính + <code>dbt build</code> + smoke check tiêu chí #8</td></tr>
+  <tr><td class="mono">warehouse-monthly.yml</td><td>Hằng tháng</td><td>Nạp hồ sơ DN, ngành + đối chiếu chéo</td></tr>
+  <tr><td class="mono">tests.yml</td><td>Mọi push / PR</td><td>129 pytest + <code>dbt compile</code> trên DuckDB local</td></tr>
+</table>
+</div>
+
+<h2>Sắp tới <span class="badge badge-next">A3</span></h2>
+<p class="lede">Chưa xây. Bốn task: khung MCP server có rào chắn SQL read-only → công cụ tra cứu mã/ngành → công cụ so sánh/lịch sử định giá → đăng ký &amp; nghiệm thu đầu-cuối.</p>
+<div class="grid">
+  <div class="card next"><div class="name">mcp_server/</div><div class="desc">Đọc trực tiếp marts qua giao thức MCP — để agent hội thoại truy vấn warehouse này.</div></div>
+  <div class="card next"><div class="name">run_sql có rào chắn</div><div class="desc">Chỉ SELECT, giới hạn dòng, không chạm bảng RAW.</div></div>
+</div>
+
+<footer>
+  Thay thế <code>docs/architecture-v2.html</code> — file đó mô tả hệ thống trước khi pivot (giá EOD + bản tin Telegram), không phản ánh A1/A2.
+</footer>
+
+</body>
+</html>

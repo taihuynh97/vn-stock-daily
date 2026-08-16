@@ -8,3 +8,4 @@ duckdb==1.5.3
 dbt-core>=1.9,<2.0
 dbt-duckdb>=1.9,<2.0
 pytest>=8.0
+mcp>=1.2,<2.0

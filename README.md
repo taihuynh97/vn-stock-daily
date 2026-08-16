@@ -6,18 +6,36 @@ Job tự động chạy mỗi ngày sau giờ đóng cửa, tổng hợp tình h
 
 ## Kiến trúc
 
+Hai nhánh độc lập, dùng chung một warehouse trên MotherDuck:
+
 ```
-main.py
- └─ src/
-     ├─ ingest.py    # vnstock 4.0: giá, chỉ số TC, tin DN, danh sách mã
-     ├─ signals.py   # RSI, MA20/50, P/L vs giá vốn, khối lượng đột biến  (logic thuần)
-     ├─ screener.py  # lọc value + momentum, chấm điểm & xếp hạng
-     ├─ digest.py    # Claude API diễn giải dữ liệu -> bản tin (KHÔNG bịa số)
-     ├─ notify.py    # gửi Telegram
-     └─ storage.py   # SQLite: log bản tin + chống lặp tin
+INGESTION (Python)                WAREHOUSE            CONSUMERS
+build_warehouse.py --mode         raw_* (immutable)    ├─ MCP server (hội thoại)
+  daily   → giá EOD + chỉ số        ↓ dbt              ├─ main.py (bản tin Telegram)
+  weekly  → tỷ số tài chính       stg_* → int_*        └─ SQL ad-hoc
+  monthly → hồ sơ DN + ICB          ↓
+                                  mart_* ← nơi mọi phân tích query vào
 ```
 
-Tín hiệu và screener tính từ **lịch sử giá lấy mới mỗi lần chạy**, nên job chạy đúng kể cả khi DB trống.
+- `transforms/` — dbt project (staging → intermediate → marts)
+- `src/scoring.py` + `config/scoring_profiles.yml` — bộ chấm điểm, đổi "gu" đầu tư ở đây
+- `mcp_server/` — 7 tool read-only cho luồng hội thoại
+
+### Bật/tắt luồng hội thoại
+
+Xoá khai báo trong `.mcp.json` là tắt hoàn toàn MCP server. Warehouse, dbt và
+bản tin Telegram không bị ảnh hưởng.
+
+### Chạy screener bằng dòng lệnh
+
+```bash
+export WAREHOUSE_DB=md:vn_market
+python -c "
+from src import warehouse, scoring
+con = warehouse.get_conn()
+print(scoring.screen(con, 'bluechip_dividend', limit=20).to_string())
+"
+```
 
 ## Cấu hình
 

@@ -16,7 +16,10 @@
 - **Mọi tool trả kèm `as_of` và `data_quality`.**
 - Không nhân bản logic chấm điểm — `search_stocks` phải gọi `src.scoring`.
 - Chạy test: `.venv/bin/python -m pytest tests/ -q`.
-- Branch làm việc: `feat/fundamental-analysis-platform`.
+- Branch làm việc: `feat/a3-mcp-server` (tên cũ `feat/fundamental-analysis-platform`
+  trong bản kế hoạch gốc là tham chiếu lạc hậu — A1 và A2 đã đi theo quy ước
+  mỗi mảng một nhánh riêng: `feat/a2-dbt-marts-scoring` v.v. — A3 theo cùng
+  quy ước đó).
 
 ---
 
@@ -413,18 +416,22 @@ def build_fake_mart(path: str):
         INSERT INTO fct_financial_quarterly VALUES
           ('AAA',2026,2,DATE '2026-06-30','NONFIN',9.5,1.2,0.18,1e13,1e12,0.12,0.20),
           ('AAA',2026,1,DATE '2026-03-31','NONFIN',10.1,1.3,0.17,9.5e12,9e11,0.10,0.15);
+        -- pe_quarters_used / pb_quarters_used (KHÔNG phải own_quarters_used —
+        -- đã tách ra hai cột riêng ở A2 Task 6 fix round 2, vì cửa sổ hợp lệ
+        -- của P/E và P/B không luôn bằng nhau cho cùng một mã/kỳ; dùng đúng
+        -- tên cột thật để fixture không che giấu lỗi khi chạy trên production).
         CREATE TABLE mart_valuation_band (
             symbol VARCHAR, period_end_date DATE, com_class VARCHAR,
             icb_code_lv2 VARCHAR, industry_lv2 VARCHAR,
             pe DOUBLE, pb DOUBLE, ps DOUBLE,
             pe_pct_own_5y DOUBLE, pb_pct_own_5y DOUBLE,
-            own_quarters_used BIGINT, valuation_band VARCHAR
+            pe_quarters_used BIGINT, pb_quarters_used BIGINT, valuation_band VARCHAR
         );
         INSERT INTO mart_valuation_band VALUES
           ('AAA',DATE '2026-06-30','NONFIN','1700','Tài nguyên cơ bản',
-           9.5,1.2,0.9,0.18,0.22,20,'rất rẻ'),
+           9.5,1.2,0.9,0.18,0.22,20,18,'rất rẻ'),
           ('AAA',DATE '2026-03-31','NONFIN','1700','Tài nguyên cơ bản',
-           10.1,1.3,1.0,0.30,0.35,19,'rẻ');
+           10.1,1.3,1.0,0.30,0.35,19,17,'rẻ');
         CREATE TABLE mart_sector_snapshot (
             icb_code_lv2 VARCHAR, industry_lv2 VARCHAR, com_class VARCHAR,
             period_end_date DATE, n_symbols BIGINT, median_pe DOUBLE,
@@ -433,9 +440,12 @@ def build_fake_mart(path: str):
         INSERT INTO mart_sector_snapshot VALUES
           ('1700','Tài nguyên cơ bản','NONFIN',DATE '2026-06-30',40,12.5,1.4,0.13,0.08),
           ('8300','Ngân hàng','BANK',DATE '2026-06-30',27,8.6,1.3,0.18,0.11);
+        -- max_missed_sessions (KHÔNG phải max_price_gap_days — đổi tên ở A2
+        -- Task 9: đếm ngày lịch khiến nghỉ Tết 10 ngày suýt báo động giả cho
+        -- 891 mã; đếm phiên thị trường bị bỏ thì miễn nhiễm với lịch nghỉ).
         CREATE TABLE mart_data_quality (
             symbol VARCHAR, quarters_available BIGINT, price_sessions_1y BIGINT,
-            ratio_age_days BIGINT, max_price_gap_days BIGINT,
+            ratio_age_days BIGINT, max_missed_sessions BIGINT,
             has_required_metrics BOOLEAN, data_quality_ratio DOUBLE,
             data_quality_score DOUBLE, quality_flags VARCHAR
         );
@@ -489,7 +499,7 @@ def test_search_stocks_returns_ranked_with_as_of(con):
     symbols = [r["symbol"] for r in res["results"]]
     assert "CCC" not in symbols            # UPCOM + thanh khoản thấp → loại
     assert res["universe_size"] >= 1
-    assert "rejected_counts" in res
+    assert "rejected_counts" in res and "rejected_total" in res
 
 
 def test_search_stocks_includes_peer_basis_and_facts(con):
@@ -587,9 +597,18 @@ def search_stocks(con, profile: str = None, limit: int = 20,
         "profile": report["profile"],
         "profile_label": report["label"],
         "universe_size": report["universe_size"],
+        # rejected_counts đếm theo TỪNG điều kiện, CHO PHÉP CHỒNG LẤP — một mã
+        # trượt cả sàn lẫn vốn hoá được cộng vào cả hai khoá (đo thực tế:
+        # 85,5-96,4% mã bị loại trượt ≥2 điều kiện, xem docstring
+        # scoring.screen_report). Không phơi rejected_total kèm nó thì agent
+        # hội thoại rất dễ tự cộng rejected_counts rồi báo sai tổng số mã bị
+        # loại cho người dùng — đúng lỗi đã sửa ở A2 Task 11.
         "rejected_counts": report["rejected_counts"],
+        "rejected_total": report["rejected_total"],
         "unscored": _clean(report["unscored"].to_dict(orient="records")),
         "results": results,
+        "note": "rejected_counts đếm chồng lấp theo điều kiện, KHÔNG cộng lại "
+                "thành tổng — dùng rejected_total cho tổng số mã bị loại thật.",
         **db.as_of(con),
     }
 
@@ -796,7 +815,7 @@ def get_valuation_history(con, symbol: str, years: int = 5) -> dict:
         con,
         """
         SELECT period_end_date, pe, pb, ps, pe_pct_own_5y, pb_pct_own_5y,
-               own_quarters_used, valuation_band, com_class, industry_lv2
+               pe_quarters_used, pb_quarters_used, valuation_band, com_class, industry_lv2
         FROM mart_valuation_band
         WHERE symbol = ?
           AND period_end_date >= current_date - (? * 365) * INTERVAL 1 DAY
@@ -944,7 +963,11 @@ Expected: PASS — 11 passed
 - [ ] **Step 6: Chạy toàn bộ test**
 
 Run: `.venv/bin/python -m pytest tests/ -q`
-Expected: PASS — 110 passed
+Expected: PASS — toàn bộ test hiện có + 31 test mcp mới (20 `test_mcp_db.py` +
+11 `test_mcp_tools.py`). Con số tuyệt đối "110" trong bản kế hoạch gốc tính
+trên baseline cũ trước khi A2 mở rộng bộ test qua nhiều vòng sửa — **đừng
+dùng nó**, chỉ kiểm PASS và không có test nào bị mất so với trước khi bắt
+đầu task này.
 
 - [ ] **Step 7: Commit**
 
@@ -1140,7 +1163,9 @@ print(scoring.screen(con, 'bluechip_dividend', limit=20).to_string())
 - [ ] **Step 7: Chạy toàn bộ test và commit**
 
 Run: `.venv/bin/python -m pytest tests/ -q`
-Expected: PASS — 110 passed
+Expected: PASS — toàn bộ. Không dùng con số tuyệt đối cũ (xem ghi chú ở Task 3
+Step 6) — bộ test đã lớn lên qua nhiều task/vòng sửa từ khi bản kế hoạch này
+được viết.
 
 ```bash
 git add .mcp.json README.md scripts/check_mcp_tools.py mcp_server/
@@ -1155,7 +1180,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 | # | Tiêu chí | Cách kiểm tra |
 |---|---|---|
-| 1 | 110 test pytest pass | `.venv/bin/python -m pytest tests/ -q` |
+| 1 | Toàn bộ pytest pass (baseline trước A3: 129 + 31 test mcp mới) | `.venv/bin/python -m pytest tests/ -q` |
 | 2 | 7 tool đăng ký đầy đủ | Task 4 Step 4 |
 | 3 | Cả 7 tool trả dữ liệu thật | `python -m scripts.check_mcp_tools` |
 | 4 | `run_sql` từ chối DDL/DML | Task 4 Step 3 |
