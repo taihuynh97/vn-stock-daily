@@ -91,6 +91,18 @@ def main():
                            "ok" if n_fin else "empty", watermark=run_date)
         print(f"raw_financial_ratio: {n_fin} dòng")
 
+    # 3b) Sự kiện doanh nghiệp (B1) — weekly và monthly.
+    # Chạy tuần chứ không tháng: GDKHQ có ngày cụ thể, chạy tháng dễ lỡ sự
+    # kiện vừa công bố vừa chốt quyền trong cùng tháng.
+    if args.mode in ("weekly", "monthly"):
+        print(f"Bắt đầu fetch sự kiện DN ({len(symbols)} mã)...")
+        events = ingest_market.fetch_corporate_events(symbols, source)
+        n_ev = warehouse.insert_corporate_events(con, events)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_corporate_event",
+                           n_ev, "ok" if n_ev else "empty", watermark=run_date,
+                           notes=f"append-only; fetch {len(events)} dong")
+        print(f"raw_corporate_event: +{n_ev} dòng mới (fetch {len(events)})")
+
     # 4) Dim_industry (phân ngành ICB) + company info — monthly only
     if args.mode == "monthly":
         ind = ingest_market.fetch_industries_icb(source)

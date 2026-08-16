@@ -469,3 +469,112 @@ def _normalize_company(df, symbol) -> pd.DataFrame:
         "lowest_price_1y":            num("lowest_price1_year"),
         "listed_date":                _to_date_str(row.get("listing_date")),
     }])[warehouse.COMPANY_COLS]
+
+
+_printed_event_cols = False
+
+# Tám cột ngày của Company.events(). Ép về chuỗi ISO ở tầng normalize để
+# DuckDB nhận đúng kiểu DATE, thay vì để pandas Timestamp đi thẳng vào
+# INSERT (đúng lớp lỗi 'NaT' đã sửa ở A3 fix round 1).
+EVENT_DATE_COLS = [
+    "public_date", "issue_date", "start_date", "end_date",
+    "record_date", "exright_date", "listing_date", "payout_date",
+]
+
+_EVENT_REQUIRED = ["id", "event_code", "event_title_vi"]
+
+
+def fetch_corporate_events(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
+    """Sự kiện DN (cổ tức, phát hành, ĐHCĐ, giao dịch cổ đông lớn) qua
+    Company.events().
+
+    Nguồn chỉ trả 50 SỰ KIỆN GẦN NHẤT mỗi mã, không có tham số mở rộng, và
+    cửa sổ đó TRƯỢT theo thời gian — xem docstring
+    warehouse.insert_corporate_events để biết vì sao bảng đích ghi
+    append-only.
+
+    Bắt dq.SchemaError theo TỪNG MÃ (cùng lý do như fetch_financials): một
+    mã dị thường trong ~1.600 mã không được phép xoá sổ cả mẻ đang chạy
+    (~28 phút fetch với _throttle 1,05s/call). Vẫn raise to nếu tỉ lệ mã
+    lỗi vượt ngưỡng dq.status_for.
+    """
+    global _printed_event_cols
+    frames, rejected = [], 0
+    for symbol in symbols:
+        ingest._throttle()
+        try:
+            df = Company(symbol=symbol, source=source).events()
+        except Exception as e:
+            print(f"[events] {symbol}: {e}")
+            continue
+        if df is None or len(df) == 0:
+            continue
+        df.columns = [str(c).lower() for c in df.columns]
+        if not _printed_event_cols:
+            print(f"[events] cột thật ({symbol}): {list(df.columns)}")
+            _printed_event_cols = True
+        try:
+            frames.append(_normalize_events(df, symbol))
+        except dq.SchemaError as e:
+            print(f"[events] {symbol}: {e}")
+            rejected += 1
+            continue
+    if rejected and dq.status_for(len(frames), rejected) == "degraded":
+        raise dq.SchemaError(
+            f"[Company.events] {rejected}/{len(symbols)} mã sai schema "
+            "— nguồn có thể đã đổi"
+        )
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    # drop_duplicates("id") trước khi ghi: NOT EXISTS trong
+    # insert_corporate_events chỉ chống trùng với dòng ĐÃ CÓ trong bảng,
+    # không chống trùng trong cùng một mẻ — mà id là PRIMARY KEY nên trùng
+    # nội bộ mẻ sẽ ném ConstraintException giết cả job.
+    return out.dropna(subset=["id"]).drop_duplicates("id").reset_index(drop=True)
+
+
+def _normalize_events(df, symbol) -> pd.DataFrame:
+    dq.assert_columns(df, _EVENT_REQUIRED, f"Company.events({symbol})")
+
+    def text(col):
+        if col not in df.columns:
+            return None
+        s = df[col]
+        # astype(str) biến None thành chuỗi 'None' (đúng lỗi đã gặp ở
+        # stg_financial_ratio) — where(notna) giữ None thật là None.
+        return s.astype(str).str.strip().where(s.notna(), None)
+
+    def num(col):
+        return (pd.to_numeric(df[col], errors="coerce")
+                if col in df.columns else float("nan"))
+
+    out = pd.DataFrame({
+        "id":              df["id"].astype(str).str.strip(),
+        "symbol":          symbol.upper().strip(),
+        "event_code":      text("event_code"),
+        "event_name_vi":   text("event_name_vi"),
+        "event_title_vi":  text("event_title_vi"),
+        "category":        text("category"),
+        "action_type_vi":  text("action_type_vi"),
+        "exercise_ratio":  num("exercise_ratio"),
+        "value_per_share": num("value_per_share"),
+    })
+    for col in EVENT_DATE_COLS:
+        out[col] = _date_col(df, col)
+    return out[warehouse.EVENT_COLS]
+
+
+def _date_col(df, col):
+    """Ép một cột ngày về chuỗi ISO, giữ None thật là None.
+
+    KHÔNG dùng .astype(str) hay .dt.strftime() trần: cả hai biến NaT thành
+    chuỗi literal 'NaT' — đúng lớp lỗi đã phải sửa ở A3 fix round 1, chỉ
+    khác là lần đó xảy ra ở tầng đọc còn đây là tầng ghi.
+
+    Task 3 dùng lại chính hàm này cho raw_shareholder/raw_officer.
+    """
+    if col not in df.columns:
+        return None
+    parsed = pd.to_datetime(df[col], errors="coerce")
+    return parsed.dt.strftime("%Y-%m-%d").where(parsed.notna(), None)
