@@ -89,3 +89,31 @@ models:
                        'UNKNOWN_CODE']
       - name: is_distribution
         tests: [not_null]
+
+  - name: stg_shareholder
+    description: >
+      Cổ đông ĐÃ CÔNG BỐ, snapshot theo ngày. Tổng share_own_percent KHÔNG
+      bằng 100% (HPG 51,9%, VNM 81,0%, VCB 91,0%) — phần thiếu là cổ đông
+      không công bố, KHÔNG đồng nghĩa free float.
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: share_holder
+        tests: [not_null]
+      - name: snapshot_date
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, share_holder, snapshot_date]
+
+  - name: stg_officer
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: officer_name
+        tests: [not_null]
+      - name: snapshot_date
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, officer_name, snapshot_date]
