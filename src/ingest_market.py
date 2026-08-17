@@ -550,7 +550,13 @@ def _normalize_events(df, symbol) -> pd.DataFrame:
                 if col in df.columns else float("nan"))
 
     out = pd.DataFrame({
-        "id":              df["id"].astype(str).str.strip(),
+        # id (M1, fix round cuối): trước dùng .astype(str).str.strip() trần
+        # — biến None thật thành CHUỖI 'None', nên dropna(subset=["id"]) ở
+        # fetch_corporate_events và WHERE src.id IS NOT NULL ở
+        # insert_corporate_events không bao giờ khớp. text() (định nghĩa
+        # ngay trên) đã xử lý đúng bẫy này cho các cột khác trong hàm này —
+        # id chỉ đơn giản bị bỏ sót.
+        "id":              text("id"),
         "symbol":          symbol.upper().strip(),
         "event_code":      text("event_code"),
         "event_name_vi":   text("event_name_vi"),
@@ -635,9 +641,22 @@ def fetch_shareholders(symbols: list[str], source: str = "VCI",
 def _normalize_shareholders(df, symbol, snapshot_date: str) -> pd.DataFrame:
     dq.assert_columns(df, _SHAREHOLDER_REQUIRED,
                       f"Company.shareholders({symbol})")
+
+    # text() (M1, fix round cuối, cùng định nghĩa như trong _normalize_events):
+    # astype(str) biến None thật thành CHUỖI 'None' — where(notna) giữ None
+    # thật là None. share_holder là cột khoá (PRIMARY KEY (symbol,
+    # share_holder, snapshot_date), và stg_shareholder lọc
+    # `where share_holder is not null`) nên phải qua đây, không dùng
+    # .astype(str).str.strip() trần.
+    def text(col):
+        if col not in df.columns:
+            return None
+        s = df[col]
+        return s.astype(str).str.strip().where(s.notna(), None)
+
     out = pd.DataFrame({
         "symbol":            symbol.upper().strip(),
-        "share_holder":      df["share_holder"].astype(str).str.strip(),
+        "share_holder":      text("share_holder"),
         "quantity":          (pd.to_numeric(df["quantity"], errors="coerce")
                               if "quantity" in df.columns else float("nan")),
         "share_own_percent": pd.to_numeric(df["share_own_percent"], errors="coerce"),
@@ -686,10 +705,21 @@ def fetch_officers(symbols: list[str], source: str = "VCI",
 
 def _normalize_officers(df, symbol, snapshot_date: str) -> pd.DataFrame:
     dq.assert_columns(df, _OFFICER_REQUIRED, f"Company.officers({symbol})")
+
+    # text() (M1, fix round cuối) — cùng lý do như _normalize_shareholders:
+    # officer_name là cột khoá (PRIMARY KEY (symbol, officer_name,
+    # snapshot_date), stg_officer lọc `where officer_name is not null`);
+    # officer_position đi cùng cặp nên sửa luôn cho nhất quán.
+    def text(col):
+        if col not in df.columns:
+            return None
+        s = df[col]
+        return s.astype(str).str.strip().where(s.notna(), None)
+
     out = pd.DataFrame({
         "symbol":               symbol.upper().strip(),
-        "officer_name":         df["officer_name"].astype(str).str.strip(),
-        "officer_position":     df["officer_position"].astype(str).str.strip(),
+        "officer_name":         text("officer_name"),
+        "officer_position":     text("officer_position"),
         "officer_own_percent":  (pd.to_numeric(df["officer_own_percent"], errors="coerce")
                                  if "officer_own_percent" in df.columns else float("nan")),
         "officer_own_quantity": (pd.to_numeric(df["officer_own_quantity"], errors="coerce")
