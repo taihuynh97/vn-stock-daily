@@ -1,4 +1,4 @@
-{{ config(severity = 'warn') }}
+{{ config(severity = 'error', error_if = '>150', warn_if = '>0') }}
 
 -- Đối chiếu chéo HAI NGUỒN cổ tức tiền mặt độc lập nhau:
 --   (1) stg_financial_ratio.dividend_yield (quarter=5) — theo NĂM TÀI CHÍNH
