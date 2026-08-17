@@ -150,7 +150,7 @@ vị trí dòng, không nằm ở số lượng bảng.
 INGEST (Python)                        WAREHOUSE
 build_warehouse.py --mode weekly
   Finance(symbol,source,period)     →  raw_financial_statement
-    .income_statement()                (symbol, com_class, statement_type,
+    .income_statement()                (symbol, statement_type,
     .balance_sheet()                    period_type, period_label, row_seq,
     .cash_flow()                        item_id, item_vi, item_en, value,
     → unpivot wide → dài                ingested_at)
@@ -177,9 +177,18 @@ CÁC LẦN GỌI khác nhau (ví dụ tuần này vs tuần sau) hay không — 
 
 **Cột đầy đủ:**
 
+**SỬA sau khi bắt đầu viết plan (2026-08-17):** cột `com_class` bị loại khỏi
+danh sách dưới đây. Lúc viết spec đã giả định lấy được `com_class` "từ
+`dim_stock` lúc ingest" — SAI: `com_class` là cột **suy ra ở tầng dbt**
+(`stg_company_info.sql`, từ `com_type_code` trong `raw_company_info`),
+không tồn tại ở tầng Python/raw lúc `build_warehouse.py` chạy (ingest chạy
+TRƯỚC `dbt build` trong pipeline, không có quyền đọc view dbt). Không cần
+cột này ở tầng raw — `symbol` một mình đã xác định được `com_class` qua
+join sang `dim_stock`/`stg_company_info` ở bất kỳ đâu cần lọc theo loại
+hình DN sau này; tầng raw chỉ cần đúng nội dung BCTC.
+
 ```
 symbol          VARCHAR
-com_class       VARCHAR   -- NONFIN/BANK/OTHERFIN, lấy từ dim_stock lúc ingest
 statement_type  VARCHAR   -- income_statement / balance_sheet / cash_flow
 period_type     VARCHAR   -- quarter / year
 period_label    VARCHAR   -- "2026-Q2" hoặc "2025" (nguyên văn tên cột API)
@@ -243,8 +252,10 @@ Không làm tầng `intermediate`/mart mới trong B2 (mục tiêu là phơi d�
 gốc, không tính lại chỉ tiêu tổng hợp — xem §2 "Không làm").
 `stg_financial_statement` chỉ ép kiểu + test: `unique` trên khoá tổng hợp
 5 cột, `accepted_values` trên `statement_type` (3 giá trị) và `period_type`
-(2 giá trị) và `com_class` (NONFIN/BANK/OTHERFIN/UNKNOWN, khớp quy ước có
-sẵn), `not_null` trên `symbol`/`item_id`/`item_vi`.
+(2 giá trị), `not_null` trên `symbol`/`item_id`/`item_vi`. Không có
+`accepted_values` cho `com_class` — cột này đã bị loại khỏi tầng raw (xem
+sửa ở §3.1); ai cần lọc theo loại hình DN thì tự `JOIN dim_stock USING
+(symbol)`.
 
 ---
 
@@ -327,7 +338,7 @@ mã không tồn tại/không có dữ liệu).
 | Vị trí dòng ổn định giữa 2 lần gọi (Task 1, §5) | Khoá `row_seq` vỡ nếu không kiểm trước |
 | Kỳ cũ nhất KHÔNG mất khi cửa sổ 8-kỳ trượt qua 2 lần fetch (giả lập, §3.1) | `INSERT OR REPLACE` vô tình xoá mất lịch sử nếu khoá không đủ mịn |
 | `unique` trên khoá 5 cột | Ghi đè nhầm giữa các dòng khác nhau |
-| `accepted_values` trên `statement_type`/`period_type`/`com_class` | Nguồn đổi format không bị lọt |
+| `accepted_values` trên `statement_type`/`period_type` | Nguồn đổi format không bị lọt |
 | Tool trả `data_quality.has_data=false` đúng cho mã không có BCTC | Không để `items: []` mập mờ (§1.2) |
 | Tool gọi qua `mcp.call_tool()` thật, không chỉ hàm Python trần | Crash ở tầng serialize JSON (bài học A3 I1, B1 áp dụng lại nhiều lần) |
 | Fixture khớp schema thật, đủ cột (kể cả `row_seq` trùng `item_id`) | Fixture sai giống code sai → test luôn xanh (A3 I2, B1 Task 4/5) |
