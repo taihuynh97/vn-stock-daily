@@ -91,9 +91,11 @@ def main():
                            "ok" if n_fin else "empty", watermark=run_date)
         print(f"raw_financial_ratio: {n_fin} dòng")
 
-    # 3b) Sự kiện doanh nghiệp (B1) — weekly và monthly.
-    # Chạy tuần chứ không tháng: GDKHQ có ngày cụ thể, chạy tháng dễ lỡ sự
-    # kiện vừa công bố vừa chốt quyền trong cùng tháng.
+    # 3b) Sự kiện doanh nghiệp (B1) — chạy CẢ weekly lẫn monthly.
+    # Weekly vì GDKHQ có ngày cụ thể, chạy tháng dễ lỡ sự kiện vừa công bố
+    # vừa chốt quyền trong cùng tháng. Monthly cũng chạy vì nó là superset
+    # của weekly (giống cách financials đã làm ở nhánh phía trên) — không
+    # có lý do bỏ sót sự kiện DN riêng ở lần chạy tháng.
     if args.mode in ("weekly", "monthly"):
         print(f"Bắt đầu fetch sự kiện DN ({len(symbols)} mã)...")
         events = ingest_market.fetch_corporate_events(symbols, source)
