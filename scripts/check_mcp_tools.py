@@ -1,4 +1,4 @@
-"""Chạy cả 7 tool MCP trên dữ liệu thật để nghiệm thu.
+"""Chạy cả 9 tool MCP trên dữ liệu thật để nghiệm thu.
 
     export WAREHOUSE_DB=md:vn_market
     export motherduck_token=<token>
@@ -41,6 +41,9 @@ def main():
                tools.compare_stocks(con, ["HPG", "VCB"]))
     ok &= show("get_sector_snapshot(BANK)",
                tools.get_sector_snapshot(con, "BANK"))
+    ok &= show("get_distribution_history(HPG)",
+               tools.get_distribution_history(con, "HPG", years=5))
+    ok &= show("get_ownership(HPG)", tools.get_ownership(con, "HPG"))
     ok &= show("run_sql", {"rows": db.run_query(
         con, "select symbol, quality_score from mart_stock_scorecard "
              "order by quality_score desc nulls last", limit=5)})

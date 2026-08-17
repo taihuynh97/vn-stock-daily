@@ -19,7 +19,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Warehouse weekly (giá + financial ratios)
+      - name: Warehouse weekly (giá + financial ratios + sự kiện DN, ~56 phút)
         env:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}

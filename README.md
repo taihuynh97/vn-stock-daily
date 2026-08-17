@@ -12,14 +12,14 @@ Hai nhánh độc lập, dùng chung một warehouse trên MotherDuck:
 INGESTION (Python)                WAREHOUSE            CONSUMERS
 build_warehouse.py --mode         raw_* (immutable)    ├─ MCP server (hội thoại)
   daily   → giá EOD + chỉ số        ↓ dbt              ├─ main.py (bản tin Telegram)
-  weekly  → tỷ số tài chính       stg_* → int_*        └─ SQL ad-hoc
-  monthly → hồ sơ DN + ICB          ↓
+  weekly  → tỷ số + sự kiện DN    stg_* → int_*        └─ SQL ad-hoc
+  monthly → hồ sơ DN + sở hữu       ↓
                                   mart_* ← nơi mọi phân tích query vào
 ```
 
 - `transforms/` — dbt project (staging → intermediate → marts)
 - `src/scoring.py` + `config/scoring_profiles.yml` — bộ chấm điểm, đổi "gu" đầu tư ở đây
-- `mcp_server/` — 7 tool read-only cho luồng hội thoại
+- `mcp_server/` — 9 tool read-only cho luồng hội thoại
 
 ### Bật/tắt luồng hội thoại
 
