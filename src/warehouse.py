@@ -64,6 +64,30 @@ COMPANY_COLS = [
     "highest_price_1y", "lowest_price_1y", "listed_date",
 ]
 
+# --- Cột raw_corporate_event (nguồn: Company.events, 22 cột) ---
+# Không lấy: các cột *_en (event_name_en, event_title_en, action_type_en —
+# trùng nghĩa với bản tiếng Việt), display_date1/display_date2 (ngữ nghĩa
+# không rõ, nguồn không tài liệu hoá), ticker (trùng symbol).
+EVENT_COLS = [
+    "id", "symbol", "event_code", "event_name_vi", "event_title_vi", "category",
+    "public_date", "issue_date", "start_date", "end_date",
+    "record_date", "exright_date", "listing_date", "payout_date",
+    "exercise_ratio", "value_per_share", "action_type_vi",
+]
+
+# --- Cột raw_shareholder / raw_officer (nguồn: Company.shareholders/officers) ---
+# snapshot_date do JOB gán (không có ở nguồn): hai bảng này là TRẠNG THÁI,
+# không phải dòng sự kiện — xem docstring upsert_shareholders.
+SHAREHOLDER_COLS = [
+    "symbol", "share_holder", "quantity", "share_own_percent",
+    "update_date", "snapshot_date",
+]
+OFFICER_COLS = [
+    "symbol", "officer_name", "officer_position",
+    "officer_own_percent", "officer_own_quantity",
+    "update_date", "snapshot_date",
+]
+
 
 def get_conn():
     db = os.getenv("WAREHOUSE_DB", DEFAULT_DB)
@@ -252,6 +276,63 @@ def init_warehouse(con):
         {col: _company_ddl_types.get(col, "VARCHAR") for col in COMPANY_COLS}
         | {"loaded_at": "TIMESTAMP"},
     )
+    # --- B1: sự kiện DN (append-only) ---
+    # id là PRIMARY KEY: cửa sổ Company.events() chỉ 50 sự kiện gần nhất và
+    # trượt theo thời gian, nên bảng này CỘNG DỒN chứ không thay thế. Xem
+    # insert_corporate_events.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_corporate_event (
+            id              VARCHAR PRIMARY KEY,
+            symbol          VARCHAR,
+            event_code      VARCHAR,
+            event_name_vi   VARCHAR,
+            event_title_vi  VARCHAR,
+            category        VARCHAR,
+            public_date     DATE,
+            issue_date      DATE,
+            start_date      DATE,
+            end_date        DATE,
+            record_date     DATE,
+            exright_date    DATE,
+            listing_date    DATE,
+            payout_date     DATE,
+            exercise_ratio  DOUBLE,
+            value_per_share DOUBLE,
+            action_type_vi  VARCHAR,
+            ingested_at     TIMESTAMP
+        );
+        """
+    )
+    # --- B1: cơ cấu sở hữu (snapshot theo ngày) ---
+    # snapshot_date nằm trong PRIMARY KEY: chạy lại trong cùng ngày thì thay
+    # thế (idempotent), sang kỳ sau thì thêm bản ghi mới — giữ được lịch sử
+    # thay đổi sở hữu. Xem docstring upsert_shareholders.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_shareholder (
+            symbol            VARCHAR,
+            share_holder      VARCHAR,
+            quantity          DOUBLE,
+            share_own_percent DOUBLE,
+            update_date       DATE,
+            snapshot_date     DATE,
+            ingested_at       TIMESTAMP,
+            PRIMARY KEY (symbol, share_holder, snapshot_date)
+        );
+        CREATE TABLE IF NOT EXISTS raw_officer (
+            symbol               VARCHAR,
+            officer_name         VARCHAR,
+            officer_position     VARCHAR,
+            officer_own_percent  DOUBLE,
+            officer_own_quantity DOUBLE,
+            update_date          DATE,
+            snapshot_date        DATE,
+            ingested_at          TIMESTAMP,
+            PRIMARY KEY (symbol, officer_name, snapshot_date)
+        );
+        """
+    )
 
 
 def upsert_symbols(con, df, run_date) -> int:
@@ -328,6 +409,82 @@ def upsert_company_info(con, df) -> int:
         """
     )
     con.unregister("df_ci")
+    return len(df)
+
+
+def insert_corporate_events(con, df) -> int:
+    """Ghi sự kiện DN — APPEND-ONLY: chỉ chèn `id` chưa có, không ghi đè.
+
+    KHÁC upsert_prices/upsert_financial_ratios (INSERT OR REPLACE) một cách
+    có chủ đích. Company.events() chỉ trả 50 sự kiện GẦN NHẤT mỗi mã và cửa
+    sổ đó TRƯỢT: đo trên 15 mã (2026-08-16), 50 sự kiện phủ từ 1,0 năm
+    (MWG) tới 9,9 năm (AGX) tuỳ mã hoạt động sự kiện nhiều hay ít. Mã năng
+    động rơi mất sự kiện cũ nhất sau mỗi lần công bố sự kiện mới — nếu bảng
+    này thay thế theo mỗi mẻ fetch thì phần rơi khỏi cửa sổ mất vĩnh viễn.
+    Cộng dồn thì ngược lại: chạy đều mỗi tuần, lịch sử dày lên theo thời
+    gian bất kể giới hạn API.
+
+    Trả về số dòng THỰC SỰ được thêm (không phải len(df)) — con số này vào
+    thẳng etl_load_log để theo dõi tốc độ tích luỹ.
+    """
+    if df is None or df.empty:
+        return 0
+    before = con.execute("SELECT count(*) FROM raw_corporate_event").fetchone()[0]
+    cols = ", ".join(EVENT_COLS)
+    con.register("df_ev", df)
+    con.execute(
+        f"""
+        INSERT INTO raw_corporate_event ({cols}, ingested_at)
+        SELECT {cols}, now() FROM df_ev src
+        WHERE src.id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM raw_corporate_event t WHERE t.id = src.id
+          );
+        """
+    )
+    con.unregister("df_ev")
+    after = con.execute("SELECT count(*) FROM raw_corporate_event").fetchone()[0]
+    return after - before
+
+
+def upsert_shareholders(con, df) -> int:
+    """Ghi snapshot cơ cấu cổ đông. INSERT OR REPLACE theo
+    (symbol, share_holder, snapshot_date) → chạy lại trong cùng ngày an toàn.
+
+    KHÁC insert_corporate_events (append-only theo id): cổ đông là dữ liệu
+    TRẠNG THÁI, không phải dòng sự kiện. Nguồn không có id ổn định, và thứ
+    có giá trị là THAY ĐỔI theo thời gian ("quỹ ngoại giảm từ 8% xuống
+    5%"). Cộng dồn không phân biệt được "cổ đông mới xuất hiện" với "cổ
+    đông cũ đổi tỉ lệ"; snapshot theo ngày thì phân biệt được cả hai.
+    """
+    if df is None or df.empty:
+        return 0
+    cols = ", ".join(SHAREHOLDER_COLS)
+    con.register("df_sh", df)
+    con.execute(
+        f"""
+        INSERT OR REPLACE INTO raw_shareholder ({cols}, ingested_at)
+        SELECT {cols}, now() FROM df_sh;
+        """
+    )
+    con.unregister("df_sh")
+    return len(df)
+
+
+def upsert_officers(con, df) -> int:
+    """Ghi snapshot ban lãnh đạo + tỉ lệ sở hữu. Cùng cơ chế snapshot như
+    upsert_shareholders (xem docstring hàm đó)."""
+    if df is None or df.empty:
+        return 0
+    cols = ", ".join(OFFICER_COLS)
+    con.register("df_of", df)
+    con.execute(
+        f"""
+        INSERT OR REPLACE INTO raw_officer ({cols}, ingested_at)
+        SELECT {cols}, now() FROM df_of;
+        """
+    )
+    con.unregister("df_of")
     return len(df)
 
 

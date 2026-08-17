@@ -140,4 +140,95 @@ def build_fake_mart(path: str):
           ('CCC','Cty C','UPCOM','NONFIN','Tài nguyên cơ bản',6e11,2e8,8000,
            DATE '2026-08-07',0.30,0.02,DATE '2022-01-10',4,-0.05,-0.12,-0.30,15000,7500);
     """)
+    # --- B1: sự kiện phân phối + sở hữu ---
+    # Fixture phải khớp schema thật (bài học A3 I2: fixture thiếu 3 cột
+    # n_pe/n_pb/n_roe khiến lỗi lọt qua 4 task). Giá trị cố tình đặt
+    # total_disclosed_pct < 1.0 để mô phỏng đúng ca thật (HPG 51,9%).
+    con.execute("""
+        CREATE TABLE int_distribution_event (
+            symbol VARCHAR, event_id VARCHAR, exright_date DATE,
+            record_date DATE, payout_date DATE, distribution_type VARCHAR,
+            cash_per_share DOUBLE, stock_ratio DOUBLE, event_title_vi VARCHAR
+        );
+        INSERT INTO int_distribution_event VALUES
+          ('AAA','e1',DATE '2026-05-11',DATE '2026-05-12',DATE '2026-06-30',
+           'CASH_DIVIDEND',500.0,NULL,'Trả cổ tức bằng tiền mặt - Cả năm 2025 - 500 VND'),
+          ('AAA','e2',DATE '2026-05-25',DATE '2026-05-26',NULL,
+           'STOCK_DIVIDEND',NULL,0.10,'Phát hành cổ phiếu - Trả Cổ tức bằng Cổ phiếu tỉ lệ 10.0%'),
+          ('AAA','e3',DATE '2022-06-17',DATE '2022-06-18',NULL,
+           'BONUS_SHARE',NULL,0.30,'Phát hành cổ phiếu - Cổ phiếu thưởng tỉ lệ 30.0%');
+        -- officer_snapshot_date (I1, fix round cuối): ngày snapshot RIÊNG
+        -- của bảng officer — khác snapshot_date (ngày của cổ đông). AAA có
+        -- cùng ngày cho cả hai (ca bình thường). BBB cố tình LỆCH ngày
+        -- (snapshot cổ đông 2026-08-01, snapshot officer 2026-07-01) — đúng
+        -- ca reviewer tái hiện: một mã lỗi fetch ở lần chạy monthly này cho
+        -- MỘT TRONG HAI nguồn. VCB không có dòng nào trong stg_officer nên
+        -- officer_snapshot_date NULL qua left join (ca đã có từ trước, giữ
+        -- nguyên — không thuộc phạm vi sửa I1).
+        CREATE TABLE int_ownership_snapshot (
+            symbol VARCHAR, snapshot_date DATE, n_disclosed BIGINT,
+            total_disclosed_pct DOUBLE, top1_pct DOUBLE, top5_pct DOUBLE,
+            insider_pct DOUBLE, officer_snapshot_date DATE
+        );
+        INSERT INTO int_ownership_snapshot VALUES
+          ('AAA',DATE '2026-08-01',66,0.5189,0.2580,0.3872,0.3105,DATE '2026-08-01'),
+          ('VCB',DATE '2026-08-01',29,0.9101,0.7480,0.9096,0.0002,NULL),
+          ('BBB',DATE '2026-08-01',10,0.4000,0.2000,0.3500,0.1500,DATE '2026-07-01');
+        CREATE TABLE stg_shareholder (
+            symbol VARCHAR, share_holder VARCHAR, quantity DOUBLE,
+            share_own_percent DOUBLE, update_date DATE, snapshot_date DATE
+        );
+        INSERT INTO stg_shareholder VALUES
+          ('AAA','Ông Nguyễn Văn A',1.6e9,0.2580,DATE '2026-07-15',DATE '2026-08-01'),
+          ('AAA','Bà Trần Thị B',4.2e8,0.0688,DATE '2026-07-15',DATE '2026-08-01'),
+          ('AAA','Quỹ ngoại C',1.7e8,0.0273,DATE '2026-07-15',DATE '2026-08-01'),
+          ('BBB','Ông C',5.0e8,0.2000,DATE '2026-06-15',DATE '2026-08-01');
+        CREATE TABLE stg_officer (
+            symbol VARCHAR, officer_name VARCHAR, officer_position VARCHAR,
+            officer_own_percent DOUBLE, officer_own_quantity DOUBLE,
+            update_date DATE, snapshot_date DATE
+        );
+        INSERT INTO stg_officer VALUES
+          ('AAA','Ông Nguyễn Văn A','Chủ tịch HĐQT',0.2580,1.6e9,
+           DATE '2026-07-15',DATE '2026-08-01'),
+          ('AAA','Bà Trần Thị B','Thành viên HĐQT',0.0525,3.2e8,
+           DATE '2026-07-15',DATE '2026-08-01'),
+          ('BBB','Ông D','Chủ tịch HĐQT',0.1500,3.75e8,
+           DATE '2026-06-15',DATE '2026-07-01');
+        CREATE TABLE stg_financial_ratio (
+            symbol VARCHAR, year INTEGER, quarter INTEGER,
+            dividend_yield DOUBLE
+        );
+        INSERT INTO stg_financial_ratio VALUES
+          ('AAA',2025,5,0.0235),
+          ('AAA',2024,5,0.0),
+          ('AAA',2023,5,0.0),
+          ('AAA',2022,5,0.0),
+          ('AAA',2021,5,0.0278),
+          -- EEE có dividend_yield thật (nên get_distribution_history KHÔNG
+          -- rơi vào nhánh lỗi "không có dữ liệu") nhưng KHÔNG có dòng nào
+          -- trong int_distribution_event — sự kiện duy nhất của nó bị lọc
+          -- mất vì exright_date NULL (xem stg_corporate_event bên dưới).
+          ('EEE',2024,5,0.05);
+        -- stg_corporate_event (I4, fix round cuối): tầng TRƯỚC lọc
+        -- exright_date is not null của int_distribution_event.sql. EEE có 1
+        -- sự kiện phân phối THẬT (is_distribution=true, CASH_DIVIDEND) với
+        -- exright_date NULL — đúng ca 323/9932 sự kiện production bị lọc
+        -- mất âm thầm khỏi int_distribution_event mà get_distribution_history
+        -- phải phơi ra qua data_quality.n_events_missing_exright_date.
+        CREATE TABLE stg_corporate_event (
+            symbol VARCHAR, id VARCHAR, event_code VARCHAR,
+            event_title_vi VARCHAR, distribution_type VARCHAR,
+            is_distribution BOOLEAN, exright_date DATE
+        );
+        INSERT INTO stg_corporate_event VALUES
+          ('AAA','e1','DIV','Trả cổ tức bằng tiền mặt - Cả năm 2025 - 500 VND',
+           'CASH_DIVIDEND',TRUE,DATE '2026-05-11'),
+          ('AAA','e2','ISS','Phát hành cổ phiếu - Trả Cổ tức bằng Cổ phiếu tỉ lệ 10.0%',
+           'STOCK_DIVIDEND',TRUE,DATE '2026-05-25'),
+          ('AAA','e3','ISS','Phát hành cổ phiếu - Cổ phiếu thưởng tỉ lệ 30.0%',
+           'BONUS_SHARE',TRUE,DATE '2022-06-17'),
+          ('EEE','e4','DIV','Trả cổ tức bằng tiền mặt - Cả năm 2024 - 800 VND',
+           'CASH_DIVIDEND',TRUE,NULL);
+    """)
     con.close()

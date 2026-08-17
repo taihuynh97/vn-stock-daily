@@ -91,6 +91,20 @@ def main():
                            "ok" if n_fin else "empty", watermark=run_date)
         print(f"raw_financial_ratio: {n_fin} dòng")
 
+    # 3b) Sự kiện doanh nghiệp (B1) — chạy CẢ weekly lẫn monthly.
+    # Weekly vì GDKHQ có ngày cụ thể, chạy tháng dễ lỡ sự kiện vừa công bố
+    # vừa chốt quyền trong cùng tháng. Monthly cũng chạy vì nó là superset
+    # của weekly (giống cách financials đã làm ở nhánh phía trên) — không
+    # có lý do bỏ sót sự kiện DN riêng ở lần chạy tháng.
+    if args.mode in ("weekly", "monthly"):
+        print(f"Bắt đầu fetch sự kiện DN ({len(symbols)} mã)...")
+        events = ingest_market.fetch_corporate_events(symbols, source)
+        n_ev = warehouse.insert_corporate_events(con, events)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_corporate_event",
+                           n_ev, "ok" if n_ev else "empty", watermark=run_date,
+                           notes=f"append-only; fetch {len(events)} dong")
+        print(f"raw_corporate_event: +{n_ev} dòng mới (fetch {len(events)})")
+
     # 4) Dim_industry (phân ngành ICB) + company info — monthly only
     if args.mode == "monthly":
         ind = ingest_market.fetch_industries_icb(source)
@@ -110,6 +124,21 @@ def main():
                            "ok" if n_exch else "empty", watermark=run_date,
                            notes="sync exchange tu raw_company_info")
         print(f"dim_symbols.exchange: cập nhật {n_exch} mã")
+
+        print(f"Bắt đầu fetch cơ cấu sở hữu ({len(symbols)} mã)...")
+        sh = ingest_market.fetch_shareholders(symbols, source, run_date)
+        n_sh = warehouse.upsert_shareholders(con, sh)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_shareholder",
+                           n_sh, "ok" if n_sh else "empty", watermark=run_date,
+                           notes=f"snapshot {run_date}")
+        print(f"raw_shareholder: {n_sh} dòng (snapshot {run_date})")
+
+        of = ingest_market.fetch_officers(symbols, source, run_date)
+        n_of = warehouse.upsert_officers(con, of)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_officer",
+                           n_of, "ok" if n_of else "empty", watermark=run_date,
+                           notes=f"snapshot {run_date}")
+        print(f"raw_officer: {n_of} dòng (snapshot {run_date})")
 
     con.close()
     print(f"Xong warehouse job ({args.mode}).")

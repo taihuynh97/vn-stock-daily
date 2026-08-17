@@ -159,5 +159,30 @@ def get_sector_snapshot(com_class: str = None) -> dict:
     return tools.get_sector_snapshot(conn(), com_class)
 
 
+@mcp.tool()
+@_safe_tool
+def get_distribution_history(symbol: str, years: int = 5) -> dict:
+    """Lịch sử phân phối cho cổ đông: cổ tức tiền mặt, cổ tức bằng cổ phiếu,
+    cổ phiếu thưởng, kèm ngày giao dịch không hưởng quyền (GDKHQ).
+
+    Trả HAI KHỐI trên HAI TRỤC THỜI GIAN khác nhau — đọc kỹ trường 'note'
+    trước khi phát biểu. Luôn nêu data_quality.event_window_years khi nói về
+    chuỗi cổ tức: nguồn chỉ nhìn được 50 sự kiện gần nhất, với mã năng động
+    cửa sổ đó có thể chỉ 1-2 năm dù doanh nghiệp trả cổ tức đều hàng chục năm.
+    """
+    return tools.get_distribution_history(conn(), symbol, years)
+
+
+@mcp.tool()
+@_safe_tool
+def get_ownership(symbol: str) -> dict:
+    """Cơ cấu sở hữu đã công bố: cổ đông lớn, ban lãnh đạo, mức độ cô đặc.
+
+    Tổng tỉ lệ công bố KHÔNG bằng 100% — không suy ra phần còn lại là free
+    float.
+    """
+    return tools.get_ownership(conn(), symbol)
+
+
 if __name__ == "__main__":
     mcp.run()

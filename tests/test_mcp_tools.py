@@ -191,3 +191,124 @@ def test_get_financial_history_includes_data_quality(con):
     assert "data_quality" in res
     assert res["data_quality"]["data_quality_score"] == 90
     assert res["data_quality"]["reliable"] is True
+
+
+def test_get_distribution_history_tra_hai_khoi_tach_bach(con):
+    """Hướng A của spec: KHÔNG ép ghép hai trục thời gian.
+
+    dividend_yield gán theo NĂM TÀI CHÍNH, sự kiện gán theo NGÀY GDKHQ —
+    cổ tức 'cả năm 2021' của HPG chi trả 17/06/2022. Trả hai khối riêng,
+    mỗi khối ghi rõ trục của nó.
+    """
+    res = tools.get_distribution_history(con, "AAA", years=5)
+    assert res["symbol"] == "AAA"
+    assert "cash_dividend_by_fiscal_year" in res
+    assert "distribution_events" in res
+    assert len(res["distribution_events"]) == 3
+    assert "KHÔNG cộng gộp" in res["note"]
+
+
+def test_get_distribution_history_phan_biet_tien_mat_va_co_phieu(con):
+    res = tools.get_distribution_history(con, "AAA", years=5)
+    by_type = {e["distribution_type"]: e for e in res["distribution_events"]}
+    assert by_type["CASH_DIVIDEND"]["cash_per_share"] == 500.0
+    assert by_type["CASH_DIVIDEND"]["stock_ratio"] is None
+    assert by_type["STOCK_DIVIDEND"]["stock_ratio"] == 0.10
+    assert by_type["STOCK_DIVIDEND"]["cash_per_share"] is None
+
+
+def test_get_distribution_history_phoi_do_sau_cua_so(con):
+    """event_window_years là trường BẮT BUỘC — chính con số này phân biệt
+    'VNM mới trả cổ tức 3 năm nay' (sai) với 'cửa sổ chỉ nhìn được 1,5 năm'
+    (đúng).
+
+    M6 (fix round cuối): pin giá trị cụ thể thay vì chỉ kiểm tồn tại trường
+    — assertion cũ vẫn xanh kể cả khi giá trị là None. Fixture AAA có 3 sự
+    kiện trải exright_date 2022-06-17 (e3, cũ nhất) -> 2026-05-25 (e2, mới
+    nhất) = 1.438 ngày = 3,9 năm (làm tròn 1 chữ số thập phân, đúng công
+    thức trong get_distribution_history)."""
+    res = tools.get_distribution_history(con, "AAA", years=5)
+    dq_block = res["data_quality"]
+    assert dq_block["event_window_start"] == "2022-06-17"
+    assert dq_block["event_window_end"] == "2026-05-25"
+    assert dq_block["event_window_years"] == pytest.approx(3.9)
+    assert dq_block["n_events"] == 3
+
+
+def test_get_distribution_history_ngay_dung_dinh_dang_iso(con):
+    """Bài học A3: cột DATE qua .df() thành Timestamp, isoformat() ra kèm
+    'T00:00:00'."""
+    res = tools.get_distribution_history(con, "AAA", years=5)
+    assert res["distribution_events"][0]["exright_date"] == "2026-05-25"
+
+
+def test_get_distribution_history_ma_khong_ton_tai(con):
+    res = tools.get_distribution_history(con, "ZZZ", years=5)
+    assert "error" in res
+    assert "ZZZ" in res["error"]
+
+
+# I4 (fix round cuối): int_distribution_event lọc `exright_date is not
+# null` — hợp lý (không có trục thời gian thì không đặt lên timeline được)
+# nhưng production đo được 323/9932 sự kiện (3,36%) bị loại theo cách này
+# mà không có tín hiệu nào cho agent biết. EEE trong fixture có dividend_yield
+# thật (nên không rơi vào nhánh lỗi "không có dữ liệu") nhưng KHÔNG có dòng
+# nào trong int_distribution_event — sự kiện duy nhất của nó bị lọc mất vì
+# exright_date NULL (xem stg_corporate_event trong conftest_mart.py).
+def test_get_distribution_history_phoi_su_kien_thieu_exright_date(con):
+    res = tools.get_distribution_history(con, "EEE", years=5)
+    dq_block = res["data_quality"]
+    assert dq_block["n_events"] == 0
+    assert dq_block["n_events_missing_exright_date"] >= 1
+    assert "KHÔNG có ngày GDKHQ" in res["note"]
+
+
+def test_get_distribution_history_khong_canh_bao_khi_khong_thieu(con):
+    """AAA không có sự kiện nào bị lọc mất — n_events_missing_exright_date
+    phải là 0 và note KHÔNG chứa câu cảnh báo (tránh báo động giả cho mã
+    dữ liệu đầy đủ)."""
+    res = tools.get_distribution_history(con, "AAA", years=5)
+    assert res["data_quality"]["n_events_missing_exright_date"] == 0
+    assert "KHÔNG có ngày GDKHQ" not in res["note"]
+
+
+def test_get_ownership_tra_co_dong_va_ban_lanh_dao(con):
+    res = tools.get_ownership(con, "AAA")
+    assert res["symbol"] == "AAA"
+    assert len(res["major_shareholders"]) == 3
+    assert res["major_shareholders"][0]["percent"] == 0.2580
+    assert len(res["officers"]) == 2
+    assert res["snapshot_date"] == "2026-08-01"
+
+
+def test_get_ownership_phoi_tong_phan_tram_cong_bo(con):
+    """total_disclosed_pct phải hiện rõ: tổng KHÔNG bằng 100%, giấu đi thì
+    agent suy ra sai 'phần còn lại là free float'."""
+    res = tools.get_ownership(con, "AAA")
+    assert res["concentration"]["total_disclosed_pct"] == 0.5189
+    assert res["concentration"]["n_disclosed"] == 66
+    assert "free float" in res["note"]
+
+
+# I1 (fix round cuối): int_ownership_snapshot.snapshot_date là ngày snapshot
+# của CỔ ĐÔNG, insider_pct tính từ max(snapshot_date) RIÊNG của bảng
+# officer. get_ownership từng dùng đúng MỘT snapshot_date để lọc cả
+# stg_shareholder lẫn stg_officer — khi hai ngày lệch nhau (mã lỗi fetch ở
+# lần chạy monthly này cho một trong hai nguồn), officers trả về rỗng trong
+# khi insider_pct (tính đúng từ ngày khác) vẫn có số, payload tự mâu thuẫn.
+# BBB trong fixture dựng đúng ca này: shareholder snapshot 2026-08-01,
+# officer snapshot 2026-07-01.
+def test_get_ownership_officers_dung_snapshot_rieng_khi_lech_ngay(con):
+    res = tools.get_ownership(con, "BBB")
+    assert res["snapshot_date"] == "2026-08-01"
+    assert res["concentration"]["insider_pct"] == pytest.approx(0.15)
+    # Trước fix: officers rỗng dù insider_pct có số — đúng bug reviewer tái
+    # hiện. Sau fix: officers phải khớp dữ liệu thật (snapshot 2026-07-01).
+    assert len(res["officers"]) == 1
+    assert res["officers"][0]["name"] == "Ông D"
+    assert len(res["major_shareholders"]) == 1
+
+
+def test_get_ownership_ma_khong_ton_tai(con):
+    res = tools.get_ownership(con, "ZZZ")
+    assert "error" in res

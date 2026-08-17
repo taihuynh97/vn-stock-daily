@@ -27,3 +27,18 @@ sources:
           error_after: {count: 70, period: day}
       - name: dim_industry
       - name: dim_symbols
+      - name: raw_corporate_event
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: {count: 10, period: day}
+          error_after: {count: 20, period: day}
+      - name: raw_shareholder
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: {count: 40, period: day}
+          error_after: {count: 70, period: day}
+      - name: raw_officer
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: {count: 40, period: day}
+          error_after: {count: 70, period: day}

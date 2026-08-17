@@ -16,6 +16,7 @@ import duckdb
 import pytest
 
 from mcp_server import server
+from tests.conftest_mart import build_fake_mart
 
 
 @pytest.fixture
@@ -125,3 +126,64 @@ def test_run_sql_via_mcp_call_tool_handles_null_date_column(full_con, monkeypatc
     assert rows[0]["d"] is None          # NULL phải ra None, KHÔNG phải "NaT"
     assert rows[1]["a"] == 2
     assert rows[1]["d"].startswith("2026-01-01")   # T00:00:00 chấp nhận được
+
+
+@pytest.fixture
+def b1_con(tmp_path):
+    """Kết nối có đủ 4 bảng B1 + bảng mart tối thiểu cho as_of().
+
+    CỐ Ý KHÔNG dùng fixture `full_con` sẵn có: nó chỉ dựng fct_price_daily,
+    fct_financial_quarterly và bảng t — không có int_distribution_event hay
+    int_ownership_snapshot. Tool gọi trên đó sẽ ném "table not found",
+    _safe_tool nuốt thành {"error": ...}, và một assertion lỏng kiểu
+    `assert content is not None` VẪN XANH — tức test không bao giờ đỏ được,
+    đúng lỗi "test không thể đỏ" của A2 Task 11. Dùng build_fake_mart để
+    fixture khớp schema thật (bài học A3 I2).
+    """
+    path = str(tmp_path / "b1.duckdb")
+    build_fake_mart(path)
+    c = duckdb.connect(path)
+    yield c
+    c.close()
+
+
+def test_get_ownership_via_mcp_call_tool(b1_con, monkeypatch):
+    """Bài học A3 I1: crash ở tầng serialize JSON của FastMCP xảy ra SAU khi
+    hàm đã return, nên _safe_tool không bắt được và test gọi hàm Python trần
+    không thấy. Phải gọi đúng qua mcp.call_tool().
+    """
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+
+    content = asyncio.run(
+        server.mcp.call_tool("get_ownership", {"symbol": "AAA"})
+    )
+    payload = json.loads(content[0].text)
+
+    assert "error" not in payload
+    assert payload["symbol"] == "AAA"
+    assert len(payload["major_shareholders"]) == 3
+    assert payload["concentration"]["total_disclosed_pct"] == 0.5189
+    assert payload["snapshot_date"] == "2026-08-01"
+
+
+def test_get_distribution_history_via_mcp_call_tool(b1_con, monkeypatch):
+    """Cùng lý do như trên. Fixture cố tình có `payout_date` NULL thật (cổ
+    tức bằng cổ phiếu không có ngày chi trả) và `cash_per_share` NULL —
+    đúng loại giá trị làm serialize vỡ nếu không đi qua _clean/_date_str.
+    """
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+
+    content = asyncio.run(
+        server.mcp.call_tool("get_distribution_history",
+                             {"symbol": "AAA", "years": 5})
+    )
+    payload = json.loads(content[0].text)
+
+    assert "error" not in payload
+    assert len(payload["distribution_events"]) == 3
+    # NULL phải ra None, KHÔNG phải chuỗi "NaT" hay "NaN"
+    stock_div = next(e for e in payload["distribution_events"]
+                     if e["distribution_type"] == "STOCK_DIVIDEND")
+    assert stock_div["cash_per_share"] is None
+    assert stock_div["payout_date"] is None
+    assert payload["data_quality"]["n_events"] == 3

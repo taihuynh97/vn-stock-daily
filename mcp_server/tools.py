@@ -1,5 +1,6 @@
 """Cài đặt các tool — tách khỏi server.py để test được mà không cần MCP runtime."""
 import json
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -385,3 +386,199 @@ def get_sector_snapshot(con, com_class: str = None) -> dict:
                     "từng chỉ tiêu (luôn <= n_symbols) — nêu con số này khi "
                     "nói về median, đừng ngầm hiểu median dựa trên n_symbols mã.",
             **db.as_of(con)}
+
+
+def get_distribution_history(con, symbol: str, years: int = 5) -> dict:
+    """Lịch sử phân phối cho cổ đông — HAI KHỐI trên HAI TRỤC THỜI GIAN.
+
+    Cố ý KHÔNG ghép hai khối (hướng A của spec B1). `dividend_yield` gán
+    theo NĂM TÀI CHÍNH; sự kiện gán theo NGÀY GDKHQ — cổ tức "cả năm 2021"
+    của HPG chi trả ngày 17/06/2022. Ghép được cho cổ tức tiền mặt nhưng
+    KHÔNG ghép được cho cổ tức bằng cổ phiếu (tiêu đề nguồn không ghi kỳ
+    nào: "Trả Cổ tức bằng Cổ phiếu tỉ lệ 10.0%") — tức đúng phần dữ liệu
+    mới mà B1 sinh ra để lấy. Nên trả tách bạch, ghi rõ trục, để agent tự
+    diễn giải.
+    """
+    sym = symbol.upper().strip()
+
+    events = db.run_query(
+        con,
+        """
+        SELECT event_id, exright_date, record_date, payout_date,
+               distribution_type, cash_per_share, stock_ratio, event_title_vi
+        FROM int_distribution_event
+        WHERE symbol = ?
+        ORDER BY exright_date DESC
+        """,
+        params=[sym],
+        limit=4 * years + 20,
+    )
+    cash_year = db.run_query(
+        con,
+        """
+        SELECT year, dividend_yield
+        FROM stg_financial_ratio
+        WHERE symbol = ? AND quarter = 5
+        ORDER BY year DESC
+        """,
+        params=[sym],
+        limit=years,
+    )
+
+    if not events and not cash_year:
+        return {"error": f"Không có dữ liệu phân phối cho {sym}.", **db.as_of(con)}
+
+    # I4 (fix round cuối): int_distribution_event lọc thêm
+    # `exright_date is not null` (không có trục thời gian thì không đặt lên
+    # timeline được) — hợp lý, nhưng đo trên production con số bị loại
+    # không nhỏ: 323/9932 sự kiện phân phối (3,36%). Không đếm lại thì
+    # data_quality.n_events chỉ đếm dòng còn sống, agent thấy
+    # distribution_events rỗng (hoặc ngắn) mà không biết đó là "không có dữ
+    # liệu" hay "dữ liệu bị lọc mất" — cùng lớp lỗi mà event_window_years
+    # được đặt ra để chống.
+    missing_exright = db.run_query(
+        con,
+        """
+        SELECT count(*) as n
+        FROM stg_corporate_event
+        WHERE symbol = ? AND is_distribution AND exright_date IS NULL
+        """,
+        params=[sym],
+        limit=1,
+    )
+    n_missing = missing_exright[0]["n"] if missing_exright else 0
+
+    for r in events:
+        for col in ("exright_date", "record_date", "payout_date"):
+            r[col] = _date_str(r.get(col))
+
+    window_start = min((r["exright_date"] for r in events if r["exright_date"]),
+                       default=None)
+    window_end = max((r["exright_date"] for r in events if r["exright_date"]),
+                     default=None)
+    window_years = None
+    if window_start and window_end:
+        window_years = round(
+            (date.fromisoformat(window_end) - date.fromisoformat(window_start)).days / 365,
+            1,
+        )
+
+    note = ("Hai khối nằm trên HAI TRỤC THỜI GIAN khác nhau: "
+            "cash_dividend_by_fiscal_year theo NĂM TÀI CHÍNH, "
+            "distribution_events theo NGÀY GDKHQ (cổ tức 'cả năm 2021' "
+            "chi trả 17/06/2022). KHÔNG cộng gộp hai khối.")
+    if n_missing:
+        note += (f" Ngoài ra {n_missing} sự kiện phân phối của {sym} KHÔNG "
+                 "có ngày GDKHQ nên không đặt lên được timeline này — xem "
+                 "data_quality.n_events_missing_exright_date.")
+
+    return {
+        "symbol": sym,
+        "cash_dividend_by_fiscal_year": _clean(cash_year),
+        "distribution_events": _clean(events),
+        "note": note,
+        # event_window_years là bằng chứng đỡ cho mọi phát biểu về chuỗi cổ
+        # tức. Nguồn chỉ trả 50 sự kiện gần nhất và cửa sổ đó trượt: đo trên
+        # 15 mã (2026-08-16), 50 sự kiện phủ từ 1,0 năm (MWG) tới 9,9 năm
+        # (AGX). Không phơi con số này thì agent nhìn VNM thấy 3 sự kiện cổ
+        # tức rồi kết luận "VNM mới trả cổ tức 3 năm gần đây", trong khi sự
+        # thật là cửa sổ chỉ nhìn được 1,5 năm.
+        "data_quality": {
+            "event_window_start": window_start,
+            "event_window_end": window_end,
+            "event_window_years": window_years,
+            "n_events": len(events),
+            # n_events_missing_exright_date (I4): số sự kiện phân phối THẬT
+            # (cổ tức tiền mặt/cổ phiếu, cổ phiếu thưởng) của mã này bị
+            # int_distribution_event lọc mất vì exright_date NULL — không có
+            # trục thời gian thì không đặt lên timeline được, nhưng con số
+            # đó phải có chỗ hiện diện thay vì lặng lẽ biến mất.
+            "n_events_missing_exright_date": n_missing,
+        },
+        **db.as_of(con),
+    }
+
+
+def get_ownership(con, symbol: str) -> dict:
+    """Cơ cấu sở hữu đã công bố: cổ đông lớn, ban lãnh đạo, mức độ cô đặc."""
+    sym = symbol.upper().strip()
+
+    conc_rows = db.run_query(
+        con,
+        """
+        SELECT snapshot_date, officer_snapshot_date, n_disclosed,
+               total_disclosed_pct, top1_pct, top5_pct, insider_pct
+        FROM int_ownership_snapshot
+        WHERE symbol = ?
+        """,
+        params=[sym],
+        limit=1,
+    )
+    if not conc_rows:
+        return {"error": f"Không có dữ liệu sở hữu cho {sym}.", **db.as_of(con)}
+
+    conc = conc_rows[0]
+    snapshot_date = _date_str(conc.get("snapshot_date"))
+    # I1 (fix round cuối): officer_snapshot_date là ngày snapshot RIÊNG của
+    # bảng officer — có thể lệch với snapshot_date (của cổ đông) nếu một mã
+    # lỗi fetch ở lần chạy monthly cho một trong hai nguồn. Lọc stg_officer
+    # bằng đúng ngày của chính nó, không dùng chung ngày cổ đông — nếu không
+    # officers có thể trả về rỗng trong khi insider_pct vẫn có số (payload tự
+    # mâu thuẫn).
+    officer_snapshot_date = _date_str(conc.get("officer_snapshot_date"))
+
+    holders = db.run_query(
+        con,
+        """
+        SELECT share_holder, quantity, share_own_percent
+        FROM stg_shareholder
+        WHERE symbol = ? AND snapshot_date = ?
+        ORDER BY share_own_percent DESC NULLS LAST
+        """,
+        params=[sym, snapshot_date],
+        limit=200,
+    )
+    officers = db.run_query(
+        con,
+        """
+        SELECT officer_name, officer_position,
+               officer_own_percent, officer_own_quantity
+        FROM stg_officer
+        WHERE symbol = ? AND snapshot_date = ?
+        ORDER BY officer_own_percent DESC NULLS LAST
+        """,
+        params=[sym, officer_snapshot_date],
+        limit=100,
+    )
+
+    return {
+        "symbol": sym,
+        "major_shareholders": [
+            {"name": h["share_holder"], "quantity": h["quantity"],
+             "percent": h["share_own_percent"]}
+            for h in _clean(holders)
+        ],
+        "officers": [
+            {"name": o["officer_name"], "position": o["officer_position"],
+             "own_percent": o["officer_own_percent"],
+             "own_quantity": o["officer_own_quantity"]}
+            for o in _clean(officers)
+        ],
+        "concentration": {
+            "top1_pct": _clean(conc.get("top1_pct")),
+            "top5_pct": _clean(conc.get("top5_pct")),
+            "n_disclosed": _clean(conc.get("n_disclosed")),
+            "total_disclosed_pct": _clean(conc.get("total_disclosed_pct")),
+            "insider_pct": _clean(conc.get("insider_pct")),
+        },
+        "snapshot_date": snapshot_date,
+        # Cảnh báo này bắt buộc: đo 2026-08-16, tổng % công bố là HPG 51,9%,
+        # VNM 81,0%, VCB 91,0% — không phải 100%. Không nói rõ thì agent rất
+        # dễ lấy 100% trừ đi rồi gọi phần dư là free float, trong khi
+        # dim_stock.free_float_percentage là con số khác từ nguồn khác.
+        "note": "Chỉ gồm cổ đông ĐÃ CÔNG BỐ — tổng total_disclosed_pct KHÔNG "
+                "bằng 100%. Phần còn lại là cổ đông không công bố, KHÔNG đồng "
+                "nghĩa free float (dùng get_stock_profile để lấy free float "
+                "từ nguồn riêng).",
+        **db.as_of(con),
+    }

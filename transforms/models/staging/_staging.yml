@@ -67,3 +67,53 @@ models:
       # đây mới đúng là khoá duy nhất thật sự.
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns: [symbol, period_end_date, period_type]
+
+  - name: stg_corporate_event
+    description: >
+      Sự kiện DN đã phân loại hai tầng. distribution_type dùng event_code
+      làm tầng chính, chỉ đọc tiêu đề cho nhánh ISS. KHÔNG dùng cột
+      category của nguồn (sai ở 14/33 dòng ISS — gán ESOP và phát hành
+      riêng lẻ vào DIVIDEND).
+    columns:
+      - name: id
+        tests: [not_null, unique]
+      - name: symbol
+        tests: [not_null]
+      - name: distribution_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['CASH_DIVIDEND', 'STOCK_DIVIDEND', 'BONUS_SHARE',
+                       'ESOP', 'PRIVATE_PLACEMENT', 'ISS_KHAC',
+                       'INSIDER_TRADING', 'SHAREHOLDER_MEETING', 'OTHER',
+                       'UNKNOWN_CODE']
+      - name: is_distribution
+        tests: [not_null]
+
+  - name: stg_shareholder
+    description: >
+      Cổ đông ĐÃ CÔNG BỐ, snapshot theo ngày. Tổng share_own_percent KHÔNG
+      bằng 100% (HPG 51,9%, VNM 81,0%, VCB 91,0%) — phần thiếu là cổ đông
+      không công bố, KHÔNG đồng nghĩa free float.
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: share_holder
+        tests: [not_null]
+      - name: snapshot_date
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, share_holder, snapshot_date]
+
+  - name: stg_officer
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: officer_name
+        tests: [not_null]
+      - name: snapshot_date
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, officer_name, snapshot_date]

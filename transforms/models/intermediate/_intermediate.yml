@@ -48,6 +48,43 @@ models:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns: [symbol, metric]
 
+  - name: int_distribution_event
+    description: >
+      Chỉ sự kiện PHÂN PHỐI cho cổ đông (tiền mặt, cổ tức cổ phiếu, cổ
+      phiếu thưởng). Trục thời gian là NGÀY GDKHQ, khác trục năm tài chính
+      của dividend_yield — không cộng gộp hai trục.
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: event_id
+        tests: [not_null, unique]
+      - name: exright_date
+        tests: [not_null]
+      - name: distribution_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['CASH_DIVIDEND', 'STOCK_DIVIDEND', 'BONUS_SHARE']
+
+  - name: int_ownership_snapshot
+    description: >
+      Cô đặc sở hữu theo snapshot mới nhất. total_disclosed_pct là cột bắt
+      buộc — tổng % công bố không bằng 100%, giấu nó đi thì người đọc suy
+      ra sai "phần còn lại là free float".
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: snapshot_date
+        tests: [not_null]
+      - name: total_disclosed_pct
+        tests: [not_null]
+      - name: officer_snapshot_date
+        description: >
+          Ngày snapshot của bảng officer — KHÁC snapshot_date (ngày snapshot
+          của cổ đông). Hai ngày có thể lệch nhau nếu một mã lỗi fetch ở lần
+          chạy monthly cho một trong hai nguồn (I1, fix round cuối). NULL
+          khi mã không có officer nào — không bắt buộc not_null.
+
   - name: int_valuation_percentile
     columns:
       - name: symbol
