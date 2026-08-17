@@ -428,6 +428,26 @@ def get_distribution_history(con, symbol: str, years: int = 5) -> dict:
     if not events and not cash_year:
         return {"error": f"Không có dữ liệu phân phối cho {sym}.", **db.as_of(con)}
 
+    # I4 (fix round cuối): int_distribution_event lọc thêm
+    # `exright_date is not null` (không có trục thời gian thì không đặt lên
+    # timeline được) — hợp lý, nhưng đo trên production con số bị loại
+    # không nhỏ: 323/9932 sự kiện phân phối (3,36%). Không đếm lại thì
+    # data_quality.n_events chỉ đếm dòng còn sống, agent thấy
+    # distribution_events rỗng (hoặc ngắn) mà không biết đó là "không có dữ
+    # liệu" hay "dữ liệu bị lọc mất" — cùng lớp lỗi mà event_window_years
+    # được đặt ra để chống.
+    missing_exright = db.run_query(
+        con,
+        """
+        SELECT count(*) as n
+        FROM stg_corporate_event
+        WHERE symbol = ? AND is_distribution AND exright_date IS NULL
+        """,
+        params=[sym],
+        limit=1,
+    )
+    n_missing = missing_exright[0]["n"] if missing_exright else 0
+
     for r in events:
         for col in ("exright_date", "record_date", "payout_date"):
             r[col] = _date_str(r.get(col))
@@ -443,14 +463,20 @@ def get_distribution_history(con, symbol: str, years: int = 5) -> dict:
             1,
         )
 
+    note = ("Hai khối nằm trên HAI TRỤC THỜI GIAN khác nhau: "
+            "cash_dividend_by_fiscal_year theo NĂM TÀI CHÍNH, "
+            "distribution_events theo NGÀY GDKHQ (cổ tức 'cả năm 2021' "
+            "chi trả 17/06/2022). KHÔNG cộng gộp hai khối.")
+    if n_missing:
+        note += (f" Ngoài ra {n_missing} sự kiện phân phối của {sym} KHÔNG "
+                 "có ngày GDKHQ nên không đặt lên được timeline này — xem "
+                 "data_quality.n_events_missing_exright_date.")
+
     return {
         "symbol": sym,
         "cash_dividend_by_fiscal_year": _clean(cash_year),
         "distribution_events": _clean(events),
-        "note": "Hai khối nằm trên HAI TRỤC THỜI GIAN khác nhau: "
-                "cash_dividend_by_fiscal_year theo NĂM TÀI CHÍNH, "
-                "distribution_events theo NGÀY GDKHQ (cổ tức 'cả năm 2021' "
-                "chi trả 17/06/2022). KHÔNG cộng gộp hai khối.",
+        "note": note,
         # event_window_years là bằng chứng đỡ cho mọi phát biểu về chuỗi cổ
         # tức. Nguồn chỉ trả 50 sự kiện gần nhất và cửa sổ đó trượt: đo trên
         # 15 mã (2026-08-16), 50 sự kiện phủ từ 1,0 năm (MWG) tới 9,9 năm
@@ -462,6 +488,12 @@ def get_distribution_history(con, symbol: str, years: int = 5) -> dict:
             "event_window_end": window_end,
             "event_window_years": window_years,
             "n_events": len(events),
+            # n_events_missing_exright_date (I4): số sự kiện phân phối THẬT
+            # (cổ tức tiền mặt/cổ phiếu, cổ phiếu thưởng) của mã này bị
+            # int_distribution_event lọc mất vì exright_date NULL — không có
+            # trục thời gian thì không đặt lên timeline được, nhưng con số
+            # đó phải có chỗ hiện diện thay vì lặng lẽ biến mất.
+            "n_events_missing_exright_date": n_missing,
         },
         **db.as_of(con),
     }
@@ -474,8 +506,8 @@ def get_ownership(con, symbol: str) -> dict:
     conc_rows = db.run_query(
         con,
         """
-        SELECT snapshot_date, n_disclosed, total_disclosed_pct,
-               top1_pct, top5_pct, insider_pct
+        SELECT snapshot_date, officer_snapshot_date, n_disclosed,
+               total_disclosed_pct, top1_pct, top5_pct, insider_pct
         FROM int_ownership_snapshot
         WHERE symbol = ?
         """,
@@ -487,6 +519,13 @@ def get_ownership(con, symbol: str) -> dict:
 
     conc = conc_rows[0]
     snapshot_date = _date_str(conc.get("snapshot_date"))
+    # I1 (fix round cuối): officer_snapshot_date là ngày snapshot RIÊNG của
+    # bảng officer — có thể lệch với snapshot_date (của cổ đông) nếu một mã
+    # lỗi fetch ở lần chạy monthly cho một trong hai nguồn. Lọc stg_officer
+    # bằng đúng ngày của chính nó, không dùng chung ngày cổ đông — nếu không
+    # officers có thể trả về rỗng trong khi insider_pct vẫn có số (payload tự
+    # mâu thuẫn).
+    officer_snapshot_date = _date_str(conc.get("officer_snapshot_date"))
 
     holders = db.run_query(
         con,
@@ -508,7 +547,7 @@ def get_ownership(con, symbol: str) -> dict:
         WHERE symbol = ? AND snapshot_date = ?
         ORDER BY officer_own_percent DESC NULLS LAST
         """,
-        params=[sym, snapshot_date],
+        params=[sym, officer_snapshot_date],
         limit=100,
     )
 

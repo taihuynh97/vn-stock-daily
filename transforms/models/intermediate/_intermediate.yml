@@ -78,6 +78,12 @@ models:
         tests: [not_null]
       - name: total_disclosed_pct
         tests: [not_null]
+      - name: officer_snapshot_date
+        description: >
+          Ngày snapshot của bảng officer — KHÁC snapshot_date (ngày snapshot
+          của cổ đông). Hai ngày có thể lệch nhau nếu một mã lỗi fetch ở lần
+          chạy monthly cho một trong hai nguồn (I1, fix round cuối). NULL
+          khi mã không có officer nào — không bắt buộc not_null.
 
   - name: int_valuation_percentile
     columns:
