@@ -902,9 +902,13 @@ def _new_statement_periods(con, sym: str, since_date: str) -> dict:
 # ở đó các dòng là DANH SÁCH ĐỂ ĐỌC — chạm trần chỉ mất mấy dòng cuối, agent
 # vẫn thấy phần đầu và tự biết danh sách chưa đủ. Ở đây các dòng bị CỘNG lại
 # thành một con số duy nhất, nên chạm trần làm SAI chính con số đó mà không
-# để lại dấu vết nào. Mức cao nhất quan sát được trên production là ~93 cổ
-# đông công bố (VNM); 2000 rộng hơn 20 lần nên không cần cờ truncated riêng
-# cho khối này.
+# để lại dấu vết nào.
+#
+# Đo thật trên md:vn_market ngày 2026-08-19: mã nhiều cổ đông công bố nhất
+# trong MỘT snapshot là PNJ 116 dòng (MBB 106, VNM 93), officer nhiều nhất là
+# SSB 27 dòng. 2000 rộng hơn mức đỉnh đó ~17 lần nên không cần thêm cờ
+# truncated riêng cho khối này; nếu có ngày chạm tới, đó là tín hiệu nguồn dữ
+# liệu đã đổi bản chất chứ không phải chuyện cắt bớt bình thường.
 _OWNERSHIP_AGG_ROW_LIMIT = 2000
 
 
