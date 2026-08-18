@@ -735,7 +735,14 @@ def _normalize_officers(df, symbol, snapshot_date: str) -> pd.DataFrame:
 _printed_statement_cols = {}
 
 _STATEMENT_TYPES = ["income_statement", "balance_sheet", "cash_flow"]
-_STATEMENT_REQUIRED = ["item_id", "item"]
+# item_en PHẢI có trong danh sách này (fix review round 1, Finding 1):
+# _unpivot_statement dùng item_en KHÔNG điều kiện làm id_var trong df.melt().
+# Nếu thiếu ở _STATEMENT_REQUIRED, dq.assert_columns không bắt được cột
+# thiếu -> melt() tự ném KeyError trần, KHÔNG phải dq.SchemaError -> lọt qua
+# khối except dq.SchemaError bọc quanh trong fetch_financial_statements ->
+# sập cả mẻ ~1.600 mã đang chạy. Liệt kê ở đây để dq.assert_columns raise
+# đúng loại lỗi được bắt đúng chỗ.
+_STATEMENT_REQUIRED = ["item_id", "item", "item_en"]
 
 
 def _unpivot_statement(df, symbol: str, statement_type: str, period_type: str) -> pd.DataFrame:
