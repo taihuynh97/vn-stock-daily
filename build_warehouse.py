@@ -105,6 +105,29 @@ def main():
                            notes=f"append-only; fetch {len(events)} dong")
         print(f"raw_corporate_event: +{n_ev} dòng mới (fetch {len(events)})")
 
+    # 3c) BCTC chi tiết (B2) — quarter chạy CẢ weekly lẫn monthly, cùng lý
+    # do sự kiện DN chạy cả hai (monthly là superset của weekly).
+    if args.mode in ("weekly", "monthly"):
+        print(f"Bắt đầu fetch BCTC chi tiết, period=quarter ({len(symbols)} mã)...")
+        stmt_q = ingest_market.fetch_financial_statements(symbols, source, period="quarter")
+        n_stmt_q = warehouse.upsert_financial_statements(con, stmt_q)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_statement",
+                           n_stmt_q, "ok" if n_stmt_q else "empty", watermark=run_date,
+                           notes="period=quarter")
+        print(f"raw_financial_statement (quarter): {n_stmt_q} dòng")
+
+    # 3d) BCTC chi tiết, period=year — CHỈ monthly (dữ liệu năm hiếm khi
+    # đổi, không cần nhịp tuần; xếp cùng nhịp với company_info/shareholders
+    # bên dưới thay vì chạy tuần vô ích).
+    if args.mode == "monthly":
+        print(f"Bắt đầu fetch BCTC chi tiết, period=year ({len(symbols)} mã)...")
+        stmt_y = ingest_market.fetch_financial_statements(symbols, source, period="year")
+        n_stmt_y = warehouse.upsert_financial_statements(con, stmt_y)
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_statement",
+                           n_stmt_y, "ok" if n_stmt_y else "empty", watermark=run_date,
+                           notes="period=year")
+        print(f"raw_financial_statement (year): {n_stmt_y} dòng")
+
     # 4) Dim_industry (phân ngành ICB) + company info — monthly only
     if args.mode == "monthly":
         ind = ingest_market.fetch_industries_icb(source)

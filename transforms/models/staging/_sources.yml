@@ -42,3 +42,8 @@ sources:
         freshness:
           warn_after: {count: 40, period: day}
           error_after: {count: 70, period: day}
+      - name: raw_financial_statement
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: {count: 10, period: day}
+          error_after: {count: 20, period: day}

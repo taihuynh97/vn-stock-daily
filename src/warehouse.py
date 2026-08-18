@@ -88,6 +88,16 @@ OFFICER_COLS = [
     "update_date", "snapshot_date",
 ]
 
+# --- Cột raw_financial_statement (nguồn: Company.Finance.income_statement/
+# balance_sheet/cash_flow, unpivot wide -> dài) ---
+# KHÔNG có cột com_class: đó là cột suy ra ở tầng dbt (stg_company_info.sql),
+# không tồn tại lúc Python ingest chạy (ingest chạy TRƯỚC dbt build). symbol
+# một mình đủ để JOIN dim_stock lấy com_class ở nơi cần lọc theo loại hình DN.
+STATEMENT_COLS = [
+    "symbol", "statement_type", "period_type", "period_label", "row_seq",
+    "item_id", "item_vi", "item_en", "value",
+]
+
 
 def get_conn():
     db = os.getenv("WAREHOUSE_DB", DEFAULT_DB)
@@ -333,6 +343,28 @@ def init_warehouse(con):
         );
         """
     )
+    # --- B2: BCTC chi tiết (upsert theo khoá mịn tới từng kỳ) ---
+    # PRIMARY KEY gồm cả period_label lẫn row_seq: cửa sổ 8-kỳ trượt theo
+    # thời gian giống sự kiện DN, nhưng khoá mịn tới từng kỳ khiến
+    # INSERT OR REPLACE không đụng các kỳ đã rơi khỏi cửa sổ fetch mới —
+    # xem docstring upsert_financial_statements.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_financial_statement (
+            symbol         VARCHAR,
+            statement_type VARCHAR,
+            period_type    VARCHAR,
+            period_label   VARCHAR,
+            row_seq        INTEGER,
+            item_id        VARCHAR,
+            item_vi        VARCHAR,
+            item_en        VARCHAR,
+            value          DOUBLE,
+            ingested_at    TIMESTAMP,
+            PRIMARY KEY (symbol, statement_type, period_type, period_label, row_seq)
+        );
+        """
+    )
 
 
 def upsert_symbols(con, df, run_date) -> int:
@@ -485,6 +517,36 @@ def upsert_officers(con, df) -> int:
         """
     )
     con.unregister("df_of")
+    return len(df)
+
+
+def upsert_financial_statements(con, df) -> int:
+    """Ghi chi tiết BCTC. INSERT OR REPLACE theo khoá 5 cột (symbol,
+    statement_type, period_type, period_label, row_seq) → chạy lại cùng kỳ
+    an toàn.
+
+    Cửa sổ 8-kỳ mà Company.income_statement()/balance_sheet()/cash_flow()
+    trả về CŨNG trượt theo thời gian (giống sự kiện DN) — kỳ mới xuất
+    hiện, kỳ cũ nhất rơi khỏi cửa sổ. Nhưng KHÁC insert_corporate_events
+    (phải append-only vì đơn vị trùng lặp là toàn bộ sự kiện, không gì
+    phân biệt "sự kiện cũ" ngoài chính nó): ở đây khoá mịn tới từng KỲ
+    (period_label nằm trong khoá cùng row_seq), nên khi kỳ cũ nhất rơi
+    khỏi batch mới, INSERT OR REPLACE đơn giản KHÔNG ĐỤNG tới khoá đó —
+    nó vẫn còn nguyên từ lần ghi trước. Ghi đè chỉ xảy ra khi CÙNG kỳ
+    được fetch lại (giá trị hiếm khi đổi, nhưng nếu đổi thì bản mới đúng
+    hơn).
+    """
+    if df is None or df.empty:
+        return 0
+    cols = ", ".join(STATEMENT_COLS)
+    con.register("df_st", df)
+    con.execute(
+        f"""
+        INSERT OR REPLACE INTO raw_financial_statement ({cols}, ingested_at)
+        SELECT {cols}, now() FROM df_st;
+        """
+    )
+    con.unregister("df_st")
     return len(df)
 
 
