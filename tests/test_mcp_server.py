@@ -237,3 +237,25 @@ def test_get_thesis_update_via_mcp_call_tool(b1_con, monkeypatch):
     assert payload["symbol"] == "AAA"
     assert payload["financial_trend"]["n_new_quarters"] == 2
     assert payload["ownership_change"]["baseline_is_fallback"] is True
+    # I5 (final review): data_quality phải sống sót qua đúng đường đi thật
+    # (serialize JSON của MCP), không chỉ trong lời gọi Python trực tiếp.
+    dq = payload["data_quality"]
+    assert dq["has_ownership_baseline"] is False
+    assert dq["n_snapshots_available"] == 2
+    assert dq["distribution_events_truncated"] is False
+    assert dq["statement_periods_truncated"] is False
+    # I1/Critical #1: 2 trục thời gian sở hữu phơi riêng ra tới tận payload.
+    assert payload["ownership_change"]["officer_latest_snapshot_date"] == "2026-08-01"
+
+
+def test_get_thesis_update_since_date_sai_dinh_dang_tra_error_qua_mcp(b1_con, monkeypatch):
+    """I2 (final review): chuỗi sai định dạng phải bị chặn ở cửa, không lọt
+    xuống để _ownership_change so sánh chuỗi rồi báo "không có gì thay đổi"."""
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+
+    content = asyncio.run(
+        server.mcp.call_tool("get_thesis_update",
+                             {"symbol": "AAA", "since_date": "2026/01/01"})
+    )
+    payload = json.loads(content[0].text)
+    assert "YYYY-MM-DD" in payload["error"]

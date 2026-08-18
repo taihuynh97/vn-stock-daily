@@ -497,7 +497,7 @@ def test_financial_trend_khong_lan_dong_nam_quarter_5(con):
 
 
 def test_new_distribution_events_loc_dung_since_date(con):
-    r = tools._new_distribution_events(con, "AAA", "2026-05-01")
+    r = tools._new_distribution_events(con, "AAA", "2026-05-01")["items"]
     assert len(r) == 2
     # Sửa so với brief gốc: 2 literal gốc trong brief chỉ dài 19 ký tự (thiếu
     # 1 ký tự cuối so với tiêu đề thật cắt ở vị trí 20), nên literal[:20] là
@@ -511,7 +511,7 @@ def test_new_distribution_events_loc_dung_since_date(con):
 
 
 def test_new_statement_periods_phat_hien_dung_ky_moi(con):
-    r = tools._new_statement_periods(con, "AAA", "2026-06-01")
+    r = tools._new_statement_periods(con, "AAA", "2026-06-01")["items"]
     assert len(r) == 1
     assert r[0]["period_label"] == "2026-q2"
     assert r[0]["statement_type"] == "income_statement"
@@ -519,7 +519,8 @@ def test_new_statement_periods_phat_hien_dung_ky_moi(con):
 
 def test_new_statement_periods_khong_co_gi_moi_tra_mang_rong(con):
     r = tools._new_statement_periods(con, "AAA", "2026-09-01")
-    assert r == []
+    assert r["items"] == []
+    assert r["truncated"] is False
 
 
 def test_ownership_change_tinh_dung_delta_khi_co_baseline_that(con):
@@ -659,6 +660,54 @@ def test_get_thesis_update_since_date_sai_dinh_dang_tra_error(con):
     assert "YYYY-MM-DD" in r["error"]
 
 
+def test_hai_khoi_danh_sach_bao_truncated_khi_cham_tran(con, monkeypatch):
+    """Important #4 (final review): chạm trần dòng phải được BÁO, không cắt
+    âm thầm — đúng convention data_quality.truncated mà B2 đã lập cho
+    get_financial_statement. Hạ trần xuống 1 thay vì bơm 50+ dòng vào fixture:
+    thứ cần khoá là LOGIC báo cờ, không phải con số 50."""
+    monkeypatch.setattr(tools, "_THESIS_LIST_ROW_LIMIT", 1)
+    ev = tools._new_distribution_events(con, "AAA", "2026-05-01")
+    assert len(ev["items"]) == 1
+    assert ev["truncated"] is True
+
+    st = tools._new_statement_periods(con, "AAA", "2026-01-01")
+    assert len(st["items"]) == 1
+    assert st["truncated"] is True
+
+
+def test_get_thesis_update_co_khoi_data_quality_du_khoa(con):
+    """Important #5 (final review): bản trước THIẾU HẲN data_quality — vi phạm
+    quy ước chung (mọi tool khác đều trả) lẫn hợp đồng spec C1 §4.1 tự khai
+    báo. Lõi phải giống _data_quality() dùng chung, cộng các tín hiệu riêng
+    của C1."""
+    dq = tools.get_thesis_update(con, "AAA", "2026-06-01")["data_quality"]
+    # Lõi dùng chung với get_stock_profile/get_valuation_history.
+    assert dq["data_quality_score"] == tools._data_quality(con, "AAA")["data_quality_score"]
+    assert "quality_flags" in dq and "reliable" in dq
+    # since_date 2026-06-01 có snapshot 2026-05-01 đứng trước -> baseline THẬT.
+    assert dq["has_ownership_baseline"] is True
+    assert dq["n_snapshots_available"] == 2
+    assert dq["n_officer_snapshots_available"] == 2
+    assert dq["distribution_events_truncated"] is False
+    assert dq["statement_periods_truncated"] is False
+
+
+def test_data_quality_bao_baseline_gia_khi_phai_fallback(con):
+    """has_ownership_baseline=False là tín hiệu quan trọng nhất của khối này:
+    baseline chỉ là snapshot CŨ NHẤT có sẵn, không phải mốc người dùng hỏi."""
+    dq = tools.get_thesis_update(con, "AAA", "2026-01-01")["data_quality"]
+    assert dq["has_ownership_baseline"] is False
+
+
+def test_data_quality_ma_khong_co_du_lieu_so_huu_tra_none(con):
+    """Mã không có dòng sở hữu nào -> 2 chỉ số snapshot là None ("không biết"),
+    không phải 0 (dễ đọc nhầm thành "đã kiểm và đúng bằng 0")."""
+    dq = tools.get_thesis_update(con, "CCC", "2026-01-01")["data_quality"]
+    assert dq["has_ownership_baseline"] is False
+    assert dq["n_snapshots_available"] is None
+    assert dq["n_officer_snapshots_available"] is None
+
+
 def test_get_thesis_update_since_date_dung_dinh_dang_van_chay_binh_thuong(con):
     """Bản sửa Important #2 không được đụng đến ca hợp lệ."""
     r = tools.get_thesis_update(con, "AAA", "2026-01-01")
@@ -670,7 +719,8 @@ def test_get_thesis_update_since_date_dung_dinh_dang_van_chay_binh_thuong(con):
 
 def test_new_distribution_events_khong_co_gi_moi_tra_mang_rong(con):
     r = tools._new_distribution_events(con, "AAA", "2026-06-01")
-    assert r == []
+    assert r["items"] == []
+    assert r["truncated"] is False
 
 
 # Bổ sung so với brief gốc (không có trong task-1-brief.md): khoá lại đúng
@@ -681,6 +731,6 @@ def test_new_distribution_events_khong_co_gi_moi_tra_mang_rong(con):
 # brief. Đã tự xác minh thực nghiệm bằng thực thi trực tiếp (không tin vào
 # giả định trước khi sửa).
 def test_new_distribution_events_ngay_dung_dinh_dang_iso(con):
-    r = tools._new_distribution_events(con, "AAA", "2026-05-01")
+    r = tools._new_distribution_events(con, "AAA", "2026-05-01")["items"]
     by_date = sorted(e["exright_date"] for e in r)
     assert by_date == ["2026-05-11", "2026-05-25"]

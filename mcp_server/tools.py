@@ -757,6 +757,24 @@ def get_financial_statement(con, symbol: str, statement_type: str,
 
 # --- C1: get_thesis_update (luận điểm đầu tư định kỳ) ---
 
+# Important #4 (final review): trần dòng cho 2 khối DANH SÁCH của
+# get_thesis_update. Trước bản sửa, cả hai cắt ở 50 dòng mà không để lại dấu
+# vết nào — agent đọc một danh sách bị cắt y như đọc một danh sách đầy đủ.
+# Nay chạm trần được BÁO ra ngoài qua cờ `truncated` rồi gộp vào data_quality,
+# đúng convention mà B2 đã lập cho get_financial_statement. Để thành hằng số
+# dùng chung để cờ không bao giờ lệch pha với limit thật của truy vấn.
+_THESIS_LIST_ROW_LIMIT = 50
+
+
+def _truncated(rows: list) -> bool:
+    """Truy vấn có chạm trần dòng không — dấu hiệu CÒN dữ liệu chưa trả.
+
+    Không phân biệt được "dữ liệu vừa đúng bằng trần" với "dữ liệu bị cắt"
+    nếu chỉ nhìn số dòng trả về, nên báo True ở cả hai ca: cảnh báo thừa một
+    lần rẻ hơn nhiều so với việc để agent kết luận trên một danh sách thiếu
+    mà không biết là nó thiếu."""
+    return len(rows) >= _THESIS_LIST_ROW_LIMIT
+
 def _current_scores(con, sym: str) -> dict | None:
     """Điểm số HIỆN TẠI (không phải diff — mart_stock_scorecard không có
     lịch sử, xem spec C1 §2)."""
@@ -803,9 +821,12 @@ def _financial_trend(con, sym: str, since_date: str) -> dict:
     return {"quarters": quarters, "n_new_quarters": len(quarters)}
 
 
-def _new_distribution_events(con, sym: str, since_date: str) -> list[dict]:
+def _new_distribution_events(con, sym: str, since_date: str) -> dict:
     """Sự kiện phân phối MỚI kể từ since_date — cùng nguồn/cột với
     get_distribution_history, thêm điều kiện exright_date > since_date.
+
+    Trả {"items": [...], "truncated": bool} (Important #4, final review),
+    không phải list trần — xem _truncated().
 
     Điều chỉnh so với bản nháp ban đầu: phải gọi `_date_str()` lên
     exright_date TRƯỚC `_clean()`, không phải sau — cùng thứ tự
@@ -827,17 +848,20 @@ def _new_distribution_events(con, sym: str, since_date: str) -> list[dict]:
         ORDER BY exright_date DESC
         """,
         params=[sym, since_date],
-        limit=50,
+        limit=_THESIS_LIST_ROW_LIMIT,
     )
     for r in rows:
         r["exright_date"] = _date_str(r.get("exright_date"))
-    return _clean(rows)
+    return {"items": _clean(rows), "truncated": _truncated(rows)}
 
 
-def _new_statement_periods(con, sym: str, since_date: str) -> list[dict]:
+def _new_statement_periods(con, sym: str, since_date: str) -> dict:
     """Kỳ BCTC được GHI NHẬN (ingest) kể từ since_date — đọc
     raw_financial_statement (KHÔNG phải stg_financial_statement, thiếu cột
     ingested_at).
+
+    Trả {"items": [...], "truncated": bool} (Important #4, final review),
+    không phải list trần — xem _truncated().
 
     Important #3 (final review): docstring cũ ("kỳ MỚI xuất hiện") mô tả SAI
     ý nghĩa dữ liệu. raw_financial_statement ghi bằng `INSERT OR REPLACE ...
@@ -864,12 +888,13 @@ def _new_statement_periods(con, sym: str, since_date: str) -> list[dict]:
         ORDER BY ingested_at DESC
         """,
         params=[sym, since_date],
-        limit=50,
+        limit=_THESIS_LIST_ROW_LIMIT,
     )
-    return [
-        {**r, "ingested_at": str(r["ingested_at"])}
-        for r in _clean(rows)
-    ]
+    return {
+        "items": [{**r, "ingested_at": str(r["ingested_at"])}
+                  for r in _clean(rows)],
+        "truncated": _truncated(rows),
+    }
 
 
 # Critical #1 / Important #4 (final review): trần dòng cho phép GỘP sở hữu
@@ -1049,8 +1074,9 @@ def get_thesis_update(con, symbol: str, since_date: str | None = None) -> dict:
     periods = _new_statement_periods(con, sym, since_date)
     ownership = _ownership_change(con, sym, since_date)
 
-    if (scores is None and trend["n_new_quarters"] == 0 and not events
-            and not periods and ownership is None):
+    if (scores is None and trend["n_new_quarters"] == 0
+            and not events["items"] and not periods["items"]
+            and ownership is None):
         return {"error": f"Không tìm thấy mã {sym} trong warehouse.",
                 **db.as_of(con)}
 
@@ -1059,8 +1085,34 @@ def get_thesis_update(con, symbol: str, since_date: str | None = None) -> dict:
         "since_date": since_date,
         "current_scores": scores,
         "financial_trend": trend,
-        "new_distribution_events": events,
-        "new_statement_periods": periods,
+        "new_distribution_events": events["items"],
+        "new_statement_periods": periods["items"],
         "ownership_change": ownership,
+        # Important #5 (final review): bản trước THIẾU HẲN khối data_quality —
+        # vi phạm quy ước chung (mọi tool khác đều trả) lẫn chính hợp đồng mà
+        # spec C1 §4.1 đã khai báo. Lõi tái dùng _data_quality() để giống hệt
+        # get_stock_profile/get_valuation_history, mở rộng thêm các tín hiệu
+        # riêng của C1 — thứ quyết định một "chênh lệch" có đọc được hay không:
+        #   has_ownership_baseline: False nghĩa là baseline chỉ là snapshot cũ
+        #     nhất có sẵn (fallback), KHÔNG phải mốc người dùng hỏi — mọi delta
+        #     sở hữu phải đọc kèm cảnh báo này.
+        #   n_snapshots_available / n_officer_snapshots_available: 2 trục thời
+        #     gian RIÊNG (xem _ownership_change); 1 snapshot nghĩa là chưa đủ
+        #     lịch sử để so sánh, delta 0 không có nghĩa "không đổi".
+        #   *_truncated: có dữ liệu bị cắt khỏi 2 khối danh sách hay không.
+        "data_quality": {
+            **_data_quality(con, sym),
+            "has_ownership_baseline": (
+                ownership is not None and not ownership["baseline_is_fallback"]
+            ),
+            "n_snapshots_available": (
+                ownership["n_snapshots_available"] if ownership else None
+            ),
+            "n_officer_snapshots_available": (
+                ownership["n_officer_snapshots_available"] if ownership else None
+            ),
+            "distribution_events_truncated": events["truncated"],
+            "statement_periods_truncated": periods["truncated"],
+        },
         **db.as_of(con),
     }
