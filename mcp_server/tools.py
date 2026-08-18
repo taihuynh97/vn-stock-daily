@@ -582,3 +582,68 @@ def get_ownership(con, symbol: str) -> dict:
                 "từ nguồn riêng).",
         **db.as_of(con),
     }
+
+
+def get_financial_statement(con, symbol: str, statement_type: str,
+                            period_type: str = "quarter") -> dict:
+    """Chi tiết một báo cáo tài chính (income_statement/balance_sheet/
+    cash_flow), mỗi dòng BCTC kèm chuỗi giá trị theo kỳ.
+
+    row_seq trả kèm mỗi item để phân biệt các dòng TRÙNG item_id — item_id
+    KHÔNG unique trong một báo cáo (vd 'cost' xuất hiện nhiều lần ở
+    balance_sheet, mỗi lần một nhóm tài sản cố định khác nhau — chỉ
+    item_vi/row_seq phân biệt được, xem spec B2 §1.3). Agent nên hiển thị
+    item_vi cho người dùng, không phải row_seq.
+    """
+    sym = symbol.upper().strip()
+    st = statement_type.strip()
+    pt = period_type.strip()
+
+    rows = db.run_query(
+        con,
+        """
+        SELECT row_seq, item_id, item_vi, item_en, period_label, value
+        FROM stg_financial_statement
+        WHERE symbol = ? AND statement_type = ? AND period_type = ?
+        ORDER BY row_seq, period_label DESC
+        """,
+        params=[sym, st, pt],
+        limit=2000,
+    )
+
+    if not rows:
+        return {
+            "symbol": sym, "statement_type": st, "period_type": pt,
+            "data_quality": {"has_data": False},
+            **db.as_of(con),
+        }
+
+    # Gộp lại theo (row_seq, item_id, item_vi) -> {period_label: value},
+    # giữ nguyên thứ tự row_seq đã sort ở SQL.
+    items_by_seq: dict[int, dict] = {}
+    order: list[int] = []
+    for r in rows:
+        seq = r["row_seq"]
+        if seq not in items_by_seq:
+            items_by_seq[seq] = {
+                "item_id": r["item_id"],
+                "item_vi": r["item_vi"],
+                "row_seq": seq,
+                "values_by_period": {},
+            }
+            order.append(seq)
+        items_by_seq[seq]["values_by_period"][r["period_label"]] = _clean(r["value"])
+
+    items = [items_by_seq[s] for s in order]
+
+    return {
+        "symbol": sym,
+        "statement_type": st,
+        "period_type": pt,
+        "items": items,
+        "n_items": len(items),
+        "data_quality": {"has_data": True, "n_periods_available": len(
+            {p for it in items for p in it["values_by_period"]}
+        )},
+        **db.as_of(con),
+    }

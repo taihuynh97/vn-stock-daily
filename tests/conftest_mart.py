@@ -231,4 +231,23 @@ def build_fake_mart(path: str):
           ('EEE','e4','DIV','Trả cổ tức bằng tiền mặt - Cả năm 2024 - 800 VND',
            'CASH_DIVIDEND',TRUE,NULL);
     """)
+    # --- B2: BCTC chi tiết ---
+    # Mô phỏng đúng ca thật: item_id 'cost' trùng 2 lần (2 nhóm tài sản
+    # khác nhau, cùng item_id, khác item_vi/row_seq) — đúng bài học A3
+    # I2/B1 Task 4/5: fixture phải khớp schema/hành vi thật, không chỉ khớp
+    # tên cột, nếu không lỗi phân biệt row_seq sẽ lọt qua mọi test.
+    con.execute("""
+        CREATE TABLE stg_financial_statement (
+            symbol VARCHAR, statement_type VARCHAR, period_type VARCHAR,
+            period_label VARCHAR, row_seq INTEGER, item_id VARCHAR,
+            item_vi VARCHAR, item_en VARCHAR, value DOUBLE
+        );
+        INSERT INTO stg_financial_statement VALUES
+          ('AAA','income_statement','quarter','2026-Q2',0,'net_sales','Doanh thu thuần','Net sales',100.0),
+          ('AAA','income_statement','quarter','2026-Q1',0,'net_sales','Doanh thu thuần','Net sales',90.0),
+          ('AAA','balance_sheet','quarter','2026-Q2',30,'cost','Nguyên giá TSCĐ hữu hình','Cost of tangible FA',10.0),
+          ('AAA','balance_sheet','quarter','2026-Q1',30,'cost','Nguyên giá TSCĐ hữu hình','Cost of tangible FA',9.0),
+          ('AAA','balance_sheet','quarter','2026-Q2',40,'cost','Nguyên giá tài sản đầu tư','Cost of investment property',5.0),
+          ('AAA','balance_sheet','quarter','2026-Q1',40,'cost','Nguyên giá tài sản đầu tư','Cost of investment property',4.0);
+    """)
     con.close()

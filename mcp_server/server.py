@@ -184,5 +184,27 @@ def get_ownership(symbol: str) -> dict:
     return tools.get_ownership(conn(), symbol)
 
 
+@mcp.tool()
+@_safe_tool
+def get_financial_statement(symbol: str, statement_type: str,
+                            period_type: str = "quarter") -> dict:
+    """Chi tiết một báo cáo tài chính, mỗi dòng kèm chuỗi giá trị theo kỳ.
+
+    statement_type: 'income_statement' (kết quả kinh doanh) /
+                     'balance_sheet' (cân đối kế toán) /
+                     'cash_flow' (lưu chuyển tiền tệ).
+    period_type: 'quarter' (8 quý gần nhất, mặc định) / 'year' (8 năm gần nhất).
+
+    Một số item_id (ví dụ 'cost'/'accumulated_depreciation' ở
+    balance_sheet) XUẤT HIỆN NHIỀU LẦN trong cùng báo cáo — mỗi lần một
+    nhóm tài sản khác nhau, phân biệt bởi item_vi (tên tiếng Việt), không
+    phải item_id. Luôn hiển thị item_vi cho người dùng.
+
+    Kiểm data_quality.has_data trước khi kết luận — một số mã (đặc biệt
+    vốn hoá nhỏ) không có BCTC nào qua nguồn này.
+    """
+    return tools.get_financial_statement(conn(), symbol, statement_type, period_type)
+
+
 if __name__ == "__main__":
     mcp.run()

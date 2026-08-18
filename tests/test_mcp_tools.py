@@ -312,3 +312,43 @@ def test_get_ownership_officers_dung_snapshot_rieng_khi_lech_ngay(con):
 def test_get_ownership_ma_khong_ton_tai(con):
     res = tools.get_ownership(con, "ZZZ")
     assert "error" in res
+
+
+def test_get_financial_statement_tra_dung_dang_moi_dong_kem_chuoi_ky(con):
+    res = tools.get_financial_statement(con, "AAA", "income_statement")
+    assert res["symbol"] == "AAA"
+    assert res["statement_type"] == "income_statement"
+    assert res["n_items"] == 1
+    item = res["items"][0]
+    assert item["item_id"] == "net_sales"
+    assert item["item_vi"] == "Doanh thu thuần"
+    assert item["values_by_period"]["2026-Q2"] == 100.0
+    assert item["values_by_period"]["2026-Q1"] == 90.0
+
+
+def test_get_financial_statement_phan_biet_hai_dong_trung_item_id_bang_row_seq(con):
+    """Ca quan trọng nhất: 'cost' xuất hiện 2 lần trong balance_sheet AAA
+    (2 nhóm tài sản khác nhau) — phải trả về 2 item riêng biệt, không gộp
+    nhầm thành 1 (đúng lý do row_seq tồn tại, spec §1.3)."""
+    res = tools.get_financial_statement(con, "AAA", "balance_sheet")
+    assert res["n_items"] == 2
+    cost_items = [i for i in res["items"] if i["item_id"] == "cost"]
+    assert len(cost_items) == 2
+    vi_labels = {i["item_vi"] for i in cost_items}
+    assert vi_labels == {"Nguyên giá TSCĐ hữu hình", "Nguyên giá tài sản đầu tư"}
+    row_seqs = {i["row_seq"] for i in cost_items}
+    assert row_seqs == {30, 40}
+
+
+def test_get_financial_statement_ma_khong_co_du_lieu_tra_has_data_false(con):
+    res = tools.get_financial_statement(con, "ZZZ", "income_statement")
+    assert res["data_quality"]["has_data"] is False
+    assert "n_items" not in res or res.get("items") in (None, [])
+
+
+def test_get_financial_statement_period_type_khong_ton_tai_tra_has_data_false(con):
+    """AAA có dữ liệu quarter nhưng fixture không có year — has_data phải
+    phản ánh đúng THEO period_type được hỏi, không phải theo mã nói
+    chung."""
+    res = tools.get_financial_statement(con, "AAA", "income_statement", period_type="year")
+    assert res["data_quality"]["has_data"] is False
