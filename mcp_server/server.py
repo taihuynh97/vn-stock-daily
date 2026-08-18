@@ -184,5 +184,35 @@ def get_ownership(symbol: str) -> dict:
     return tools.get_ownership(conn(), symbol)
 
 
+@mcp.tool()
+@_safe_tool
+def get_financial_statement(symbol: str, statement_type: str,
+                            period_type: str = "quarter",
+                            n_periods: int = 8) -> dict:
+    """Chi tiết một báo cáo tài chính, mỗi dòng kèm chuỗi giá trị theo kỳ.
+
+    statement_type: 'income_statement' (kết quả kinh doanh) /
+                     'balance_sheet' (cân đối kế toán) /
+                     'cash_flow' (lưu chuyển tiền tệ).
+    period_type: 'quarter' (theo quý, mặc định) / 'year' (theo năm).
+    n_periods: số kỳ MỚI NHẤT cần lấy (mặc định 8 — đúng cửa sổ nguồn cấp).
+
+    Sai giá trị statement_type/period_type trả về {'error': ...}, KHÁC hẳn
+    payload 'không có dữ liệu' — đừng nhầm hai ca này với nhau.
+
+    Một số item_id (ví dụ 'cost'/'accumulated_depreciation' ở
+    balance_sheet) XUẤT HIỆN NHIỀU LẦN trong cùng báo cáo — mỗi lần một
+    nhóm tài sản khác nhau, phân biệt bởi item_vi (tên tiếng Việt), không
+    phải item_id. Luôn hiển thị item_vi cho người dùng.
+
+    Kiểm data_quality.has_data trước khi kết luận — một số mã (đặc biệt
+    vốn hoá nhỏ) không có BCTC nào qua nguồn này. Kiểm thêm
+    data_quality.truncated: True nghĩa là DB còn kỳ khác chưa nằm trong
+    payload (tăng n_periods nếu cần đủ chuỗi thời gian).
+    """
+    return tools.get_financial_statement(conn(), symbol, statement_type,
+                                         period_type, n_periods)
+
+
 if __name__ == "__main__":
     mcp.run()

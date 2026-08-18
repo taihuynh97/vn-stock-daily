@@ -187,3 +187,34 @@ def test_get_distribution_history_via_mcp_call_tool(b1_con, monkeypatch):
     assert stock_div["cash_per_share"] is None
     assert stock_div["payout_date"] is None
     assert payload["data_quality"]["n_events"] == 3
+
+
+def test_get_financial_statement_via_mcp_call_tool(b1_con, monkeypatch):
+    """Bài học A3 I1 lặp lại nhiều lần trong dự án: crash ở tầng serialize
+    JSON của FastMCP xảy ra SAU khi hàm đã return, _safe_tool không bắt
+    được, test gọi hàm Python trần không thấy. Phải gọi đúng qua
+    mcp.call_tool()."""
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+
+    content = asyncio.run(
+        server.mcp.call_tool("get_financial_statement",
+                             {"symbol": "AAA", "statement_type": "balance_sheet"})
+    )
+    payload = json.loads(content[0].text)
+
+    assert "error" not in payload
+    assert payload["n_items"] == 2
+    assert payload["data_quality"]["has_data"] is True
+
+    # Minor finding fix round 1 (review): xác nhận items[] còn ĐÚNG dạng sau
+    # khi qua tầng serialize JSON thật của FastMCP — không chỉ đếm n_items.
+    # Cả 2 item đều item_id='cost' (đúng ca fixture: 2 nhóm tài sản khác
+    # nhau trùng item_id) — row_seq/item_vi phải phân biệt được, và giá trị
+    # 'value' (double) phải sống sót qua round-trip JSON.
+    items_by_row_seq = {it["row_seq"]: it for it in payload["items"]}
+    assert set(items_by_row_seq) == {30, 40}
+    assert items_by_row_seq[30]["item_id"] == "cost"
+    assert items_by_row_seq[30]["item_vi"] == "Nguyên giá TSCĐ hữu hình"
+    assert items_by_row_seq[30]["values_by_period"]["2026-Q2"] == 10.0
+    assert items_by_row_seq[40]["item_vi"] == "Nguyên giá tài sản đầu tư"
+    assert items_by_row_seq[40]["values_by_period"]["2026-Q1"] == 4.0

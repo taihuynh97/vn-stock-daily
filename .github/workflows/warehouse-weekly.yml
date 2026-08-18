@@ -9,6 +9,13 @@ on:
 jobs:
   warehouse-weekly:
     runs-on: ubuntu-latest
+    # Fix trần 360 phút của GitHub Actions (final review B2): GitHub GIẾT
+    # job ở đúng mốc 360 phút mà không cảnh báo gì. Đặt 350 để job tự fail
+    # RÕ RÀNG trước mốc đó (có dòng lỗi timeout trong log) thay vì bị giết
+    # âm thầm. Job monthly đo thật ở Task 5 mất 767 phút — xem thêm phần
+    # ghi lô (STATEMENT_CHUNK_SIZE) trong build_warehouse.py: khi job bị
+    # cắt, các lô BCTC đã ghi vẫn còn, lần chạy sau tiếp tục phần thiếu.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -19,7 +26,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Warehouse weekly (giá + financial ratios + sự kiện DN, ~56 phút)
+      - name: Warehouse weekly (giá + financial ratios + sự kiện DN + BCTC quý)
         env:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}

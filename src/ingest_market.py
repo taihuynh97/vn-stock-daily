@@ -16,6 +16,7 @@ from vnstock.api.listing import Listing
 from vnstock.api.trading import Trading
 from vnstock.api.quote import Quote
 from vnstock.api.company import Company
+from vnstock.api.financial import Finance
 from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
@@ -729,3 +730,128 @@ def _normalize_officers(df, symbol, snapshot_date: str) -> pd.DataFrame:
     })
     out = out.drop_duplicates(subset=["symbol", "officer_name"])
     return out[warehouse.OFFICER_COLS].reset_index(drop=True)
+
+
+_printed_statement_cols = {}
+
+_STATEMENT_TYPES = ["income_statement", "balance_sheet", "cash_flow"]
+# item_en PHẢI có trong danh sách này (fix review round 1, Finding 1):
+# _unpivot_statement dùng item_en KHÔNG điều kiện làm id_var trong df.melt().
+# Nếu thiếu ở _STATEMENT_REQUIRED, dq.assert_columns không bắt được cột
+# thiếu -> melt() tự ném KeyError trần, KHÔNG phải dq.SchemaError -> lọt qua
+# khối except dq.SchemaError bọc quanh trong fetch_financial_statements ->
+# sập cả mẻ ~1.600 mã đang chạy. Liệt kê ở đây để dq.assert_columns raise
+# đúng loại lỗi được bắt đúng chỗ.
+_STATEMENT_REQUIRED = ["item_id", "item", "item_en"]
+
+
+def _unpivot_statement(df, symbol: str, statement_type: str, period_type: str) -> pd.DataFrame:
+    """Ép DataFrame wide (item x kỳ) từ Company.Finance.*_statement() thành
+    dạng dài (một dòng = một ô).
+
+    row_seq = vị trí dòng TRONG DataFrame gốc (0-based, reset_index trước
+    khi gán) — item_id KHÔNG unique trong một báo cáo (đã đo balance_sheet
+    HPG: 22/122 dòng trùng item_id, ví dụ 'cost' xuất hiện 4 lần vì 4 nhóm
+    tài sản cố định khác nhau dùng chung item_id). row_seq + item_vi mới
+    giữ đúng nhóm ngữ nghĩa — xem Task 1 (kiểm vị trí dòng ổn định giữa
+    các lần gọi) và spec §1.3/§3.1.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=warehouse.STATEMENT_COLS)
+    dq.assert_columns(df, _STATEMENT_REQUIRED, f"Finance.{statement_type}({symbol})")
+
+    df = df.reset_index(drop=True)
+    df = df.assign(row_seq=df.index)
+    period_cols = [c for c in df.columns
+                  if c not in ("item", "item_en", "item_id", "row_seq")]
+
+    long = df.melt(
+        id_vars=["item_id", "item", "item_en", "row_seq"],
+        value_vars=period_cols,
+        var_name="period_label",
+        value_name="value",
+    )
+    long["symbol"] = symbol.upper().strip()
+    long["statement_type"] = statement_type
+    long["period_type"] = period_type
+    long["item_vi"] = long["item"]
+    long["value"] = pd.to_numeric(long["value"], errors="coerce")
+    return long[warehouse.STATEMENT_COLS]
+
+
+def fetch_financial_statements(symbols: list[str], source: str = "VCI",
+                               period: str = "quarter") -> pd.DataFrame:
+    """Chi tiết BCTC (income_statement + balance_sheet + cash_flow) qua
+    Company.Finance(symbol, source, period).
+
+    `period="quarter"` trả 8 quý gần nhất (~2 năm); `period="year"` trả 8
+    năm gần nhất — KHÔNG có tham số nào mở rộng quá 8 kỳ (đã kiểm cả 2 chế
+    độ, xem spec §1.4). Cửa sổ 8-kỳ trượt theo thời gian giống sự kiện DN,
+    nhưng khoá ghi mịn tới từng kỳ nên tích luỹ đúng qua nhiều lần chạy —
+    xem docstring warehouse.upsert_financial_statements.
+
+    Một số mã KHÔNG CÓ BCTC nào qua nguồn này (DataFrame rỗng hoàn toàn,
+    0 dòng 0 cột — đã xác nhận thật với TDN/ULG, spec §1.2) — đây là
+    trường hợp BÌNH THƯỜNG (thiếu dữ liệu, không phải lỗi schema), xử lý
+    giống fetch_financials/fetch_company_info: bỏ qua mã đó, KHÔNG tính
+    vào rejected (chỉ dq.SchemaError mới tính).
+
+    Bắt SchemaError theo TỪNG (mã, loại báo cáo) — một báo cáo dị thường
+    không được xoá sổ cả mẻ ~1.600 mã đang chạy.
+
+    I4 (final review B2): DataFrame trả về mang kèm số liệu vận hành trong
+    `DataFrame.attrs` (API chuẩn của pandas cho metadata mức dataset):
+    `n_errors` (số lần gọi hỏng vì mạng/timeout/RetryError), `rejected` (số
+    báo cáo sai schema — LOẠI LỖI KHÁC HẲN, xem khối except bên dưới) và
+    `total_calls`. Dùng attrs thay vì đổi kiểu trả về để mọi chỗ gọi và mọi
+    test hiện có vẫn chạy nguyên: chỗ nào cần số liệu thì đọc
+    `df.attrs["n_errors"]` (build_warehouse.py đưa vào notes của
+    warehouse.log_load), chỗ nào không cần thì coi như không có gì đổi.
+    Trước bản sửa này, lỗi mạng chỉ được in 1 dòng log rồi biến mất — job
+    có thể hỏng hàng trăm mã mà etl_load_log vẫn ghi status="ok".
+    """
+    frames, rejected, total_calls, n_errors = [], 0, 0, 0
+    for symbol in symbols:
+        for statement_type in _STATEMENT_TYPES:
+            ingest._throttle()
+            total_calls += 1
+            try:
+                fin = Finance(symbol=symbol, source=source, period=period)
+                df = getattr(fin, statement_type)()
+            except Exception as e:
+                # I4 (final review B2): ĐẾM lỗi mạng/timeout/RetryError.
+                # Cố ý tách khỏi `rejected` (chỉ dành cho dq.SchemaError ở
+                # khối except phía dưới): "không lấy được dữ liệu" và "lấy
+                # được nhưng sai schema" là hai sự cố khác nhau, trộn chung
+                # một bộ đếm sẽ làm ngưỡng degraded của dq.status_for mất ý
+                # nghĩa (mạng chập chờn sẽ bị hiểu nhầm là nguồn đổi schema).
+                print(f"[statements] {symbol}/{statement_type}: {e}")
+                n_errors += 1
+                continue
+            if df is None or len(df) == 0:
+                continue
+            df.columns = [str(c).lower() for c in df.columns]
+            if not _printed_statement_cols.get(statement_type):
+                print(f"[statements] cột thật ({symbol}/{statement_type}): {list(df.columns)}")
+                _printed_statement_cols[statement_type] = True
+            try:
+                row = _unpivot_statement(df, symbol, statement_type, period)
+            except dq.SchemaError as e:
+                print(f"[statements] {symbol}/{statement_type}: {e}")
+                rejected += 1
+                continue
+            if row is not None and not row.empty:
+                frames.append(row)
+    if rejected and dq.status_for(len(frames), rejected) == "degraded":
+        raise dq.SchemaError(
+            f"[Finance statements] {rejected}/{total_calls} (mã, báo cáo) sai "
+            "schema — nguồn có thể đã đổi"
+        )
+    print(f"[statements] {n_errors}/{total_calls} lần gọi lỗi mạng/API "
+          f"(không phải schema); {rejected} báo cáo sai schema")
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
+        columns=warehouse.STATEMENT_COLS)
+    out.attrs["n_errors"] = n_errors
+    out.attrs["rejected"] = rejected
+    out.attrs["total_calls"] = total_calls
+    return out

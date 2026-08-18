@@ -117,3 +117,32 @@ models:
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns: [symbol, officer_name, snapshot_date]
+
+  - name: stg_financial_statement
+    description: >
+      Chi tiết BCTC dạng dài (income_statement/balance_sheet/cash_flow).
+      Khoá là (symbol, statement_type, period_type, period_label, row_seq)
+      — row_seq (vị trí dòng gốc) thay cho item_id vì item_id KHÔNG unique
+      trong một báo cáo (vd 'cost' xuất hiện 4 lần ở balance_sheet, mỗi
+      lần một nhóm tài sản cố định khác nhau).
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: statement_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['income_statement', 'balance_sheet', 'cash_flow']
+      - name: period_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['quarter', 'year']
+      - name: item_id
+        tests: [not_null]
+      - name: item_vi
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            [symbol, statement_type, period_type, period_label, row_seq]

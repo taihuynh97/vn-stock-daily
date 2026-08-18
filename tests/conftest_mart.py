@@ -231,4 +231,62 @@ def build_fake_mart(path: str):
           ('EEE','e4','DIV','Trả cổ tức bằng tiền mặt - Cả năm 2024 - 800 VND',
            'CASH_DIVIDEND',TRUE,NULL);
     """)
+    # --- B2: BCTC chi tiết ---
+    # Mô phỏng đúng ca thật: item_id 'cost' trùng 2 lần (2 nhóm tài sản
+    # khác nhau, cùng item_id, khác item_vi/row_seq) — đúng bài học A3
+    # I2/B1 Task 4/5: fixture phải khớp schema/hành vi thật, không chỉ khớp
+    # tên cột, nếu không lỗi phân biệt row_seq sẽ lọt qua mọi test.
+    con.execute("""
+        CREATE TABLE stg_financial_statement (
+            symbol VARCHAR, statement_type VARCHAR, period_type VARCHAR,
+            period_label VARCHAR, row_seq INTEGER, item_id VARCHAR,
+            item_vi VARCHAR, item_en VARCHAR, value DOUBLE
+        );
+        INSERT INTO stg_financial_statement VALUES
+          ('AAA','income_statement','quarter','2026-Q2',0,'net_sales','Doanh thu thuần','Net sales',100.0),
+          ('AAA','income_statement','quarter','2026-Q1',0,'net_sales','Doanh thu thuần','Net sales',90.0),
+          ('AAA','balance_sheet','quarter','2026-Q2',30,'cost','Nguyên giá TSCĐ hữu hình','Cost of tangible FA',10.0),
+          ('AAA','balance_sheet','quarter','2026-Q1',30,'cost','Nguyên giá TSCĐ hữu hình','Cost of tangible FA',9.0),
+          ('AAA','balance_sheet','quarter','2026-Q2',40,'cost','Nguyên giá tài sản đầu tư','Cost of investment property',5.0),
+          ('AAA','balance_sheet','quarter','2026-Q1',40,'cost','Nguyên giá tài sản đầu tư','Cost of investment property',4.0);
+    """)
+    # --- B2 final review: dữ liệu cho I2 (cắt âm thầm) và I3 (trôi dạt
+    # template). Dùng mã RIÊNG (BIG/DRIFT) để không đụng các test cũ đang
+    # đếm item của AAA.
+    #
+    # Nhãn kỳ ở đây viết thường ('2026-q2') đúng như production sinh ra
+    # (_unpivot_statement lowercase toàn bộ tên cột) — khác các dòng AAA
+    # phía trên viết hoa. Giữ cả hai dạng là CỐ Ý: sắp xếp DESC theo chuỗi
+    # phải đúng thứ tự thời gian với cả hai, vì phần quyết định thứ tự là
+    # tiền tố năm zero-pad, không phải chữ q hoa hay thường.
+    #
+    # BIG: 208 dòng x 10 kỳ = 2.080 dòng — ĐÚNG ca đã tái hiện được ở final
+    # review, vượt hằng số cứng limit=2000 cũ nên tool trả về 200/208 item
+    # mà has_data vẫn True, không tín hiệu nào báo bị cắt.
+    con.execute("""
+        INSERT INTO stg_financial_statement
+        SELECT 'BIG', 'balance_sheet', 'quarter', p.period_label, s.seq,
+               'item_' || s.seq, 'Dòng ' || s.seq, 'Row ' || s.seq,
+               s.seq * 1.0 + p.k
+        FROM generate_series(0, 207) AS s(seq)
+        CROSS JOIN (VALUES
+            ('2024-q1', 1), ('2024-q2', 2), ('2024-q3', 3), ('2024-q4', 4),
+            ('2025-q1', 5), ('2025-q2', 6), ('2025-q3', 7), ('2025-q4', 8),
+            ('2026-q1', 9), ('2026-q2', 10)
+        ) AS p(period_label, k);
+    """)
+    # DRIFT: CÙNG row_seq=30 nhưng là HAI dòng BCTC khác hẳn nhau ở hai kỳ
+    # khác nhau — mô phỏng template BCTC của VCI đổi theo thời gian. Phải
+    # trả về 2 item RIÊNG BIỆT; gộp chỉ theo row_seq sẽ trộn giá trị của
+    # "Hàng tồn kho" (kỳ cũ) vào chuỗi của "Nguyên giá TSCĐ hữu hình" (kỳ
+    # mới) mà không có tín hiệu lỗi nào.
+    con.execute("""
+        INSERT INTO stg_financial_statement VALUES
+          ('DRIFT','balance_sheet','quarter','2026-q2',30,'cost',
+           'Nguyên giá TSCĐ hữu hình','Cost of tangible FA',10.0),
+          ('DRIFT','balance_sheet','quarter','2025-q1',30,'inventory',
+           'Hàng tồn kho','Inventories',7.0),
+          ('DRIFT','balance_sheet','quarter','2026-q2',31,'other',
+           'Tài sản khác','Other assets',1.0);
+    """)
     con.close()
