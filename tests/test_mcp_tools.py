@@ -551,10 +551,23 @@ def test_ownership_change_chi_1_snapshot_delta_bang_0(con):
 
 def test_ownership_change_khop_int_ownership_snapshot(con):
     """Tiêu chí hoàn thành #2 (spec §7): _ownership_change tự tính lại phép
-    gộp — phải khớp TUYỆT ĐỐI với int_ownership_snapshot (model dbt) khi
-    cùng 1 mốc snapshot_date. Dùng GGG vì dữ liệu ở đây được dựng nhất quán
-    giữa 2 bảng (xem comment ở fixture) — dòng AAA của int_ownership_snapshot
-    KHÔNG dùng được cho so sánh này (tạo cho mục đích khác từ B1)."""
+    gộp và phải ra đúng con số kỳ vọng trên một bộ dữ liệu cố định.
+
+    Important #6 (final review) — PHẠM VI THẬT của test này, đọc kỹ trước khi
+    tin vào nó: vế "expected" đọc từ bảng int_ownership_snapshot GIẢ trong
+    fixture, mà dòng GGG ở đó là một dòng VIẾT TAY, KHÔNG phải kết quả chạy
+    model dbt thật (transforms/models/intermediate/int_ownership_snapshot.sql).
+    Nói cách khác đây là test tái hiện phép tính số học trên dữ liệu cố định,
+    KHÔNG PHẢI test tích hợp với dbt, và nó KHÔNG bảo vệ được khỏi trôi dạt
+    công thức: nếu công thức gộp trong model dbt đổi, dòng viết tay không tự
+    đổi theo nên test vẫn xanh trong khi 2 cài đặt đã lệch nhau. Việc chặn
+    trôi dạt thật sự cần chạy `dbt build` trong CI — nợ kỹ thuật CI đã biết,
+    ngoài phạm vi C1. Trong lúc chờ, ràng buộc được ghi bằng comment ở đầu
+    file .sql kia (sửa công thức ở đó thì phải sửa _ownership_change).
+
+    Dùng GGG vì dữ liệu ở đây được dựng nhất quán giữa 2 bảng (xem comment ở
+    fixture) — dòng AAA của int_ownership_snapshot KHÔNG dùng được cho so
+    sánh này (tạo cho mục đích khác từ B1)."""
     r = tools._ownership_change(con, "GGG", "2026-01-01")
     expected = db.run_query(
         con,
