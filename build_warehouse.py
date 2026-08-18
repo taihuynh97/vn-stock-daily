@@ -22,6 +22,86 @@ load_dotenv()
 ROOT = Path(__file__).resolve().parent
 
 
+# --- Fix trần 360 phút của GitHub Actions (final review B2) ---
+# Số mã mỗi lô fetch+ghi BCTC. Bản đầu gom TOÀN BỘ ~1.600 mã rồi mới gọi
+# upsert_financial_statements MỘT lần ở cuối — nghĩa là một job bị GitHub
+# giết giữa chừng (trần CỨNG 360 phút; job monthly đo thật ở Task 5 mất 767
+# phút) ghi được 0 dòng BCTC: được ăn cả, ngã về không. Ghi theo lô thì các
+# lô ĐÃ xong đã nằm thật trong raw_financial_statement nhờ INSERT OR
+# REPLACE, lần chạy tháng sau chỉ tiếp tục phần còn thiếu (idempotent,
+# không trùng lặp, không mất dữ liệu).
+STATEMENT_CHUNK_SIZE = 100
+
+# Bỏ qua fetch period="year" cho mã đã có dòng year được ghi trong ngần này
+# ngày. BCTC năm hiếm khi đổi (chỉ đổi khi có báo cáo kiểm toán mới — spec
+# B2 §1.4), nên fetch lại MỖI THÁNG cho ~1.600 mã là lãng phí thời gian
+# lớn trong khi job đang vượt trần CI. Lần chạy ĐẦU TIÊN (bảng chưa có dòng
+# year nào) vẫn fetch toàn bộ như thường; cơ chế này chỉ có tác dụng từ lần
+# chạy tháng THỨ HAI trở đi.
+STATEMENT_YEAR_FRESH_DAYS = 300
+
+
+def _ingest_statements_chunked(con, symbols, source, period):
+    """Fetch + ghi BCTC theo TỪNG LÔ STATEMENT_CHUNK_SIZE mã (fix trần 360
+    phút CI — xem STATEMENT_CHUNK_SIZE).
+
+    Trả về (tổng số dòng đã ghi, số lần gọi lỗi mạng/API, tổng số lần gọi).
+
+    Chữ ký fetch_financial_statements/upsert_financial_statements KHÔNG đổi
+    — chỉ CÁCH GỌI đổi (vòng lặp theo lô), nên toàn bộ test Task 2 giữ
+    nguyên. Lưu ý một hệ quả có thật: ngưỡng "degraded" của dq.status_for
+    bên trong fetch_financial_statements giờ tính TRÊN TỪNG LÔ (~300 lần
+    gọi) thay vì trên cả mẻ ~4.800 lần gọi — nhạy hơn (phát hiện nguồn đổi
+    schema sớm hơn) và khi nó ném lỗi thì các lô trước đó vẫn giữ nguyên dữ
+    liệu đã ghi, thay vì mất trắng.
+    """
+    if not symbols:
+        return 0, 0, 0
+    total_rows = n_errors = total_calls = 0
+    n_chunks = (len(symbols) + STATEMENT_CHUNK_SIZE - 1) // STATEMENT_CHUNK_SIZE
+    print(f"Bắt đầu fetch BCTC chi tiết, period={period} ({len(symbols)} mã, "
+          f"{n_chunks} lô x {STATEMENT_CHUNK_SIZE})...")
+    for i in range(0, len(symbols), STATEMENT_CHUNK_SIZE):
+        chunk = symbols[i:i + STATEMENT_CHUNK_SIZE]
+        df = ingest_market.fetch_financial_statements(chunk, source, period=period)
+        n_rows = warehouse.upsert_financial_statements(con, df)
+        total_rows += n_rows
+        # n_errors/total_calls đi kèm DataFrame qua df.attrs — xem
+        # fetch_financial_statements (giữ nguyên kiểu trả về DataFrame để
+        # không phải sửa mọi chỗ gọi/test hiện có).
+        n_errors += int(df.attrs.get("n_errors", 0))
+        total_calls += int(df.attrs.get("total_calls", 0))
+        print(f"[statements/{period}] lô {i // STATEMENT_CHUNK_SIZE + 1}/{n_chunks} "
+              f"({len(chunk)} mã): +{n_rows} dòng, cộng dồn {total_rows} dòng, "
+              f"{n_errors} lỗi mạng/API")
+    return total_rows, n_errors, total_calls
+
+
+def _symbols_need_year_fetch(con, symbols):
+    """Loại khỏi `symbols` các mã đã có dữ liệu period_type='year' được ghi
+    trong vòng STATEMENT_YEAR_FRESH_DAYS ngày (fix trần 360 phút CI).
+
+    BCTC năm hiếm khi đổi, nên fetch lại hàng tháng cho mã đã có dữ liệu
+    tươi gần như chắc chắn trả về đúng con số cũ — tốn thời gian mà không
+    thêm thông tin. Mã CHƯA có dữ liệu year (kể cả mã VCI không có BCTC)
+    vẫn được thử lại mỗi tháng: đó là cơ chế để dần lấp đầy các mã lỗi mạng
+    thoáng qua ở lần chạy trước.
+    """
+    rows = con.execute(
+        f"""
+        SELECT DISTINCT symbol FROM raw_financial_statement
+        WHERE period_type = 'year'
+          AND ingested_at >= now() - INTERVAL {int(STATEMENT_YEAR_FRESH_DAYS)} DAY
+        """
+    ).fetchall()
+    fresh = {r[0] for r in rows}
+    need = [s for s in symbols if s not in fresh]
+    print(f"[statements/year] bỏ qua {len(symbols) - len(need)} mã đã có dữ liệu "
+          f"year trong {STATEMENT_YEAR_FRESH_DAYS} ngày gần đây; "
+          f"thực sự fetch {len(need)}/{len(symbols)} mã")
+    return need
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Warehouse ingestion job")
@@ -105,29 +185,6 @@ def main():
                            notes=f"append-only; fetch {len(events)} dong")
         print(f"raw_corporate_event: +{n_ev} dòng mới (fetch {len(events)})")
 
-    # 3c) BCTC chi tiết (B2) — quarter chạy CẢ weekly lẫn monthly, cùng lý
-    # do sự kiện DN chạy cả hai (monthly là superset của weekly).
-    if args.mode in ("weekly", "monthly"):
-        print(f"Bắt đầu fetch BCTC chi tiết, period=quarter ({len(symbols)} mã)...")
-        stmt_q = ingest_market.fetch_financial_statements(symbols, source, period="quarter")
-        n_stmt_q = warehouse.upsert_financial_statements(con, stmt_q)
-        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_statement",
-                           n_stmt_q, "ok" if n_stmt_q else "empty", watermark=run_date,
-                           notes="period=quarter")
-        print(f"raw_financial_statement (quarter): {n_stmt_q} dòng")
-
-    # 3d) BCTC chi tiết, period=year — CHỈ monthly (dữ liệu năm hiếm khi
-    # đổi, không cần nhịp tuần; xếp cùng nhịp với company_info/shareholders
-    # bên dưới thay vì chạy tuần vô ích).
-    if args.mode == "monthly":
-        print(f"Bắt đầu fetch BCTC chi tiết, period=year ({len(symbols)} mã)...")
-        stmt_y = ingest_market.fetch_financial_statements(symbols, source, period="year")
-        n_stmt_y = warehouse.upsert_financial_statements(con, stmt_y)
-        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_statement",
-                           n_stmt_y, "ok" if n_stmt_y else "empty", watermark=run_date,
-                           notes="period=year")
-        print(f"raw_financial_statement (year): {n_stmt_y} dòng")
-
     # 4) Dim_industry (phân ngành ICB) + company info — monthly only
     if args.mode == "monthly":
         ind = ingest_market.fetch_industries_icb(source)
@@ -162,6 +219,39 @@ def main():
                            n_of, "ok" if n_of else "empty", watermark=run_date,
                            notes=f"snapshot {run_date}")
         print(f"raw_officer: {n_of} dòng (snapshot {run_date})")
+
+    # 5) BCTC chi tiết (B2) — quarter chạy CẢ weekly lẫn monthly, cùng lý
+    # do sự kiện DN chạy cả hai (monthly là superset của weekly).
+    #
+    # FIX trần 360 phút của GitHub Actions (final review B2): khối BCTC CỐ Ý
+    # xếp SAU khối 4 (dim_industry/company_info/shareholders/officers). Đo
+    # thật ở Task 5: job monthly mất 767 phút — vượt xa trần CỨNG 360 phút
+    # của GitHub-hosted runner, nên rất dễ bị GitHub giết giữa chừng. BCTC
+    # là phần chậm nhất; nếu để nó chạy TRƯỚC như bản đầu thì một job bị
+    # giết sẽ kéo theo mất luôn các bước ĐÃ CÓ TỪ TRƯỚC B2 (regression cho
+    # chức năng cũ). Xếp sau -> các bước cũ luôn hoàn tất trước khi bước vào
+    # phần rủi ro nhất.
+    if args.mode in ("weekly", "monthly"):
+        n_stmt_q, n_err_q, n_call_q = _ingest_statements_chunked(
+            con, symbols, source, "quarter")
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_statement",
+                           n_stmt_q, "ok" if n_stmt_q else "empty", watermark=run_date,
+                           notes=f"period=quarter; {n_err_q}/{n_call_q} loi mang/API")
+        print(f"raw_financial_statement (quarter): {n_stmt_q} dòng")
+
+    # 5b) BCTC chi tiết, period=year — CHỈ monthly (dữ liệu năm hiếm khi
+    # đổi, không cần nhịp tuần; xếp cùng nhịp với company_info/shareholders
+    # bên trên thay vì chạy tuần vô ích). Thêm bước lọc mã đã có dữ liệu
+    # year còn tươi — xem _symbols_need_year_fetch.
+    if args.mode == "monthly":
+        year_symbols = _symbols_need_year_fetch(con, symbols)
+        n_stmt_y, n_err_y, n_call_y = _ingest_statements_chunked(
+            con, year_symbols, source, "year")
+        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_statement",
+                           n_stmt_y, "ok" if n_stmt_y else "empty", watermark=run_date,
+                           notes=(f"period=year; {n_err_y}/{n_call_y} loi mang/API; "
+                                  f"fetch {len(year_symbols)}/{len(symbols)} ma"))
+        print(f"raw_financial_statement (year): {n_stmt_y} dòng")
 
     con.close()
     print(f"Xong warehouse job ({args.mode}).")

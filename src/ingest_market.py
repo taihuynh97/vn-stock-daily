@@ -798,8 +798,19 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
 
     Bắt SchemaError theo TỪNG (mã, loại báo cáo) — một báo cáo dị thường
     không được xoá sổ cả mẻ ~1.600 mã đang chạy.
+
+    I4 (final review B2): DataFrame trả về mang kèm số liệu vận hành trong
+    `DataFrame.attrs` (API chuẩn của pandas cho metadata mức dataset):
+    `n_errors` (số lần gọi hỏng vì mạng/timeout/RetryError), `rejected` (số
+    báo cáo sai schema — LOẠI LỖI KHÁC HẲN, xem khối except bên dưới) và
+    `total_calls`. Dùng attrs thay vì đổi kiểu trả về để mọi chỗ gọi và mọi
+    test hiện có vẫn chạy nguyên: chỗ nào cần số liệu thì đọc
+    `df.attrs["n_errors"]` (build_warehouse.py đưa vào notes của
+    warehouse.log_load), chỗ nào không cần thì coi như không có gì đổi.
+    Trước bản sửa này, lỗi mạng chỉ được in 1 dòng log rồi biến mất — job
+    có thể hỏng hàng trăm mã mà etl_load_log vẫn ghi status="ok".
     """
-    frames, rejected, total_calls = [], 0, 0
+    frames, rejected, total_calls, n_errors = [], 0, 0, 0
     for symbol in symbols:
         for statement_type in _STATEMENT_TYPES:
             ingest._throttle()
@@ -808,7 +819,14 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
                 fin = Finance(symbol=symbol, source=source, period=period)
                 df = getattr(fin, statement_type)()
             except Exception as e:
+                # I4 (final review B2): ĐẾM lỗi mạng/timeout/RetryError.
+                # Cố ý tách khỏi `rejected` (chỉ dành cho dq.SchemaError ở
+                # khối except phía dưới): "không lấy được dữ liệu" và "lấy
+                # được nhưng sai schema" là hai sự cố khác nhau, trộn chung
+                # một bộ đếm sẽ làm ngưỡng degraded của dq.status_for mất ý
+                # nghĩa (mạng chập chờn sẽ bị hiểu nhầm là nguồn đổi schema).
                 print(f"[statements] {symbol}/{statement_type}: {e}")
+                n_errors += 1
                 continue
             if df is None or len(df) == 0:
                 continue
@@ -829,5 +847,11 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
             f"[Finance statements] {rejected}/{total_calls} (mã, báo cáo) sai "
             "schema — nguồn có thể đã đổi"
         )
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
+    print(f"[statements] {n_errors}/{total_calls} lần gọi lỗi mạng/API "
+          f"(không phải schema); {rejected} báo cáo sai schema")
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
         columns=warehouse.STATEMENT_COLS)
+    out.attrs["n_errors"] = n_errors
+    out.attrs["rejected"] = rejected
+    out.attrs["total_calls"] = total_calls
+    return out
