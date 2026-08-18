@@ -324,6 +324,11 @@ def test_get_financial_statement_tra_dung_dang_moi_dong_kem_chuoi_ky(con):
     assert item["item_vi"] == "Doanh thu thuần"
     assert item["values_by_period"]["2026-Q2"] == 100.0
     assert item["values_by_period"]["2026-Q1"] == 90.0
+    # Minor finding fix round 1 (review): n_periods_available chưa có test
+    # nào assert trước đây — fixture có đúng 2 kỳ (2026-Q2, 2026-Q1) cho
+    # income_statement AAA.
+    assert res["data_quality"]["has_data"] is True
+    assert res["data_quality"]["n_periods_available"] == 2
 
 
 def test_get_financial_statement_phan_biet_hai_dong_trung_item_id_bang_row_seq(con):

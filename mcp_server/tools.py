@@ -602,7 +602,7 @@ def get_financial_statement(con, symbol: str, statement_type: str,
     rows = db.run_query(
         con,
         """
-        SELECT row_seq, item_id, item_vi, item_en, period_label, value
+        SELECT row_seq, item_id, item_vi, period_label, value
         FROM stg_financial_statement
         WHERE symbol = ? AND statement_type = ? AND period_type = ?
         ORDER BY row_seq, period_label DESC
@@ -618,6 +618,19 @@ def get_financial_statement(con, symbol: str, statement_type: str,
             **db.as_of(con),
         }
 
+    # Fix round 1 (review): route TOÀN BỘ dòng qua _clean() TRƯỚC khi dùng —
+    # cùng convention với get_ownership/get_distribution_history
+    # (_clean(holders)/_clean(events) áp cho cả dict, không riêng một cột).
+    # Bản trước chỉ _clean() cột `value`, để row_seq/item_id/item_vi lọt qua
+    # trực tiếp từ pandas/DuckDB — rủi ro cụ thể: `row_seq` KHÔNG có test
+    # not_null trong _staging.yml (chỉ nằm trong unique_combination_of_columns
+    # cùng period_label), nên nếu có dữ liệu thật với row_seq NULL ở nhiều
+    # dòng khác nhau, dict key `seq` sẽ là NaN/None không nhất quán và có thể
+    # gộp nhầm các dòng khác nhóm vào chung items_by_seq[None] với
+    # has_data=True, không có tín hiệu lỗi nào báo — đúng lỗi mà row_seq được
+    # thêm vào để tránh.
+    rows = _clean(rows)
+
     # Gộp lại theo (row_seq, item_id, item_vi) -> {period_label: value},
     # giữ nguyên thứ tự row_seq đã sort ở SQL.
     items_by_seq: dict[int, dict] = {}
@@ -632,7 +645,7 @@ def get_financial_statement(con, symbol: str, statement_type: str,
                 "values_by_period": {},
             }
             order.append(seq)
-        items_by_seq[seq]["values_by_period"][r["period_label"]] = _clean(r["value"])
+        items_by_seq[seq]["values_by_period"][r["period_label"]] = r["value"]
 
     items = [items_by_seq[s] for s in order]
 
