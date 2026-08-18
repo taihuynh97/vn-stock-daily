@@ -1,7 +1,7 @@
 import duckdb
 import pytest
 
-from mcp_server import tools
+from mcp_server import db, tools
 from tests.conftest_mart import build_fake_mart
 
 
@@ -458,3 +458,162 @@ def test_get_financial_statement_ma_khong_ton_tai_van_la_has_data_false(con):
     res = tools.get_financial_statement(con, "ZZZ", "cash_flow")
     assert "error" not in res
     assert res["data_quality"]["has_data"] is False
+
+
+# --- C1: get_thesis_update (luận điểm đầu tư định kỳ) ---
+
+def test_current_scores_khop_5_diem_thanh_phan(con):
+    r = tools._current_scores(con, "AAA")
+    assert r == {
+        "value": 80.0, "quality": 70.0, "growth": 60.0,
+        "dividend": 90.0, "safety": 50.0,
+    }
+
+
+def test_current_scores_ma_khong_ton_tai_tra_none(con):
+    assert tools._current_scores(con, "ZZZ") is None
+
+
+def test_financial_trend_chi_tra_quy_sau_since_date_dung_thu_tu(con):
+    r = tools._financial_trend(con, "AAA", "2026-01-01")
+    assert r["n_new_quarters"] == 2
+    quarters = r["quarters"]
+    assert [(q["year"], q["quarter"]) for q in quarters] == [(2026, 1), (2026, 2)]
+
+
+def test_financial_trend_loc_dung_since_date_cat_bot_qua_cu(con):
+    r = tools._financial_trend(con, "AAA", "2026-04-01")
+    assert r["n_new_quarters"] == 1
+    assert [(q["year"], q["quarter"]) for q in r["quarters"]] == [(2026, 2)]
+
+
+def test_financial_trend_khong_lan_dong_nam_quarter_5(con):
+    """Dòng năm (quarter=5, period_type='year', period_end_date 2025-12-31)
+    PHẢI bị loại dù since_date đủ cũ để bao trùm nó — bảo vệ đúng Global
+    Constraint 'phải lọc period_type=quarter'."""
+    r = tools._financial_trend(con, "AAA", "2020-01-01")
+    assert r["n_new_quarters"] == 2
+    assert all(q["quarter"] != 5 for q in r["quarters"])
+
+
+def test_new_distribution_events_loc_dung_since_date(con):
+    r = tools._new_distribution_events(con, "AAA", "2026-05-01")
+    assert len(r) == 2
+    # Sửa so với brief gốc: 2 literal gốc trong brief chỉ dài 19 ký tự (thiếu
+    # 1 ký tự cuối so với tiêu đề thật cắt ở vị trí 20), nên literal[:20] là
+    # no-op còn event_title_vi[:20] của dữ liệu thật lấy đủ 20 ký tự — 2 vế
+    # không bao giờ khớp (đã tự xác minh: 'tiề' 19 ký tự vs 'tiền' 20 ký tự
+    # của "Trả cổ tức bằng tiền mặt..."). Sửa literal cho đủ 20 ký tự, giữ
+    # nguyên Ý ĐỊNH gốc (kiểm diện cả 2 tiêu đề sự kiện qua tiền tố cắt).
+    assert {e["event_title_vi"][:20] for e in r} == {
+        "Trả cổ tức bằng tiền", "Phát hành cổ phiếu -",
+    }
+
+
+def test_new_statement_periods_phat_hien_dung_ky_moi(con):
+    r = tools._new_statement_periods(con, "AAA", "2026-06-01")
+    assert len(r) == 1
+    assert r[0]["period_label"] == "2026-q2"
+    assert r[0]["statement_type"] == "income_statement"
+
+
+def test_new_statement_periods_khong_co_gi_moi_tra_mang_rong(con):
+    r = tools._new_statement_periods(con, "AAA", "2026-09-01")
+    assert r == []
+
+
+def test_ownership_change_tinh_dung_delta_khi_co_baseline_that(con):
+    r = tools._ownership_change(con, "AAA", "2026-06-01")
+    assert r["baseline_snapshot_date"] == "2026-05-01"
+    assert r["latest_snapshot_date"] == "2026-08-01"
+    assert r["baseline_is_fallback"] is False
+    assert r["top1_pct"]["baseline"] == pytest.approx(0.2400)
+    assert r["top1_pct"]["latest"] == pytest.approx(0.2580)
+    assert r["top1_pct"]["delta"] == pytest.approx(0.0180, abs=1e-6)
+    assert r["insider_pct"]["baseline"] == pytest.approx(0.2400)
+    assert r["insider_pct"]["latest"] == pytest.approx(0.3105)
+
+
+def test_ownership_change_fallback_khi_khong_co_snapshot_truoc_since_date(con):
+    """since_date quá xa (2026-01-01) -> không có snapshot nào <= mốc đó ->
+    dùng snapshot CŨ NHẤT hiện có (2026-05-01) làm baseline, đặt cờ fallback."""
+    r = tools._ownership_change(con, "AAA", "2026-01-01")
+    assert r["baseline_snapshot_date"] == "2026-05-01"
+    assert r["baseline_is_fallback"] is True
+
+
+def test_ownership_change_chi_1_snapshot_delta_bang_0(con):
+    r = tools._ownership_change(con, "GGG", "2026-01-01")
+    assert r["baseline_snapshot_date"] == r["latest_snapshot_date"] == "2026-08-01"
+    assert r["top1_pct"]["delta"] == 0.0
+
+
+def test_ownership_change_khop_int_ownership_snapshot(con):
+    """Tiêu chí hoàn thành #2 (spec §7): _ownership_change tự tính lại phép
+    gộp — phải khớp TUYỆT ĐỐI với int_ownership_snapshot (model dbt) khi
+    cùng 1 mốc snapshot_date. Dùng GGG vì dữ liệu ở đây được dựng nhất quán
+    giữa 2 bảng (xem comment ở fixture) — dòng AAA của int_ownership_snapshot
+    KHÔNG dùng được cho so sánh này (tạo cho mục đích khác từ B1)."""
+    r = tools._ownership_change(con, "GGG", "2026-01-01")
+    expected = db.run_query(
+        con,
+        "SELECT total_disclosed_pct, top1_pct, top5_pct, insider_pct "
+        "FROM int_ownership_snapshot WHERE symbol = 'GGG'",
+        limit=1,
+    )[0]
+    assert r["total_disclosed_pct"]["latest"] == pytest.approx(expected["total_disclosed_pct"])
+    assert r["top1_pct"]["latest"] == pytest.approx(expected["top1_pct"])
+    assert r["top5_pct"]["latest"] == pytest.approx(expected["top5_pct"])
+    assert r["insider_pct"]["latest"] == pytest.approx(expected["insider_pct"])
+
+
+def test_ownership_change_ma_khong_co_du_lieu_so_huu_tra_none(con):
+    assert tools._ownership_change(con, "ZZZ", "2026-01-01") is None
+
+
+def test_get_thesis_update_lap_rap_du_4_khoi(con):
+    r = tools.get_thesis_update(con, "AAA", "2026-01-01")
+    assert r["symbol"] == "AAA"
+    assert r["since_date"] == "2026-01-01"
+    assert r["current_scores"]["quality"] == 70.0
+    assert r["financial_trend"]["n_new_quarters"] == 2
+    assert len(r["new_distribution_events"]) == 2
+    assert len(r["new_statement_periods"]) == 2
+    assert r["ownership_change"]["baseline_is_fallback"] is True
+
+
+def test_get_thesis_update_since_date_none_mac_dinh_90_ngay(con, monkeypatch):
+    import datetime
+    fixed_today = datetime.date(2026, 8, 19)
+
+    class _FixedDate(datetime.date):
+        @classmethod
+        def today(cls):
+            return fixed_today
+
+    monkeypatch.setattr(tools, "date", _FixedDate)
+    r = tools.get_thesis_update(con, "AAA", None)
+    assert r["since_date"] == "2026-05-21"
+
+
+def test_get_thesis_update_ma_hoan_toan_khong_ton_tai_tra_error(con):
+    r = tools.get_thesis_update(con, "ZZZ", "2026-01-01")
+    assert "error" in r
+
+
+def test_new_distribution_events_khong_co_gi_moi_tra_mang_rong(con):
+    r = tools._new_distribution_events(con, "AAA", "2026-06-01")
+    assert r == []
+
+
+# Bổ sung so với brief gốc (không có trong task-1-brief.md): khoá lại đúng
+# thứ tự _date_str() TRƯỚC _clean() — cùng bài học A3 đã ghi trong docstring
+# _date_str(): cột DATE qua .df() ra pandas.Timestamp, _clean() tự chuyển
+# thành chuỗi qua .isoformat() (rò rỉ "T00:00:00") TRƯỚC KHI _date_str() kịp
+# .date() nó, nếu áp _date_str() SAU _clean() như trong bản nháp đầu của
+# brief. Đã tự xác minh thực nghiệm bằng thực thi trực tiếp (không tin vào
+# giả định trước khi sửa).
+def test_new_distribution_events_ngay_dung_dinh_dang_iso(con):
+    r = tools._new_distribution_events(con, "AAA", "2026-05-01")
+    by_date = sorted(e["exright_date"] for e in r)
+    assert by_date == ["2026-05-11", "2026-05-25"]

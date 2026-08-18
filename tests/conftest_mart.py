@@ -70,13 +70,19 @@ def build_fake_mart(path: str):
         INSERT INTO fct_price_daily VALUES ('AAA', DATE '2026-08-07', 20000);
         CREATE TABLE fct_financial_quarterly (
             symbol VARCHAR, year INTEGER, quarter INTEGER, period_end_date DATE,
-            com_class VARCHAR, pe DOUBLE, pb DOUBLE, roe DOUBLE,
+            period_type VARCHAR, com_class VARCHAR, pe DOUBLE, pb DOUBLE, roe DOUBLE,
             revenue_ttm DOUBLE, earnings_ttm DOUBLE, revenue_yoy DOUBLE,
             earnings_yoy DOUBLE
         );
         INSERT INTO fct_financial_quarterly VALUES
-          ('AAA',2026,2,DATE '2026-06-30','NONFIN',9.5,1.2,0.18,1e13,1e12,0.12,0.20),
-          ('AAA',2026,1,DATE '2026-03-31','NONFIN',10.1,1.3,0.17,9.5e12,9e11,0.10,0.15);
+          ('AAA',2026,2,DATE '2026-06-30','quarter','NONFIN',9.5,1.2,0.18,1e13,1e12,0.12,0.20),
+          ('AAA',2026,1,DATE '2026-03-31','quarter','NONFIN',10.1,1.3,0.17,9.5e12,9e11,0.10,0.15),
+          -- C1: dòng NĂM (quarter=5, period_type='year') — CÙNG period_end_date
+          -- 31/12 như quarter=4 của năm trước đó nếu có, nhưng ở đây dùng
+          -- năm riêng (2025) để không trùng period_end_date với 2 dòng quý
+          -- trên. Mục đích: test _financial_trend PHẢI lọc period_type='quarter',
+          -- nếu lọt dòng này vào kết quả thì test thất bại rõ ràng.
+          ('AAA',2025,5,DATE '2025-12-31','year','NONFIN',8.8,1.1,0.16,8e12,7e11,0.08,0.10);
         -- pe_quarters_used / pb_quarters_used (KHÔNG phải own_quarters_used —
         -- đã tách ra hai cột riêng ở A2 Task 6 fix round 2, vì cửa sổ hợp lệ
         -- của P/E và P/B không luôn bằng nhau cho cùng một mã/kỳ; dùng đúng
@@ -195,6 +201,32 @@ def build_fake_mart(path: str):
            DATE '2026-07-15',DATE '2026-08-01'),
           ('BBB','Ông D','Chủ tịch HĐQT',0.1500,3.75e8,
            DATE '2026-06-15',DATE '2026-07-01');
+        -- C1: snapshot sở hữu THỨ HAI, sớm hơn (2026-05-01), cho AAA — để
+        -- _ownership_change có 2 mốc THẬT để tính delta. Chỉ đổi tỉ lệ của
+        -- Ông Nguyễn Văn A (0.2580 -> 0.2400) để tạo delta rõ ràng, dễ kiểm.
+        INSERT INTO stg_shareholder VALUES
+          ('AAA','Ông Nguyễn Văn A',1.5e9,0.2400,DATE '2026-04-15',DATE '2026-05-01'),
+          ('AAA','Bà Trần Thị B',4.2e8,0.0688,DATE '2026-04-15',DATE '2026-05-01');
+        INSERT INTO stg_officer VALUES
+          ('AAA','Ông Nguyễn Văn A','Chủ tịch HĐQT',0.2400,1.5e9,
+           DATE '2026-04-15',DATE '2026-05-01');
+        -- GGG: CHỈ 1 snapshot duy nhất (baseline == latest) — ca "chưa đủ
+        -- lịch sử để so sánh", delta phải ra 0 một cách hợp lệ, không lỗi.
+        -- Đồng thời dùng GGG làm ca đối chiếu tiêu chí hoàn thành #2 (spec
+        -- §7): int_ownership_snapshot.GGG bên dưới PHẢI là kết quả gộp
+        -- ĐÚNG của các dòng stg_shareholder/stg_officer này (1 cổ đông +
+        -- 1 officer, cùng người, 30%) — để test so sánh trực tiếp
+        -- _ownership_change() với int_ownership_snapshot mà không đụng tới
+        -- dòng AAA hiện có (dòng AAA trong int_ownership_snapshot được tạo
+        -- cho mục đích khác từ B1, KHÔNG khớp số học với 3 dòng
+        -- stg_shareholder của AAA — không dùng AAA để đối chiếu).
+        INSERT INTO stg_shareholder VALUES
+          ('GGG','Ông E',1.0e9,0.3000,DATE '2026-08-01',DATE '2026-08-01');
+        INSERT INTO stg_officer VALUES
+          ('GGG','Ông E','Chủ tịch HĐQT',0.3000,1.0e9,
+           DATE '2026-08-01',DATE '2026-08-01');
+        INSERT INTO int_ownership_snapshot VALUES
+          ('GGG',DATE '2026-08-01',1,0.3000,0.3000,0.3000,0.3000,DATE '2026-08-01');
         CREATE TABLE stg_financial_ratio (
             symbol VARCHAR, year INTEGER, quarter INTEGER,
             dividend_yield DOUBLE
@@ -249,6 +281,21 @@ def build_fake_mart(path: str):
           ('AAA','balance_sheet','quarter','2026-Q1',30,'cost','Nguyên giá TSCĐ hữu hình','Cost of tangible FA',9.0),
           ('AAA','balance_sheet','quarter','2026-Q2',40,'cost','Nguyên giá tài sản đầu tư','Cost of investment property',5.0),
           ('AAA','balance_sheet','quarter','2026-Q1',40,'cost','Nguyên giá tài sản đầu tư','Cost of investment property',4.0);
+    """)
+    # --- C1: raw_financial_statement (cần ingested_at, KHÔNG có trong
+    # stg_financial_statement — _new_statement_periods phải đọc bảng raw).
+    con.execute("""
+        CREATE TABLE raw_financial_statement (
+            symbol VARCHAR, statement_type VARCHAR, period_type VARCHAR,
+            period_label VARCHAR, row_seq INTEGER, item_id VARCHAR,
+            item_vi VARCHAR, item_en VARCHAR, value DOUBLE,
+            ingested_at TIMESTAMP
+        );
+        INSERT INTO raw_financial_statement VALUES
+          ('AAA','income_statement','quarter','2026-q1',0,'net_sales',
+           'Doanh thu thuần','Net sales',90.0, TIMESTAMP '2026-05-01 00:00:00'),
+          ('AAA','income_statement','quarter','2026-q2',0,'net_sales',
+           'Doanh thu thuần','Net sales',100.0, TIMESTAMP '2026-08-18 00:00:00');
     """)
     # --- B2 final review: dữ liệu cho I2 (cắt âm thầm) và I3 (trôi dạt
     # template). Dùng mã RIÊNG (BIG/DRIFT) để không đụng các test cũ đang

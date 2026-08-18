@@ -1,6 +1,6 @@
 """Cài đặt các tool — tách khỏi server.py để test được mà không cần MCP runtime."""
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -751,5 +751,214 @@ def get_financial_statement(con, symbol: str, statement_type: str,
             # Bản trước im lặng ở cả hai ca.
             "truncated": len(rows) >= row_limit or n_available > len(labels),
         },
+        **db.as_of(con),
+    }
+
+
+# --- C1: get_thesis_update (luận điểm đầu tư định kỳ) ---
+
+def _current_scores(con, sym: str) -> dict | None:
+    """Điểm số HIỆN TẠI (không phải diff — mart_stock_scorecard không có
+    lịch sử, xem spec C1 §2)."""
+    rows = db.run_query(
+        con,
+        """
+        SELECT value_score, quality_score, growth_score,
+               dividend_score, safety_score
+        FROM mart_stock_scorecard
+        WHERE symbol = ?
+        """,
+        params=[sym],
+        limit=1,
+    )
+    if not rows:
+        return None
+    r = _clean(rows[0])
+    return {
+        "value": r["value_score"], "quality": r["quality_score"],
+        "growth": r["growth_score"], "dividend": r["dividend_score"],
+        "safety": r["safety_score"],
+    }
+
+
+def _financial_trend(con, sym: str, since_date: str) -> dict:
+    """Xu hướng tài chính các quý MỚI kể từ since_date.
+
+    PHẢI lọc period_type='quarter' — fct_financial_quarterly có cả dòng
+    NĂM (quarter=5, period_type='year'), lẫn vào sẽ trộn 2 loại kỳ khác
+    nhau (xem Global Constraint).
+    """
+    rows = db.run_query(
+        con,
+        """
+        SELECT year, quarter, revenue_ttm, earnings_ttm, revenue_yoy, earnings_yoy
+        FROM fct_financial_quarterly
+        WHERE symbol = ? AND period_type = 'quarter' AND period_end_date > ?
+        ORDER BY year, quarter
+        """,
+        params=[sym, since_date],
+        limit=40,
+    )
+    quarters = _clean(rows)
+    return {"quarters": quarters, "n_new_quarters": len(quarters)}
+
+
+def _new_distribution_events(con, sym: str, since_date: str) -> list[dict]:
+    """Sự kiện phân phối MỚI kể từ since_date — cùng nguồn/cột với
+    get_distribution_history, thêm điều kiện exright_date > since_date.
+
+    Điều chỉnh so với bản nháp ban đầu: phải gọi `_date_str()` lên
+    exright_date TRƯỚC `_clean()`, không phải sau — cùng thứ tự
+    get_distribution_history đang dùng. `_clean()` tự chuyển cột DATE
+    (đọc qua `.df()` ra `pandas.Timestamp`) thành chuỗi qua `.isoformat()`
+    (rò rỉ artifact "T00:00:00", xem docstring `_date_str`); nếu gọi
+    `_date_str()` SAU khi đã `_clean()`, nó nhận một chuỗi Python thuần
+    (không có `.date()`/`.isoformat()`) nên trả nguyên chuỗi lỗi qua nhánh
+    `str(v)` cuối cùng — artifact lọt ra ngoài. Đã tự xác minh thực nghiệm
+    lỗi này trước khi sửa (khoá lại bằng
+    test_new_distribution_events_ngay_dung_dinh_dang_iso)."""
+    rows = db.run_query(
+        con,
+        """
+        SELECT exright_date, distribution_type, cash_per_share,
+               stock_ratio, event_title_vi
+        FROM int_distribution_event
+        WHERE symbol = ? AND exright_date > ?
+        ORDER BY exright_date DESC
+        """,
+        params=[sym, since_date],
+        limit=50,
+    )
+    for r in rows:
+        r["exright_date"] = _date_str(r.get("exright_date"))
+    return _clean(rows)
+
+
+def _new_statement_periods(con, sym: str, since_date: str) -> list[dict]:
+    """Kỳ BCTC MỚI xuất hiện kể từ since_date — đọc raw_financial_statement
+    (KHÔNG phải stg_financial_statement, thiếu cột ingested_at)."""
+    rows = db.run_query(
+        con,
+        """
+        SELECT statement_type, period_type, period_label,
+               max(ingested_at) as ingested_at
+        FROM raw_financial_statement
+        WHERE symbol = ? AND ingested_at > ?
+        GROUP BY 1, 2, 3
+        ORDER BY ingested_at DESC
+        """,
+        params=[sym, since_date],
+        limit=50,
+    )
+    return [
+        {**r, "ingested_at": str(r["ingested_at"])}
+        for r in _clean(rows)
+    ]
+
+
+def _ownership_change(con, sym: str, since_date: str) -> dict | None:
+    """So sánh cơ cấu sở hữu giữa 2 mốc snapshot_date: baseline (mốc gần
+    since_date nhất, <= since_date; nếu không có mốc nào cũ vậy thì dùng
+    mốc CŨ NHẤT hiện có, đặt baseline_is_fallback=True) và latest (mốc mới
+    nhất).
+
+    KHÔNG dùng int_ownership_snapshot (chỉ giữ bản mới nhất, không so sánh
+    được) — tự tính lại đúng phép gộp mà int_ownership_snapshot.sql đang
+    làm, cho CẢ HAI mốc, trực tiếp từ stg_shareholder/stg_officer.
+    """
+    all_dates = db.run_query(
+        con,
+        "SELECT DISTINCT snapshot_date FROM stg_shareholder WHERE symbol = ? ORDER BY snapshot_date",
+        params=[sym], limit=1000,
+    )
+    if not all_dates:
+        return None
+    dates = [_date_str(r["snapshot_date"]) for r in all_dates]
+    latest = dates[-1]
+    before_or_eq = [d for d in dates if d <= since_date]
+    baseline = before_or_eq[-1] if before_or_eq else dates[0]
+    baseline_is_fallback = not before_or_eq
+
+    def _agg(snapshot_date: str) -> dict:
+        # _clean() TRƯỚC khi làm số học — db.run_query trả numpy scalar
+        # (df.to_dict() của pandas), không phải float Python thuần; cộng/trừ
+        # trên numpy.float64 rồi trả thẳng qua MCP từng gây lỗi thật (B2
+        # final review, Important #3 tương tự) — luôn _clean() dữ liệu
+        # trung gian trước khi tính, không chỉ _clean() kết quả cuối.
+        sh = _clean(db.run_query(
+            con,
+            """
+            SELECT share_own_percent
+            FROM stg_shareholder
+            WHERE symbol = ? AND snapshot_date = ?
+            ORDER BY share_own_percent DESC NULLS LAST
+            """,
+            params=[sym, snapshot_date], limit=200,
+        ))
+        pct = [r["share_own_percent"] for r in sh if r["share_own_percent"] is not None]
+        of = _clean(db.run_query(
+            con,
+            "SELECT officer_own_percent FROM stg_officer WHERE symbol = ? AND snapshot_date = ?",
+            params=[sym, snapshot_date], limit=200,
+        ))
+        insider = sum(r["officer_own_percent"] for r in of if r["officer_own_percent"] is not None)
+        return {
+            "total_disclosed_pct": sum(pct),
+            "top1_pct": pct[0] if pct else 0.0,
+            "top5_pct": sum(pct[:5]),
+            "insider_pct": insider,
+        }
+
+    b, l = _agg(baseline), _agg(latest)
+
+    def _delta(key: str) -> dict:
+        return {"baseline": b[key], "latest": l[key], "delta": l[key] - b[key]}
+
+    return {
+        "baseline_snapshot_date": baseline,
+        "baseline_is_fallback": baseline_is_fallback,
+        "latest_snapshot_date": latest,
+        "top1_pct": _delta("top1_pct"),
+        "top5_pct": _delta("top5_pct"),
+        "total_disclosed_pct": _delta("total_disclosed_pct"),
+        "insider_pct": _delta("insider_pct"),
+    }
+
+
+def get_thesis_update(con, symbol: str, since_date: str | None = None) -> dict:
+    """Những gì THAY ĐỔI kể từ một mốc thời gian — sự kiện phân phối mới,
+    kỳ BCTC mới công bố, thay đổi cơ cấu sở hữu, xu hướng tài chính các quý
+    mới — để agent tự tổng hợp cập nhật luận điểm đầu tư.
+
+    KHÔNG sinh sẵn văn bản luận điểm (không gọi LLM) — trả dữ liệu cấu trúc,
+    agent tự viết. current_scores là điểm số HIỆN TẠI (context), KHÔNG PHẢI
+    diff — mart_stock_scorecard không lưu lịch sử, không so sánh được với
+    quá khứ.
+
+    since_date mặc định 90 ngày trước hôm nay nếu không truyền.
+    """
+    sym = symbol.upper().strip()
+    if since_date is None:
+        since_date = (date.today() - timedelta(days=90)).isoformat()
+
+    scores = _current_scores(con, sym)
+    trend = _financial_trend(con, sym, since_date)
+    events = _new_distribution_events(con, sym, since_date)
+    periods = _new_statement_periods(con, sym, since_date)
+    ownership = _ownership_change(con, sym, since_date)
+
+    if (scores is None and trend["n_new_quarters"] == 0 and not events
+            and not periods and ownership is None):
+        return {"error": f"Không tìm thấy mã {sym} trong warehouse.",
+                **db.as_of(con)}
+
+    return {
+        "symbol": sym,
+        "since_date": since_date,
+        "current_scores": scores,
+        "financial_trend": trend,
+        "new_distribution_events": events,
+        "new_statement_periods": periods,
+        "ownership_change": ownership,
         **db.as_of(con),
     }

@@ -218,3 +218,22 @@ def test_get_financial_statement_via_mcp_call_tool(b1_con, monkeypatch):
     assert items_by_row_seq[30]["values_by_period"]["2026-Q2"] == 10.0
     assert items_by_row_seq[40]["item_vi"] == "Nguyên giá tài sản đầu tư"
     assert items_by_row_seq[40]["values_by_period"]["2026-Q1"] == 4.0
+
+
+# C1: get_thesis_update — brief gốc giả định fixture tên `con` (giống
+# tests/test_mcp_tools.py) nhưng file NÀY dùng `b1_con` cho mọi test tool
+# mới nhất dựng qua build_fake_mart (get_ownership, get_distribution_history,
+# get_financial_statement ở trên) — dùng đúng tên thật đang có trong file.
+def test_get_thesis_update_via_mcp_call_tool(b1_con, monkeypatch):
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+
+    content = asyncio.run(
+        server.mcp.call_tool("get_thesis_update",
+                             {"symbol": "AAA", "since_date": "2026-01-01"})
+    )
+    payload = json.loads(content[0].text)
+
+    assert "error" not in payload
+    assert payload["symbol"] == "AAA"
+    assert payload["financial_trend"]["n_new_quarters"] == 2
+    assert payload["ownership_change"]["baseline_is_fallback"] is True
