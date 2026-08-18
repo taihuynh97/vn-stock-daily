@@ -835,8 +835,24 @@ def _new_distribution_events(con, sym: str, since_date: str) -> list[dict]:
 
 
 def _new_statement_periods(con, sym: str, since_date: str) -> list[dict]:
-    """Kỳ BCTC MỚI xuất hiện kể từ since_date — đọc raw_financial_statement
-    (KHÔNG phải stg_financial_statement, thiếu cột ingested_at)."""
+    """Kỳ BCTC được GHI NHẬN (ingest) kể từ since_date — đọc
+    raw_financial_statement (KHÔNG phải stg_financial_statement, thiếu cột
+    ingested_at).
+
+    Important #3 (final review): docstring cũ ("kỳ MỚI xuất hiện") mô tả SAI
+    ý nghĩa dữ liệu. raw_financial_statement ghi bằng `INSERT OR REPLACE ...
+    now()` (src/warehouse.py) nên MỖI lần refetch đều cập nhật ingested_at
+    mới, kể cả cho kỳ đã biết từ lâu; build_warehouse.py lại refetch TOÀN BỘ
+    cửa sổ 8 kỳ x 3 loại báo cáo MỖI TUẦN cho mọi mã. Hậu quả: với cửa sổ
+    mặc định 90 ngày, hàm này trả về gần như toàn bộ 24 kỳ của hầu hết mọi
+    mã — KHÔNG phân biệt được "kỳ mới công bố" với "kỳ cũ bị refetch lại".
+
+    Đây là lỗi DIỄN GIẢI trong spec/plan gốc, không phải lỗi cài đặt: logic
+    truy vấn vẫn đúng với những gì dữ liệu có. Phân biệt được "lần công bố
+    ĐẦU TIÊN" đòi thêm cột first_seen_at vào schema raw — đổi schema nằm
+    ngoài phạm vi C1, để dành backlog. Trong lúc chờ, docstring và mô tả
+    tool phải nói thẳng giới hạn này để agent không kết luận "vừa có BCTC
+    mới" từ một cửa sổ refetch định kỳ."""
     rows = db.run_query(
         con,
         """
@@ -994,8 +1010,13 @@ def _ownership_change(con, sym: str, since_date: str) -> dict | None:
 
 def get_thesis_update(con, symbol: str, since_date: str | None = None) -> dict:
     """Những gì THAY ĐỔI kể từ một mốc thời gian — sự kiện phân phối mới,
-    kỳ BCTC mới công bố, thay đổi cơ cấu sở hữu, xu hướng tài chính các quý
+    kỳ BCTC được ghi nhận, thay đổi cơ cấu sở hữu, xu hướng tài chính các quý
     mới — để agent tự tổng hợp cập nhật luận điểm đầu tư.
+
+    CHÚ Ý new_statement_periods: là các kỳ được GHI NHẬN (ingest) kể từ
+    since_date, có thể gồm cả kỳ CŨ bị job weekly refetch lại toàn bộ cửa sổ
+    8 kỳ — không chỉ kỳ thật sự mới công bố (xem docstring
+    _new_statement_periods).
 
     KHÔNG sinh sẵn văn bản luận điểm (không gọi LLM) — trả dữ liệu cấu trúc,
     agent tự viết. current_scores là điểm số HIỆN TẠI (context), KHÔNG PHẢI
@@ -1007,6 +1028,20 @@ def get_thesis_update(con, symbol: str, since_date: str | None = None) -> dict:
     sym = symbol.upper().strip()
     if since_date is None:
         since_date = (date.today() - timedelta(days=90)).isoformat()
+    # Important #2 (final review): chuẩn hoá + validate TRƯỚC khi gọi bất kỳ
+    # helper nào. 3 khối kia so sánh trong SQL nên DuckDB tự cast được chuỗi
+    # lệch định dạng, nhưng _ownership_change so sánh CHUỖI theo thứ tự từ
+    # điển — cùng một input cho 2 câu trả lời khác nhau. Tái hiện thật với
+    # "2026/01/01": '-' (0x2D) đứng trước '/' (0x2F) nên MỌI snapshot đều
+    # <= since_date, baseline trùng latest, mọi delta = 0.0 kèm
+    # baseline_is_fallback=False — tool báo "không có gì thay đổi" trong khi
+    # top1_pct thực tế đổi +1,8 điểm %. Chặn ngay ở cửa rẻ hơn nhiều so với
+    # việc bắt từng khối tự phòng thủ.
+    try:
+        since_date = date.fromisoformat(since_date).isoformat()
+    except (ValueError, TypeError):
+        return {"error": f"since_date phải dạng YYYY-MM-DD, nhận: {since_date!r}",
+                **db.as_of(con)}
 
     scores = _current_scores(con, sym)
     trend = _financial_trend(con, sym, since_date)

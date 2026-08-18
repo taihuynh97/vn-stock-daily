@@ -645,6 +645,29 @@ def test_get_thesis_update_ma_hoan_toan_khong_ton_tai_tra_error(con):
     assert "error" in r
 
 
+def test_get_thesis_update_since_date_sai_dinh_dang_tra_error(con):
+    """Important #2 (final review): since_date phải được chuẩn hoá TRƯỚC khi
+    vào helper. 3 khối dùng SQL nên DuckDB tự cast được "2026/01/01", nhưng
+    _ownership_change so sánh CHUỖI theo thứ tự từ điển: '-' (0x2D) đứng
+    trước '/' (0x2F) nên MỌI snapshot đều <= since_date -> baseline trùng
+    latest -> mọi delta = 0.0 kèm baseline_is_fallback=False, tức tool báo
+    "không có gì thay đổi" trong khi top1_pct thực tế đổi +1,8 điểm %.
+    Tái hiện thật trước khi sửa. Nay chặn ngay ở cửa thay vì để 4 khối trả
+    lời khác nhau trên cùng một input."""
+    r = tools.get_thesis_update(con, "AAA", "2026/01/01")
+    assert "error" in r
+    assert "YYYY-MM-DD" in r["error"]
+
+
+def test_get_thesis_update_since_date_dung_dinh_dang_van_chay_binh_thuong(con):
+    """Bản sửa Important #2 không được đụng đến ca hợp lệ."""
+    r = tools.get_thesis_update(con, "AAA", "2026-01-01")
+    assert "error" not in r
+    assert r["since_date"] == "2026-01-01"
+    assert r["ownership_change"]["baseline_snapshot_date"] == "2026-05-01"
+    assert r["ownership_change"]["baseline_is_fallback"] is True
+
+
 def test_new_distribution_events_khong_co_gi_moi_tra_mang_rong(con):
     r = tools._new_distribution_events(con, "AAA", "2026-06-01")
     assert r == []

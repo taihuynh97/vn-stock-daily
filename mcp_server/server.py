@@ -223,10 +223,23 @@ def get_thesis_update(symbol: str, since_date: str | None = None) -> dict:
     since_date: chuỗi "YYYY-MM-DD". Mặc định 90 ngày trước hôm nay nếu
     không truyền.
 
-    Trả 4 khối chênh lệch (sự kiện phân phối mới, kỳ BCTC mới công bố,
+    Trả 4 khối chênh lệch (sự kiện phân phối mới, kỳ BCTC được ghi nhận,
     thay đổi cơ cấu sở hữu, xu hướng tài chính các quý mới) cộng điểm số
     HIỆN TẠI làm ngữ cảnh — current_scores KHÔNG PHẢI so sánh với quá khứ,
     chỉ là trạng thái bây giờ (mart_stock_scorecard không lưu lịch sử).
+
+    CHÚ Ý new_statement_periods: đây là các kỳ BCTC được GHI NHẬN (ingest)
+    kể từ since_date, KHÔNG phải "kỳ mới công bố". Job weekly refetch lại
+    toàn bộ cửa sổ 8 kỳ x 3 loại báo cáo mỗi lần chạy và ghi đè ingested_at,
+    nên khối này thường chứa cả kỳ cũ. Đừng kết luận doanh nghiệp vừa công
+    bố BCTC chỉ vì kỳ đó xuất hiện ở đây — đối chiếu period_label với kỳ đã
+    biết trước khi nói.
+
+    ownership_change có 2 TRỤC THỜI GIAN riêng: baseline/latest_snapshot_date
+    (cổ đông) và officer_baseline/officer_latest_snapshot_date (ban lãnh
+    đạo). Hai trục có thể lệch nhau khi một lần chạy monthly lấy được nguồn
+    này mà hỏng nguồn kia. insider_pct = None nghĩa là KHÔNG CÓ dữ liệu
+    officer, không phải "nội bộ sở hữu 0%".
 
     Không tự viết luận điểm — bạn (agent) tổng hợp từ dữ liệu này.
     """
