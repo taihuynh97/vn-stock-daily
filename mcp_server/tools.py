@@ -1,6 +1,6 @@
 """Cài đặt các tool — tách khỏi server.py để test được mà không cần MCP runtime."""
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -750,6 +750,373 @@ def get_financial_statement(con, symbol: str, statement_type: str,
             # do n_periods cắt bớt kỳ, hoặc do chạm trần dòng của truy vấn.
             # Bản trước im lặng ở cả hai ca.
             "truncated": len(rows) >= row_limit or n_available > len(labels),
+        },
+        **db.as_of(con),
+    }
+
+
+# --- C1: get_thesis_update (luận điểm đầu tư định kỳ) ---
+
+# Important #4 (final review): trần dòng cho 2 khối DANH SÁCH của
+# get_thesis_update. Trước bản sửa, cả hai cắt ở 50 dòng mà không để lại dấu
+# vết nào — agent đọc một danh sách bị cắt y như đọc một danh sách đầy đủ.
+# Nay chạm trần được BÁO ra ngoài qua cờ `truncated` rồi gộp vào data_quality,
+# đúng convention mà B2 đã lập cho get_financial_statement. Để thành hằng số
+# dùng chung để cờ không bao giờ lệch pha với limit thật của truy vấn.
+_THESIS_LIST_ROW_LIMIT = 50
+
+
+def _truncated(rows: list) -> bool:
+    """Truy vấn có chạm trần dòng không — dấu hiệu CÒN dữ liệu chưa trả.
+
+    Không phân biệt được "dữ liệu vừa đúng bằng trần" với "dữ liệu bị cắt"
+    nếu chỉ nhìn số dòng trả về, nên báo True ở cả hai ca: cảnh báo thừa một
+    lần rẻ hơn nhiều so với việc để agent kết luận trên một danh sách thiếu
+    mà không biết là nó thiếu."""
+    return len(rows) >= _THESIS_LIST_ROW_LIMIT
+
+def _current_scores(con, sym: str) -> dict | None:
+    """Điểm số HIỆN TẠI (không phải diff — mart_stock_scorecard không có
+    lịch sử, xem spec C1 §2)."""
+    rows = db.run_query(
+        con,
+        """
+        SELECT value_score, quality_score, growth_score,
+               dividend_score, safety_score
+        FROM mart_stock_scorecard
+        WHERE symbol = ?
+        """,
+        params=[sym],
+        limit=1,
+    )
+    if not rows:
+        return None
+    r = _clean(rows[0])
+    return {
+        "value": r["value_score"], "quality": r["quality_score"],
+        "growth": r["growth_score"], "dividend": r["dividend_score"],
+        "safety": r["safety_score"],
+    }
+
+
+def _financial_trend(con, sym: str, since_date: str) -> dict:
+    """Xu hướng tài chính các quý MỚI kể từ since_date.
+
+    PHẢI lọc period_type='quarter' — fct_financial_quarterly có cả dòng
+    NĂM (quarter=5, period_type='year'), lẫn vào sẽ trộn 2 loại kỳ khác
+    nhau (xem Global Constraint).
+    """
+    rows = db.run_query(
+        con,
+        """
+        SELECT year, quarter, revenue_ttm, earnings_ttm, revenue_yoy, earnings_yoy
+        FROM fct_financial_quarterly
+        WHERE symbol = ? AND period_type = 'quarter' AND period_end_date > ?
+        ORDER BY year, quarter
+        """,
+        params=[sym, since_date],
+        limit=40,
+    )
+    quarters = _clean(rows)
+    return {"quarters": quarters, "n_new_quarters": len(quarters)}
+
+
+def _new_distribution_events(con, sym: str, since_date: str) -> dict:
+    """Sự kiện phân phối MỚI kể từ since_date — cùng nguồn/cột với
+    get_distribution_history, thêm điều kiện exright_date > since_date.
+
+    Trả {"items": [...], "truncated": bool} (Important #4, final review),
+    không phải list trần — xem _truncated().
+
+    Điều chỉnh so với bản nháp ban đầu: phải gọi `_date_str()` lên
+    exright_date TRƯỚC `_clean()`, không phải sau — cùng thứ tự
+    get_distribution_history đang dùng. `_clean()` tự chuyển cột DATE
+    (đọc qua `.df()` ra `pandas.Timestamp`) thành chuỗi qua `.isoformat()`
+    (rò rỉ artifact "T00:00:00", xem docstring `_date_str`); nếu gọi
+    `_date_str()` SAU khi đã `_clean()`, nó nhận một chuỗi Python thuần
+    (không có `.date()`/`.isoformat()`) nên trả nguyên chuỗi lỗi qua nhánh
+    `str(v)` cuối cùng — artifact lọt ra ngoài. Đã tự xác minh thực nghiệm
+    lỗi này trước khi sửa (khoá lại bằng
+    test_new_distribution_events_ngay_dung_dinh_dang_iso)."""
+    rows = db.run_query(
+        con,
+        """
+        SELECT exright_date, distribution_type, cash_per_share,
+               stock_ratio, event_title_vi
+        FROM int_distribution_event
+        WHERE symbol = ? AND exright_date > ?
+        ORDER BY exright_date DESC
+        """,
+        params=[sym, since_date],
+        limit=_THESIS_LIST_ROW_LIMIT,
+    )
+    for r in rows:
+        r["exright_date"] = _date_str(r.get("exright_date"))
+    return {"items": _clean(rows), "truncated": _truncated(rows)}
+
+
+def _new_statement_periods(con, sym: str, since_date: str) -> dict:
+    """Kỳ BCTC được GHI NHẬN (ingest) kể từ since_date — đọc
+    raw_financial_statement (KHÔNG phải stg_financial_statement, thiếu cột
+    ingested_at).
+
+    Trả {"items": [...], "truncated": bool} (Important #4, final review),
+    không phải list trần — xem _truncated().
+
+    Important #3 (final review): docstring cũ ("kỳ MỚI xuất hiện") mô tả SAI
+    ý nghĩa dữ liệu. raw_financial_statement ghi bằng `INSERT OR REPLACE ...
+    now()` (src/warehouse.py) nên MỖI lần refetch đều cập nhật ingested_at
+    mới, kể cả cho kỳ đã biết từ lâu; build_warehouse.py lại refetch TOÀN BỘ
+    cửa sổ 8 kỳ x 3 loại báo cáo MỖI TUẦN cho mọi mã. Hậu quả: với cửa sổ
+    mặc định 90 ngày, hàm này trả về gần như toàn bộ 24 kỳ của hầu hết mọi
+    mã — KHÔNG phân biệt được "kỳ mới công bố" với "kỳ cũ bị refetch lại".
+
+    Đây là lỗi DIỄN GIẢI trong spec/plan gốc, không phải lỗi cài đặt: logic
+    truy vấn vẫn đúng với những gì dữ liệu có. Phân biệt được "lần công bố
+    ĐẦU TIÊN" đòi thêm cột first_seen_at vào schema raw — đổi schema nằm
+    ngoài phạm vi C1, để dành backlog. Trong lúc chờ, docstring và mô tả
+    tool phải nói thẳng giới hạn này để agent không kết luận "vừa có BCTC
+    mới" từ một cửa sổ refetch định kỳ."""
+    rows = db.run_query(
+        con,
+        """
+        SELECT statement_type, period_type, period_label,
+               max(ingested_at) as ingested_at
+        FROM raw_financial_statement
+        WHERE symbol = ? AND ingested_at > ?
+        GROUP BY 1, 2, 3
+        ORDER BY ingested_at DESC
+        """,
+        params=[sym, since_date],
+        limit=_THESIS_LIST_ROW_LIMIT,
+    )
+    return {
+        "items": [{**r, "ingested_at": str(r["ingested_at"])}
+                  for r in _clean(rows)],
+        "truncated": _truncated(rows),
+    }
+
+
+# Critical #1 / Important #4 (final review): trần dòng cho phép GỘP sở hữu
+# trong _ownership_change. get_ownership dùng 200 (cổ đông) / 100 (officer) vì
+# ở đó các dòng là DANH SÁCH ĐỂ ĐỌC — chạm trần chỉ mất mấy dòng cuối, agent
+# vẫn thấy phần đầu và tự biết danh sách chưa đủ. Ở đây các dòng bị CỘNG lại
+# thành một con số duy nhất, nên chạm trần làm SAI chính con số đó mà không
+# để lại dấu vết nào.
+#
+# Đo thật trên md:vn_market ngày 2026-08-19: mã nhiều cổ đông công bố nhất
+# trong MỘT snapshot là PNJ 116 dòng (MBB 106, VNM 93), officer nhiều nhất là
+# SSB 27 dòng. 2000 rộng hơn mức đỉnh đó ~17 lần nên không cần thêm cờ
+# truncated riêng cho khối này; nếu có ngày chạm tới, đó là tín hiệu nguồn dữ
+# liệu đã đổi bản chất chứ không phải chuyện cắt bớt bình thường.
+_OWNERSHIP_AGG_ROW_LIMIT = 2000
+
+
+def _ownership_change(con, sym: str, since_date: str) -> dict | None:
+    """So sánh cơ cấu sở hữu giữa 2 mốc snapshot_date: baseline (mốc gần
+    since_date nhất, <= since_date; nếu không có mốc nào cũ vậy thì dùng
+    mốc CŨ NHẤT hiện có, đặt baseline_is_fallback=True) và latest (mốc mới
+    nhất).
+
+    KHÔNG dùng int_ownership_snapshot (chỉ giữ bản mới nhất, không so sánh
+    được) — tự tính lại đúng phép gộp mà int_ownership_snapshot.sql đang
+    làm, cho CẢ HAI mốc, trực tiếp từ stg_shareholder/stg_officer.
+
+    Critical #1 (final review): stg_shareholder và stg_officer có tập
+    snapshot_date RIÊNG và có thể LỆCH nhau cho cùng một mã — fetch_shareholders
+    và fetch_officers (src/ingest_market.py) bọc `except Exception: continue`
+    ĐỘC LẬP theo từng mã, nên một lần chạy monthly có thể lấy được cổ đông mà
+    hỏng officer. Bản C1 đầu tiên chọn ngày từ stg_shareholder rồi dùng CHÍNH
+    ngày đó lọc luôn stg_officer — lặp lại đúng lỗi mà B1 (I1) đã sửa cho
+    get_ownership. Hậu quả tái hiện được: mốc nào không có dòng officer trả
+    sum([]) = 0.0 (KHÔNG phải None), tool báo "nội bộ đã bán sạch X% cổ phần"
+    hoàn toàn GIẢ, lại kèm baseline_is_fallback=False nên trông đáng tin.
+
+    Nay MỖI bảng chọn trục thời gian của CHÍNH nó, và cả 2 mốc officer đều
+    được phơi ra ngoài (officer_baseline_snapshot_date /
+    officer_latest_snapshot_date) để agent biết 2 trục thời gian có thể khác
+    nhau — đúng tinh thần cột officer_snapshot_date riêng mà
+    int_ownership_snapshot đã thiết lập.
+    """
+    def _dates(rows: list[dict]) -> list[str]:
+        return [_date_str(r["snapshot_date"]) for r in rows]
+
+    def _pick(dates: list[str]) -> tuple[str | None, str | None, bool]:
+        """(baseline, latest, baseline_is_fallback) trong MỘT tập ngày.
+
+        Áp riêng cho từng bảng — không dùng chung kết quả giữa cổ đông và
+        officer (xem docstring hàm ngoài). Tập rỗng -> (None, None, False):
+        mã chưa từng có snapshot nào ở bảng đó.
+        """
+        if not dates:
+            return None, None, False
+        before_or_eq = [d for d in dates if d <= since_date]
+        return (before_or_eq[-1] if before_or_eq else dates[0],
+                dates[-1], not before_or_eq)
+
+    sh_dates = _dates(db.run_query(
+        con,
+        "SELECT DISTINCT snapshot_date FROM stg_shareholder "
+        "WHERE symbol = ? ORDER BY snapshot_date",
+        params=[sym], limit=1000,
+    ))
+    if not sh_dates:
+        return None
+    of_dates = _dates(db.run_query(
+        con,
+        "SELECT DISTINCT snapshot_date FROM stg_officer "
+        "WHERE symbol = ? ORDER BY snapshot_date",
+        params=[sym], limit=1000,
+    ))
+
+    baseline, latest, baseline_is_fallback = _pick(sh_dates)
+    of_baseline, of_latest, _ = _pick(of_dates)
+
+    def _agg(sh_date: str, of_date: str | None) -> dict:
+        # _clean() TRƯỚC khi làm số học — db.run_query trả numpy scalar
+        # (df.to_dict() của pandas), không phải float Python thuần; cộng/trừ
+        # trên numpy.float64 rồi trả thẳng qua MCP từng gây lỗi thật (B2
+        # final review, Important #3 tương tự) — luôn _clean() dữ liệu
+        # trung gian trước khi tính, không chỉ _clean() kết quả cuối.
+        sh = _clean(db.run_query(
+            con,
+            """
+            SELECT share_own_percent
+            FROM stg_shareholder
+            WHERE symbol = ? AND snapshot_date = ?
+            ORDER BY share_own_percent DESC NULLS LAST
+            """,
+            params=[sym, sh_date], limit=_OWNERSHIP_AGG_ROW_LIMIT,
+        ))
+        pct = [r["share_own_percent"] for r in sh if r["share_own_percent"] is not None]
+        # of_date là None khi mã chưa từng fetch được officer nào — bỏ hẳn
+        # truy vấn thay vì lọc bằng ngày của cổ đông (đúng lỗi Critical #1).
+        of = _clean(db.run_query(
+            con,
+            "SELECT officer_own_percent FROM stg_officer "
+            "WHERE symbol = ? AND snapshot_date = ?",
+            params=[sym, of_date], limit=_OWNERSHIP_AGG_ROW_LIMIT,
+        )) if of_date else []
+        insider = [r["officer_own_percent"] for r in of
+                   if r["officer_own_percent"] is not None]
+        return {
+            "total_disclosed_pct": sum(pct),
+            "top1_pct": pct[0] if pct else 0.0,
+            "top5_pct": sum(pct[:5]),
+            # None ("không có dữ liệu officer") KHÁC HẲN 0.0 ("nội bộ sở hữu
+            # 0%") với người đọc luận điểm; sum([]) trả 0.0 nên phải chặn tay.
+            # Cùng ngữ nghĩa NULL mà int_ownership_snapshot trả qua left join
+            # cho mã không có officer (ca VCB).
+            "insider_pct": sum(insider) if insider else None,
+        }
+
+    b, l = _agg(baseline, of_baseline), _agg(latest, of_latest)
+
+    def _delta(key: str) -> dict:
+        bv, lv = b[key], l[key]
+        # Một vế thiếu -> KHÔNG bịa delta: cả `lv - None` lẫn việc coi None
+        # như 0 đều cho một con số mà người đọc không phân biệt được với
+        # thay đổi sở hữu THẬT.
+        return {"baseline": bv, "latest": lv,
+                "delta": None if bv is None or lv is None else lv - bv}
+
+    return {
+        "baseline_snapshot_date": baseline,
+        "baseline_is_fallback": baseline_is_fallback,
+        "latest_snapshot_date": latest,
+        # Trục thời gian RIÊNG của officer — có thể lệch với 2 mốc cổ đông ở
+        # trên, hoặc None nếu mã chưa từng fetch được officer nào.
+        "officer_baseline_snapshot_date": of_baseline,
+        "officer_latest_snapshot_date": of_latest,
+        "n_snapshots_available": len(sh_dates),
+        "n_officer_snapshots_available": len(of_dates),
+        "top1_pct": _delta("top1_pct"),
+        "top5_pct": _delta("top5_pct"),
+        "total_disclosed_pct": _delta("total_disclosed_pct"),
+        "insider_pct": _delta("insider_pct"),
+    }
+
+
+def get_thesis_update(con, symbol: str, since_date: str | None = None) -> dict:
+    """Những gì THAY ĐỔI kể từ một mốc thời gian — sự kiện phân phối mới,
+    kỳ BCTC được ghi nhận, thay đổi cơ cấu sở hữu, xu hướng tài chính các quý
+    mới — để agent tự tổng hợp cập nhật luận điểm đầu tư.
+
+    CHÚ Ý new_statement_periods: là các kỳ được GHI NHẬN (ingest) kể từ
+    since_date, có thể gồm cả kỳ CŨ bị job weekly refetch lại toàn bộ cửa sổ
+    8 kỳ — không chỉ kỳ thật sự mới công bố (xem docstring
+    _new_statement_periods).
+
+    KHÔNG sinh sẵn văn bản luận điểm (không gọi LLM) — trả dữ liệu cấu trúc,
+    agent tự viết. current_scores là điểm số HIỆN TẠI (context), KHÔNG PHẢI
+    diff — mart_stock_scorecard không lưu lịch sử, không so sánh được với
+    quá khứ.
+
+    since_date mặc định 90 ngày trước hôm nay nếu không truyền.
+    """
+    sym = symbol.upper().strip()
+    if since_date is None:
+        since_date = (date.today() - timedelta(days=90)).isoformat()
+    # Important #2 (final review): chuẩn hoá + validate TRƯỚC khi gọi bất kỳ
+    # helper nào. 3 khối kia so sánh trong SQL nên DuckDB tự cast được chuỗi
+    # lệch định dạng, nhưng _ownership_change so sánh CHUỖI theo thứ tự từ
+    # điển — cùng một input cho 2 câu trả lời khác nhau. Tái hiện thật với
+    # "2026/01/01": '-' (0x2D) đứng trước '/' (0x2F) nên MỌI snapshot đều
+    # <= since_date, baseline trùng latest, mọi delta = 0.0 kèm
+    # baseline_is_fallback=False — tool báo "không có gì thay đổi" trong khi
+    # top1_pct thực tế đổi +1,8 điểm %. Chặn ngay ở cửa rẻ hơn nhiều so với
+    # việc bắt từng khối tự phòng thủ.
+    try:
+        since_date = date.fromisoformat(since_date).isoformat()
+    except (ValueError, TypeError):
+        return {"error": f"since_date phải dạng YYYY-MM-DD, nhận: {since_date!r}",
+                **db.as_of(con)}
+
+    scores = _current_scores(con, sym)
+    trend = _financial_trend(con, sym, since_date)
+    events = _new_distribution_events(con, sym, since_date)
+    periods = _new_statement_periods(con, sym, since_date)
+    ownership = _ownership_change(con, sym, since_date)
+
+    if (scores is None and trend["n_new_quarters"] == 0
+            and not events["items"] and not periods["items"]
+            and ownership is None):
+        return {"error": f"Không tìm thấy mã {sym} trong warehouse.",
+                **db.as_of(con)}
+
+    return {
+        "symbol": sym,
+        "since_date": since_date,
+        "current_scores": scores,
+        "financial_trend": trend,
+        "new_distribution_events": events["items"],
+        "new_statement_periods": periods["items"],
+        "ownership_change": ownership,
+        # Important #5 (final review): bản trước THIẾU HẲN khối data_quality —
+        # vi phạm quy ước chung (mọi tool khác đều trả) lẫn chính hợp đồng mà
+        # spec C1 §4.1 đã khai báo. Lõi tái dùng _data_quality() để giống hệt
+        # get_stock_profile/get_valuation_history, mở rộng thêm các tín hiệu
+        # riêng của C1 — thứ quyết định một "chênh lệch" có đọc được hay không:
+        #   has_ownership_baseline: False nghĩa là baseline chỉ là snapshot cũ
+        #     nhất có sẵn (fallback), KHÔNG phải mốc người dùng hỏi — mọi delta
+        #     sở hữu phải đọc kèm cảnh báo này.
+        #   n_snapshots_available / n_officer_snapshots_available: 2 trục thời
+        #     gian RIÊNG (xem _ownership_change); 1 snapshot nghĩa là chưa đủ
+        #     lịch sử để so sánh, delta 0 không có nghĩa "không đổi".
+        #   *_truncated: có dữ liệu bị cắt khỏi 2 khối danh sách hay không.
+        "data_quality": {
+            **_data_quality(con, sym),
+            "has_ownership_baseline": (
+                ownership is not None and not ownership["baseline_is_fallback"]
+            ),
+            "n_snapshots_available": (
+                ownership["n_snapshots_available"] if ownership else None
+            ),
+            "n_officer_snapshots_available": (
+                ownership["n_officer_snapshots_available"] if ownership else None
+            ),
+            "distribution_events_truncated": events["truncated"],
+            "statement_periods_truncated": periods["truncated"],
         },
         **db.as_of(con),
     }

@@ -1,5 +1,19 @@
 {{ config(materialized='table') }}
 
+-- CẢNH BÁO ĐỒNG BỘ (Important #6, final review C1): phép gộp trong file này
+-- được CÀI ĐẶT LẠI MỘT LẦN NỮA, độc lập, bằng Python tại
+-- `mcp_server/tools.py::_ownership_change` — vì C1 cần so sánh sở hữu giữa
+-- HAI mốc thời gian, còn model này cố ý chỉ giữ snapshot MỚI NHẤT nên không
+-- dùng lại được. Hai bản phải cho cùng kết quả khi xét cùng một snapshot_date.
+--
+-- Nếu sửa công thức gộp ở đây — sum(share_own_percent), cách tính top1_pct /
+-- top5_pct, cách chọn snapshot_date của cổ đông và của officer, hay cách xử
+-- lý NULL — PHẢI sửa tương ứng ở _ownership_change. KHÔNG có test tự động
+-- nào bắt được sự lệch pha này: test đối chiếu duy nhất
+-- (test_ownership_change_khop_int_ownership_snapshot) so với một dòng VIẾT
+-- TAY trong fixture, không chạy model này, nên nó vẫn xanh khi 2 bản đã lệch.
+-- Chặn được thật sự thì cần `dbt build` trong CI — nợ kỹ thuật đã biết.
+--
 -- Cô đặc cơ cấu sở hữu theo snapshot MỚI NHẤT mỗi mã.
 --
 -- total_disclosed_pct là cột BẮT BUỘC, không phải tuỳ chọn: tổng % công bố
