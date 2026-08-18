@@ -357,3 +357,104 @@ def test_get_financial_statement_period_type_khong_ton_tai_tra_has_data_false(co
     chung."""
     res = tools.get_financial_statement(con, "AAA", "income_statement", period_type="year")
     assert res["data_quality"]["has_data"] is False
+
+
+# --- I2 (final review B2): cắt âm thầm khi 1 báo cáo nhiều dòng x nhiều kỳ ---
+
+def test_get_financial_statement_bao_cao_lon_khong_bi_cat_am_tham(con):
+    """Ca đã tái hiện được ở final review: báo cáo 208 dòng x 10 kỳ = 2.080
+    dòng, vượt hằng số cứng limit=2000 của bản cũ — tool trả về ĐÚNG 200/208
+    item trong khi data_quality.has_data=True, không tín hiệu nào báo bị
+    cắt. Với n_periods=10, toàn bộ 208 dòng phải có mặt."""
+    res = tools.get_financial_statement(con, "BIG", "balance_sheet", n_periods=10)
+    assert res["n_items"] == 208, "mất dòng = đúng bug cũ đang tái hiện"
+    assert res["data_quality"]["n_periods_returned"] == 10
+    assert res["data_quality"]["n_periods_available"] == 10
+    assert res["data_quality"]["truncated"] is False
+    # mỗi item phải đủ cả 10 kỳ, không phải chỉ vài kỳ đầu
+    assert all(len(i["values_by_period"]) == 10 for i in res["items"])
+
+
+def test_get_financial_statement_n_periods_mac_dinh_cat_ky_nhung_bao_truncated(con):
+    """Mặc định n_periods=8 trên mã có 10 kỳ: vẫn đủ 208 dòng (không mất
+    dòng nào), nhưng phải BÁO truncated=True vì DB còn 2 kỳ chưa trả —
+    khác hẳn bản cũ im lặng."""
+    res = tools.get_financial_statement(con, "BIG", "balance_sheet")
+    assert res["n_items"] == 208
+    assert res["data_quality"]["n_periods_returned"] == 8
+    assert res["data_quality"]["n_periods_available"] == 10
+    assert res["data_quality"]["truncated"] is True
+
+
+def test_get_financial_statement_lay_dung_n_ky_moi_nhat_qua_ranh_gioi_nam(con):
+    """period_label là chuỗi ('2026-q2'), không phải ngày — kiểm thật rằng
+    sort DESC theo chuỗi cho ra đúng thứ tự thời gian, kể cả khi cửa sổ vắt
+    qua ranh giới năm (2026-q1 phải mới hơn 2025-q4)."""
+    res = tools.get_financial_statement(con, "BIG", "balance_sheet", n_periods=3)
+    periods = set(res["items"][0]["values_by_period"])
+    assert periods == {"2026-q2", "2026-q1", "2025-q4"}
+    assert res["data_quality"]["n_periods_returned"] == 3
+    assert res["data_quality"]["truncated"] is True
+
+
+def test_get_financial_statement_n_periods_lon_hon_du_lieu_khong_bao_truncated(con):
+    res = tools.get_financial_statement(con, "BIG", "balance_sheet", n_periods=50)
+    assert res["data_quality"]["n_periods_returned"] == 10
+    assert res["data_quality"]["truncated"] is False
+
+
+# --- I3 (final review B2): trôi dạt template, cùng row_seq khác item ---
+
+def test_get_financial_statement_cung_row_seq_khac_item_khong_bi_gop(con):
+    """Template BCTC của VCI đổi theo thời gian: row_seq=30 là "Nguyên giá
+    TSCĐ hữu hình" ở 2026-q2 nhưng là "Hàng tồn kho" ở 2025-q1 (kỳ cũ vẫn
+    còn trong bảng). Bản cũ gộp CHỈ theo row_seq -> trộn giá trị hai item
+    khác nhau vào một chuỗi values_by_period mang tên item mới nhất, âm
+    thầm, không tín hiệu lỗi. Phải trả về 2 item RIÊNG BIỆT."""
+    res = tools.get_financial_statement(con, "DRIFT", "balance_sheet")
+
+    seq30 = [i for i in res["items"] if i["row_seq"] == 30]
+    assert len(seq30) == 2, "hai dòng khác nhau cùng row_seq bị gộp làm một"
+    by_vi = {i["item_vi"]: i for i in seq30}
+    assert set(by_vi) == {"Nguyên giá TSCĐ hữu hình", "Hàng tồn kho"}
+
+    # Giá trị KHÔNG được trộn sang nhau
+    assert by_vi["Nguyên giá TSCĐ hữu hình"]["values_by_period"] == {"2026-q2": 10.0}
+    assert by_vi["Hàng tồn kho"]["values_by_period"] == {"2025-q1": 7.0}
+    assert by_vi["Hàng tồn kho"]["item_id"] == "inventory"
+    assert res["n_items"] == 3      # 2 dòng ở row_seq=30 + 1 dòng row_seq=31
+
+
+# --- I6 (final review B2): tham số sai giá trị phải báo lỗi ---
+
+def test_get_financial_statement_statement_type_sai_tra_error(con):
+    """'cashflow' (sai chính tả, đúng là 'cash_flow') từng trả về y hệt
+    payload "không có dữ liệu" như một mã thật sự không có BCTC — agent LLM
+    tự tin kết luận sai."""
+    res = tools.get_financial_statement(con, "AAA", "cashflow")
+    assert "error" in res
+    assert "cashflow" in res["error"]
+    assert "data_quality" not in res
+
+
+def test_get_financial_statement_period_type_sai_tra_error(con):
+    res = tools.get_financial_statement(con, "AAA", "income_statement",
+                                        period_type="quarterly")
+    assert "error" in res
+    assert "quarterly" in res["error"]
+    assert "data_quality" not in res
+
+
+def test_get_financial_statement_n_periods_khong_hop_le_tra_error(con):
+    for bad in (0, -1):
+        res = tools.get_financial_statement(con, "AAA", "income_statement",
+                                            n_periods=bad)
+        assert "error" in res, bad
+
+
+def test_get_financial_statement_ma_khong_ton_tai_van_la_has_data_false(con):
+    """Ranh giới quan trọng: tham số ĐÚNG nhưng mã không có dữ liệu vẫn là
+    has_data=False (không phải error) — hai ca này phải phân biệt được."""
+    res = tools.get_financial_statement(con, "ZZZ", "cash_flow")
+    assert "error" not in res
+    assert res["data_quality"]["has_data"] is False

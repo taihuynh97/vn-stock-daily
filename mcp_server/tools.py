@@ -584,10 +584,34 @@ def get_ownership(con, symbol: str) -> dict:
     }
 
 
+# I6 (final review B2): giá trị hợp lệ cho get_financial_statement. Trước
+# bản sửa, gọi sai chính tả ("cashflow" thay vì "cash_flow") trả về y hệt
+# "không có dữ liệu" như một mã thật sự không có BCTC — agent LLM tự tin
+# kết luận sai. Nay báo lỗi rõ, cùng convention với get_ownership.
+_STATEMENT_TYPES = ("income_statement", "balance_sheet", "cash_flow")
+_PERIOD_TYPES = ("quarter", "year")
+
+# I2 (final review B2): trần số dòng cho MỘT kỳ của MỘT báo cáo, dùng để
+# tính limit của truy vấn theo n_periods thay vì hằng số cứng 2000. Báo cáo
+# to nhất quan sát được trên dữ liệu thật là 208 dòng/kỳ; 500 là biên rộng
+# gấp ~2,4 lần để template BCTC có nở ra vẫn không bị cắt âm thầm.
+_MAX_ROWS_PER_PERIOD = 500
+
+
 def get_financial_statement(con, symbol: str, statement_type: str,
-                            period_type: str = "quarter") -> dict:
+                            period_type: str = "quarter",
+                            n_periods: int = 8) -> dict:
     """Chi tiết một báo cáo tài chính (income_statement/balance_sheet/
     cash_flow), mỗi dòng BCTC kèm chuỗi giá trị theo kỳ.
+
+    `n_periods` giới hạn số KỲ mới nhất trả về (mặc định 8 — đúng bằng cửa
+    sổ mà nguồn VCI cấp). I2 (final review B2): bản trước dùng hằng số cứng
+    `limit=2000` ở tầng truy vấn, nên một báo cáo 208 dòng x 10 kỳ (2.080
+    dòng) bị cắt còn 200/208 item mà `data_quality.has_data=True` không hề
+    có tín hiệu gì. Nay truy vấn theo 2 bước — lấy N period_label mới nhất
+    trước, rồi lấy đủ dòng của đúng các kỳ đó — nên trần dòng luôn tỉ lệ
+    với số kỳ được hỏi, và `data_quality.truncated` báo rõ khi có dữ liệu
+    bị bỏ lại trong DB.
 
     row_seq trả kèm mỗi item để phân biệt các dòng TRÙNG item_id — item_id
     KHÔNG unique trong một báo cáo (vd 'cost' xuất hiện nhiều lần ở
@@ -599,24 +623,77 @@ def get_financial_statement(con, symbol: str, statement_type: str,
     st = statement_type.strip()
     pt = period_type.strip()
 
-    rows = db.run_query(
+    # I6: chặn tham số sai giá trị TRƯỚC khi chạy query — nếu không, sai
+    # chính tả và "mã không có BCTC" trả về payload giống hệt nhau.
+    if st not in _STATEMENT_TYPES:
+        return {"error": f"statement_type phải là một trong "
+                         f"{', '.join(_STATEMENT_TYPES)} (nhận '{st}').",
+                **db.as_of(con)}
+    if pt not in _PERIOD_TYPES:
+        return {"error": f"period_type phải là một trong "
+                         f"{', '.join(_PERIOD_TYPES)} (nhận '{pt}').",
+                **db.as_of(con)}
+    if not isinstance(n_periods, int) or n_periods < 1:
+        return {"error": f"n_periods phải là số nguyên >= 1 (nhận "
+                         f"{n_periods!r}).",
+                **db.as_of(con)}
+
+    # I2 bước 1: N period_label MỚI NHẤT. Sắp DESC theo chuỗi là ĐÚNG thứ
+    # tự thời gian vì trong cùng một period_type, định dạng đồng nhất và
+    # zero-pad: 'yyyy-qN' (quarter) hoặc 'yyyy' (year) — '2026-q2' >
+    # '2026-q1' > '2025-q4'. Có test riêng cho ca vắt qua ranh giới năm,
+    # không dựa vào phỏng đoán.
+    period_rows = db.run_query(
         con,
         """
-        SELECT row_seq, item_id, item_vi, period_label, value
+        SELECT DISTINCT period_label
         FROM stg_financial_statement
         WHERE symbol = ? AND statement_type = ? AND period_type = ?
-        ORDER BY row_seq, period_label DESC
+        ORDER BY period_label DESC
         """,
         params=[sym, st, pt],
-        limit=2000,
+        limit=n_periods,
     )
 
-    if not rows:
+    if not period_rows:
         return {
             "symbol": sym, "statement_type": st, "period_type": pt,
             "data_quality": {"has_data": False},
             **db.as_of(con),
         }
+
+    labels = [r["period_label"] for r in period_rows]
+
+    # Tổng số kỳ CÓ THẬT trong DB (không giới hạn theo n_periods) — để
+    # n_periods_available nói đúng nghĩa "có sẵn", và để biết còn dữ liệu
+    # bị bỏ lại hay không.
+    n_available = db.run_query(
+        con,
+        """
+        SELECT count(DISTINCT period_label) AS n
+        FROM stg_financial_statement
+        WHERE symbol = ? AND statement_type = ? AND period_type = ?
+        """,
+        params=[sym, st, pt],
+        limit=1,
+    )[0]["n"]
+
+    # I2 bước 2: lấy ĐỦ dòng của đúng các kỳ đã chọn. Trần dòng tính theo
+    # số kỳ thật sự lấy, không phải hằng số cứng.
+    row_limit = _MAX_ROWS_PER_PERIOD * len(labels)
+    placeholders = ", ".join("?" for _ in labels)
+    rows = db.run_query(
+        con,
+        f"""
+        SELECT row_seq, item_id, item_vi, period_label, value
+        FROM stg_financial_statement
+        WHERE symbol = ? AND statement_type = ? AND period_type = ?
+          AND period_label IN ({placeholders})
+        ORDER BY row_seq, period_label DESC
+        """,
+        params=[sym, st, pt] + labels,
+        limit=row_limit,
+    )
 
     # Fix round 1 (review): route TOÀN BỘ dòng qua _clean() TRƯỚC khi dùng —
     # cùng convention với get_ownership/get_distribution_history
@@ -633,21 +710,31 @@ def get_financial_statement(con, symbol: str, statement_type: str,
 
     # Gộp lại theo (row_seq, item_id, item_vi) -> {period_label: value},
     # giữ nguyên thứ tự row_seq đã sort ở SQL.
-    items_by_seq: dict[int, dict] = {}
-    order: list[int] = []
+    #
+    # I3 (final review B2): khoá gộp phải là CẢ BỘ BA, không chỉ row_seq.
+    # Template BCTC của VCI đổi theo thời gian: cùng row_seq=30 có thể là
+    # "Nguyên giá TSCĐ hữu hình" ở kỳ này nhưng là dòng KHÁC HẲN ở một kỳ
+    # cũ hơn vẫn còn lưu trong bảng. Gộp chỉ theo row_seq sẽ trộn giá trị
+    # của hai item khác nhau vào cùng một chuỗi values_by_period và gắn tên
+    # của item mới nhất — sai âm thầm, không tín hiệu lỗi nào. Tầng GHI
+    # (upsert_financial_statements) vốn đã khoá theo từng (period_label,
+    # row_seq) riêng biệt nên dữ liệu trong bảng vẫn đúng; lỗi chỉ nằm ở
+    # tầng ĐỌC này.
+    items_by_key: dict[tuple, dict] = {}
+    order: list[tuple] = []
     for r in rows:
-        seq = r["row_seq"]
-        if seq not in items_by_seq:
-            items_by_seq[seq] = {
+        key = (r["row_seq"], r["item_id"], r["item_vi"])
+        if key not in items_by_key:
+            items_by_key[key] = {
                 "item_id": r["item_id"],
                 "item_vi": r["item_vi"],
-                "row_seq": seq,
+                "row_seq": r["row_seq"],
                 "values_by_period": {},
             }
-            order.append(seq)
-        items_by_seq[seq]["values_by_period"][r["period_label"]] = r["value"]
+            order.append(key)
+        items_by_key[key]["values_by_period"][r["period_label"]] = r["value"]
 
-    items = [items_by_seq[s] for s in order]
+    items = [items_by_key[k] for k in order]
 
     return {
         "symbol": sym,
@@ -655,8 +742,14 @@ def get_financial_statement(con, symbol: str, statement_type: str,
         "period_type": pt,
         "items": items,
         "n_items": len(items),
-        "data_quality": {"has_data": True, "n_periods_available": len(
-            {p for it in items for p in it["values_by_period"]}
-        )},
+        "data_quality": {
+            "has_data": True,
+            "n_periods_available": n_available,
+            "n_periods_returned": len(labels),
+            # True khi CÒN dữ liệu trong DB không nằm trong payload này —
+            # do n_periods cắt bớt kỳ, hoặc do chạm trần dòng của truy vấn.
+            # Bản trước im lặng ở cả hai ca.
+            "truncated": len(rows) >= row_limit or n_available > len(labels),
+        },
         **db.as_of(con),
     }
