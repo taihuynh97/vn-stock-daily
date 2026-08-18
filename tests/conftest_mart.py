@@ -227,6 +227,30 @@ def build_fake_mart(path: str):
            DATE '2026-08-01',DATE '2026-08-01');
         INSERT INTO int_ownership_snapshot VALUES
           ('GGG',DATE '2026-08-01',1,0.3000,0.3000,0.3000,0.3000,DATE '2026-08-01');
+        -- C1 (Critical #1, final review): HHH — snapshot_date của CỔ ĐÔNG
+        -- LỆCH với snapshot_date của OFFICER. Cổ đông có 2 mốc (2026-05-01,
+        -- 2026-08-01) nhưng officer CHỈ có mốc 2026-05-01 — mô phỏng đúng ca
+        -- fetch_officers lỗi ở lần chạy monthly SAU: fetch_shareholders và
+        -- fetch_officers bọc `except Exception: continue` RIÊNG theo từng mã
+        -- (src/ingest_market.py) nên một mã có thể lấy được cổ đông mà hỏng
+        -- officer trong CÙNG một lần chạy. Đây đúng bài học I1 mà B1 đã sửa
+        -- cho get_ownership; bản C1 đầu tiên lặp lại lỗi đó: dùng CHUNG ngày
+        -- cổ đông để lọc stg_officer nên mốc 2026-08-01 không khớp dòng
+        -- officer nào -> sum([]) = 0.0 -> báo insider_pct delta = -0.1200,
+        -- tức "nội bộ đã bán sạch 12% cổ phần", HOÀN TOÀN GIẢ.
+        INSERT INTO stg_shareholder VALUES
+          ('HHH','Ông F',8.0e8,0.2000,DATE '2026-04-20',DATE '2026-05-01'),
+          ('HHH','Ông F',8.4e8,0.2100,DATE '2026-07-20',DATE '2026-08-01');
+        INSERT INTO stg_officer VALUES
+          ('HHH','Ông F','Chủ tịch HĐQT',0.1200,4.8e8,
+           DATE '2026-04-20',DATE '2026-05-01');
+        -- C1 (Critical #1): KKK — có cổ đông nhưng KHÔNG có DÒNG OFFICER NÀO
+        -- (chưa bao giờ fetch được). insider_pct phải là None ("không có dữ
+        -- liệu"), KHÔNG PHẢI 0.0 ("nội bộ sở hữu 0%") — đúng cách model
+        -- int_ownership_snapshot trả NULL qua left join (xem ca VCB ở trên).
+        INSERT INTO stg_shareholder VALUES
+          ('KKK','Ông G',5.0e8,0.1000,DATE '2026-04-20',DATE '2026-05-01'),
+          ('KKK','Ông G',5.5e8,0.1100,DATE '2026-07-20',DATE '2026-08-01');
         CREATE TABLE stg_financial_ratio (
             symbol VARCHAR, year INTEGER, quarter INTEGER,
             dividend_yield DOUBLE

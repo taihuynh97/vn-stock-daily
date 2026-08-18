@@ -856,6 +856,17 @@ def _new_statement_periods(con, sym: str, since_date: str) -> list[dict]:
     ]
 
 
+# Critical #1 / Important #4 (final review): trần dòng cho phép GỘP sở hữu
+# trong _ownership_change. get_ownership dùng 200 (cổ đông) / 100 (officer) vì
+# ở đó các dòng là DANH SÁCH ĐỂ ĐỌC — chạm trần chỉ mất mấy dòng cuối, agent
+# vẫn thấy phần đầu và tự biết danh sách chưa đủ. Ở đây các dòng bị CỘNG lại
+# thành một con số duy nhất, nên chạm trần làm SAI chính con số đó mà không
+# để lại dấu vết nào. Mức cao nhất quan sát được trên production là ~93 cổ
+# đông công bố (VNM); 2000 rộng hơn 20 lần nên không cần cờ truncated riêng
+# cho khối này.
+_OWNERSHIP_AGG_ROW_LIMIT = 2000
+
+
 def _ownership_change(con, sym: str, since_date: str) -> dict | None:
     """So sánh cơ cấu sở hữu giữa 2 mốc snapshot_date: baseline (mốc gần
     since_date nhất, <= since_date; nếu không có mốc nào cũ vậy thì dùng
@@ -865,21 +876,58 @@ def _ownership_change(con, sym: str, since_date: str) -> dict | None:
     KHÔNG dùng int_ownership_snapshot (chỉ giữ bản mới nhất, không so sánh
     được) — tự tính lại đúng phép gộp mà int_ownership_snapshot.sql đang
     làm, cho CẢ HAI mốc, trực tiếp từ stg_shareholder/stg_officer.
-    """
-    all_dates = db.run_query(
-        con,
-        "SELECT DISTINCT snapshot_date FROM stg_shareholder WHERE symbol = ? ORDER BY snapshot_date",
-        params=[sym], limit=1000,
-    )
-    if not all_dates:
-        return None
-    dates = [_date_str(r["snapshot_date"]) for r in all_dates]
-    latest = dates[-1]
-    before_or_eq = [d for d in dates if d <= since_date]
-    baseline = before_or_eq[-1] if before_or_eq else dates[0]
-    baseline_is_fallback = not before_or_eq
 
-    def _agg(snapshot_date: str) -> dict:
+    Critical #1 (final review): stg_shareholder và stg_officer có tập
+    snapshot_date RIÊNG và có thể LỆCH nhau cho cùng một mã — fetch_shareholders
+    và fetch_officers (src/ingest_market.py) bọc `except Exception: continue`
+    ĐỘC LẬP theo từng mã, nên một lần chạy monthly có thể lấy được cổ đông mà
+    hỏng officer. Bản C1 đầu tiên chọn ngày từ stg_shareholder rồi dùng CHÍNH
+    ngày đó lọc luôn stg_officer — lặp lại đúng lỗi mà B1 (I1) đã sửa cho
+    get_ownership. Hậu quả tái hiện được: mốc nào không có dòng officer trả
+    sum([]) = 0.0 (KHÔNG phải None), tool báo "nội bộ đã bán sạch X% cổ phần"
+    hoàn toàn GIẢ, lại kèm baseline_is_fallback=False nên trông đáng tin.
+
+    Nay MỖI bảng chọn trục thời gian của CHÍNH nó, và cả 2 mốc officer đều
+    được phơi ra ngoài (officer_baseline_snapshot_date /
+    officer_latest_snapshot_date) để agent biết 2 trục thời gian có thể khác
+    nhau — đúng tinh thần cột officer_snapshot_date riêng mà
+    int_ownership_snapshot đã thiết lập.
+    """
+    def _dates(rows: list[dict]) -> list[str]:
+        return [_date_str(r["snapshot_date"]) for r in rows]
+
+    def _pick(dates: list[str]) -> tuple[str | None, str | None, bool]:
+        """(baseline, latest, baseline_is_fallback) trong MỘT tập ngày.
+
+        Áp riêng cho từng bảng — không dùng chung kết quả giữa cổ đông và
+        officer (xem docstring hàm ngoài). Tập rỗng -> (None, None, False):
+        mã chưa từng có snapshot nào ở bảng đó.
+        """
+        if not dates:
+            return None, None, False
+        before_or_eq = [d for d in dates if d <= since_date]
+        return (before_or_eq[-1] if before_or_eq else dates[0],
+                dates[-1], not before_or_eq)
+
+    sh_dates = _dates(db.run_query(
+        con,
+        "SELECT DISTINCT snapshot_date FROM stg_shareholder "
+        "WHERE symbol = ? ORDER BY snapshot_date",
+        params=[sym], limit=1000,
+    ))
+    if not sh_dates:
+        return None
+    of_dates = _dates(db.run_query(
+        con,
+        "SELECT DISTINCT snapshot_date FROM stg_officer "
+        "WHERE symbol = ? ORDER BY snapshot_date",
+        params=[sym], limit=1000,
+    ))
+
+    baseline, latest, baseline_is_fallback = _pick(sh_dates)
+    of_baseline, of_latest, _ = _pick(of_dates)
+
+    def _agg(sh_date: str, of_date: str | None) -> dict:
         # _clean() TRƯỚC khi làm số học — db.run_query trả numpy scalar
         # (df.to_dict() của pandas), không phải float Python thuần; cộng/trừ
         # trên numpy.float64 rồi trả thẳng qua MCP từng gây lỗi thật (B2
@@ -893,31 +941,50 @@ def _ownership_change(con, sym: str, since_date: str) -> dict | None:
             WHERE symbol = ? AND snapshot_date = ?
             ORDER BY share_own_percent DESC NULLS LAST
             """,
-            params=[sym, snapshot_date], limit=200,
+            params=[sym, sh_date], limit=_OWNERSHIP_AGG_ROW_LIMIT,
         ))
         pct = [r["share_own_percent"] for r in sh if r["share_own_percent"] is not None]
+        # of_date là None khi mã chưa từng fetch được officer nào — bỏ hẳn
+        # truy vấn thay vì lọc bằng ngày của cổ đông (đúng lỗi Critical #1).
         of = _clean(db.run_query(
             con,
-            "SELECT officer_own_percent FROM stg_officer WHERE symbol = ? AND snapshot_date = ?",
-            params=[sym, snapshot_date], limit=200,
-        ))
-        insider = sum(r["officer_own_percent"] for r in of if r["officer_own_percent"] is not None)
+            "SELECT officer_own_percent FROM stg_officer "
+            "WHERE symbol = ? AND snapshot_date = ?",
+            params=[sym, of_date], limit=_OWNERSHIP_AGG_ROW_LIMIT,
+        )) if of_date else []
+        insider = [r["officer_own_percent"] for r in of
+                   if r["officer_own_percent"] is not None]
         return {
             "total_disclosed_pct": sum(pct),
             "top1_pct": pct[0] if pct else 0.0,
             "top5_pct": sum(pct[:5]),
-            "insider_pct": insider,
+            # None ("không có dữ liệu officer") KHÁC HẲN 0.0 ("nội bộ sở hữu
+            # 0%") với người đọc luận điểm; sum([]) trả 0.0 nên phải chặn tay.
+            # Cùng ngữ nghĩa NULL mà int_ownership_snapshot trả qua left join
+            # cho mã không có officer (ca VCB).
+            "insider_pct": sum(insider) if insider else None,
         }
 
-    b, l = _agg(baseline), _agg(latest)
+    b, l = _agg(baseline, of_baseline), _agg(latest, of_latest)
 
     def _delta(key: str) -> dict:
-        return {"baseline": b[key], "latest": l[key], "delta": l[key] - b[key]}
+        bv, lv = b[key], l[key]
+        # Một vế thiếu -> KHÔNG bịa delta: cả `lv - None` lẫn việc coi None
+        # như 0 đều cho một con số mà người đọc không phân biệt được với
+        # thay đổi sở hữu THẬT.
+        return {"baseline": bv, "latest": lv,
+                "delta": None if bv is None or lv is None else lv - bv}
 
     return {
         "baseline_snapshot_date": baseline,
         "baseline_is_fallback": baseline_is_fallback,
         "latest_snapshot_date": latest,
+        # Trục thời gian RIÊNG của officer — có thể lệch với 2 mốc cổ đông ở
+        # trên, hoặc None nếu mã chưa từng fetch được officer nào.
+        "officer_baseline_snapshot_date": of_baseline,
+        "officer_latest_snapshot_date": of_latest,
+        "n_snapshots_available": len(sh_dates),
+        "n_officer_snapshots_available": len(of_dates),
         "top1_pct": _delta("top1_pct"),
         "top5_pct": _delta("top5_pct"),
         "total_disclosed_pct": _delta("total_disclosed_pct"),

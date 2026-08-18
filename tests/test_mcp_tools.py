@@ -571,6 +571,50 @@ def test_ownership_change_ma_khong_co_du_lieu_so_huu_tra_none(con):
     assert tools._ownership_change(con, "ZZZ", "2026-01-01") is None
 
 
+def test_ownership_change_officer_lech_ngay_khong_bia_delta_am(con):
+    """Critical #1 (final review): stg_shareholder và stg_officer có thể LỆCH
+    tập snapshot_date cho CÙNG một mã — fetch_shareholders/fetch_officers bọc
+    `except Exception: continue` RIÊNG theo từng mã nên một lần chạy monthly
+    có thể lấy được cổ đông mà hỏng officer. HHH: cổ đông có 2 mốc, officer
+    CHỈ có 2026-05-01.
+
+    Bản cũ lọc stg_officer bằng ngày CỦA CỔ ĐÔNG nên mốc latest (2026-08-01)
+    không khớp dòng officer nào -> sum([]) = 0.0 -> báo insider_pct delta
+    = -0.1200, tức "nội bộ đã bán sạch 12% cổ phần" — hoàn toàn GIẢ, lại kèm
+    baseline_is_fallback=False nên trông như dữ liệu đáng tin.
+
+    Đúng: trục thời gian của officer được chọn RIÊNG trên tập ngày của chính
+    stg_officer (đúng cách int_ownership_snapshot.officer_snapshot_date làm)
+    -> cả 2 mốc đều là 2026-05-01 -> insider_pct không đổi, và payload phơi
+    rõ 2 trục ngày có thể khác nhau."""
+    r = tools._ownership_change(con, "HHH", "2026-06-01")
+    assert r["baseline_snapshot_date"] == "2026-05-01"
+    assert r["latest_snapshot_date"] == "2026-08-01"
+    # Trục officer RIÊNG — dừng ở 2026-05-01 vì không có snapshot mới hơn.
+    assert r["officer_baseline_snapshot_date"] == "2026-05-01"
+    assert r["officer_latest_snapshot_date"] == "2026-05-01"
+    assert r["insider_pct"]["baseline"] == pytest.approx(0.1200)
+    assert r["insider_pct"]["latest"] == pytest.approx(0.1200)
+    assert r["insider_pct"]["delta"] == pytest.approx(0.0)
+    # Phần cổ đông vẫn dùng trục ngày của cổ đông, không bị ảnh hưởng.
+    assert r["top1_pct"]["delta"] == pytest.approx(0.0100, abs=1e-6)
+
+
+def test_ownership_change_khong_co_officer_tra_insider_none_khong_phai_0(con):
+    """Critical #1: mã chưa từng fetch được officer nào (KKK) -> insider_pct
+    phải là None ("không có dữ liệu"), KHÔNG PHẢI 0.0 ("nội bộ sở hữu 0%") —
+    hai chuyện khác hẳn nhau với người đọc luận điểm. delta cũng phải None:
+    không tính latest - baseline khi một vế không tồn tại."""
+    r = tools._ownership_change(con, "KKK", "2026-06-01")
+    assert r["officer_baseline_snapshot_date"] is None
+    assert r["officer_latest_snapshot_date"] is None
+    assert r["insider_pct"]["baseline"] is None
+    assert r["insider_pct"]["latest"] is None
+    assert r["insider_pct"]["delta"] is None
+    # Phần cổ đông vẫn tính bình thường, không bị kéo theo.
+    assert r["top1_pct"]["delta"] == pytest.approx(0.0100, abs=1e-6)
+
+
 def test_get_thesis_update_lap_rap_du_4_khoi(con):
     r = tools.get_thesis_update(con, "AAA", "2026-01-01")
     assert r["symbol"] == "AAA"
