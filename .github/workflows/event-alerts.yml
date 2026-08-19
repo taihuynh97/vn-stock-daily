@@ -1,0 +1,29 @@
+name: event-alerts
+
+on:
+  schedule:
+    # 09:00 UTC hằng ngày (T2-T6) — cùng giờ daily.yml, đọc dữ liệu warehouse
+    # đã cập nhật từ job weekly/monthly (chạy riêng, không phụ thuộc job này).
+    - cron: "0 9 * * 1-5"
+  workflow_dispatch: {}
+
+jobs:
+  event-alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Cảnh báo sự kiện DN cho danh mục
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python alert_events.py
