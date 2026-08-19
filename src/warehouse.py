@@ -365,6 +365,20 @@ def init_warehouse(con):
         );
         """
     )
+    # --- C2: chống lặp tin cảnh báo sự kiện ---
+    # event_id = stg_corporate_event.id (khoá ổn định, PRIMARY KEY của
+    # raw_corporate_event từ B1). KHÔNG dùng SQLite cục bộ (storage.py) —
+    # cơ chế cache-based của nó tự nhận best-effort, có thể mất khi GitHub
+    # Actions evict cache, gây gửi lặp lại toàn bộ sự kiện cũ.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alert_sent_log (
+            event_id    VARCHAR PRIMARY KEY,
+            symbol      VARCHAR,
+            alerted_at  TIMESTAMP
+        );
+        """
+    )
 
 
 def upsert_symbols(con, df, run_date) -> int:
@@ -718,3 +732,20 @@ def mark_backfill_error(con, symbol: str, note: str):
         """,
         [symbol, note],
     )
+
+
+def mark_events_alerted(con, event_ids: list[str], symbol_by_id: dict[str, str]) -> int:
+    """Ghi các event_id đã gửi/đã biết vào alert_sent_log — chống lặp tin.
+
+    event_id là PRIMARY KEY: gọi lại với cùng event_id là lỗi ở tầng gọi
+    (một sự kiện chỉ được đánh dấu đã biết đúng 1 lần), không silently
+    ignore — để lộ bug sớm thay vì che giấu.
+    """
+    if not event_ids:
+        return 0
+    now = datetime.now(timezone.utc)
+    con.executemany(
+        "INSERT INTO alert_sent_log (event_id, symbol, alerted_at) VALUES (?, ?, ?)",
+        [(eid, symbol_by_id[eid], now) for eid in event_ids],
+    )
+    return len(event_ids)
