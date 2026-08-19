@@ -17,16 +17,23 @@ def con():
     # không chạy dbt (đúng pattern conftest_mart.py toàn dự án).
     c.execute("""
         CREATE TABLE stg_corporate_event (
-            id VARCHAR, symbol VARCHAR, event_title_vi VARCHAR,
-            distribution_type VARCHAR, exright_date DATE,
-            record_date DATE, payout_date DATE, public_date DATE
+            id VARCHAR, symbol VARCHAR, event_name_vi VARCHAR,
+            event_title_vi VARCHAR, distribution_type VARCHAR,
+            exright_date DATE, record_date DATE, payout_date DATE,
+            public_date DATE
         );
-        INSERT INTO stg_corporate_event VALUES
-          ('e1','HPG','Trả cổ tức bằng tiền mặt - Cả năm 2025 - 500 VND',
+        INSERT INTO stg_corporate_event
+          (id, symbol, event_name_vi, event_title_vi, distribution_type,
+           exright_date, record_date, payout_date, public_date)
+        VALUES
+          ('e1','HPG','Trả cổ tức bằng tiền mặt',
+           'Trả cổ tức bằng tiền mặt - Cả năm 2025 - 500 VND',
            'CASH_DIVIDEND',DATE '2026-05-11',DATE '2026-05-12',DATE '2026-06-30',DATE '2026-04-01'),
-          ('e2','VNR','Đại hội cổ đông thường niên 2026',
+          ('e2','VNR','Đại hội cổ đông thường niên',
+           'Đại hội cổ đông thường niên 2026',
            'SHAREHOLDER_MEETING',NULL,NULL,NULL,DATE '2026-04-01'),
-          ('e3','ZZZ','Sự kiện của mã KHÔNG nằm trong portfolio',
+          ('e3','ZZZ','Sự kiện khác',
+           'Sự kiện của mã KHÔNG nằm trong portfolio',
            'OTHER',NULL,NULL,NULL,DATE '2026-04-01');
     """)
     yield c
@@ -118,7 +125,10 @@ def test_main_lan_2_co_su_kien_moi_goi_notify_dung_1_lan(con, tmp_path, monkeypa
     mark_events_alerted(con, ["e1", "e2"], {"e1": "HPG", "e2": "VNR"})
     # Sự kiện MỚI xuất hiện sau đó
     con.execute("""
-        INSERT INTO stg_corporate_event VALUES
+        INSERT INTO stg_corporate_event
+          (id, symbol, event_title_vi, distribution_type,
+           exright_date, record_date, payout_date, public_date)
+        VALUES
           ('e4','HPG','Phát hành cổ phiếu thưởng tỉ lệ 20%','BONUS_SHARE',
            DATE '2026-09-01',NULL,NULL,DATE '2026-08-20');
     """)
@@ -166,7 +176,10 @@ def test_main_ma_moi_duoc_seed_rieng_ma_cu_gui_binh_thuong_cung_lan_chay(
     mark_events_alerted(con, ["e1"], {"e1": "HPG"})
     # Sự kiện MỚI thật sự của HPG (mã cũ) -> phải được gửi
     con.execute("""
-        INSERT INTO stg_corporate_event VALUES
+        INSERT INTO stg_corporate_event
+          (id, symbol, event_title_vi, distribution_type,
+           exright_date, record_date, payout_date, public_date)
+        VALUES
           ('e5','HPG','Trả cổ tức đợt 2','CASH_DIVIDEND',
            DATE '2026-10-01',NULL,NULL,DATE '2026-09-01');
     """)
@@ -187,3 +200,43 @@ def test_main_ma_moi_duoc_seed_rieng_ma_cu_gui_binh_thuong_cung_lan_chay(
     assert con.execute(
         "SELECT count(*) FROM alert_sent_log WHERE event_id = 'e2'"
     ).fetchone()[0] == 1
+
+
+def test_format_message_dung_event_name_vi_khi_event_title_vi_null(con):
+    """Fix Important #1 (final review): event_title_vi CÓ THỂ NULL (DDL
+    raw_corporate_event không ràng buộc NOT NULL cho cột này, và chính
+    stg_corporate_event.sql tự phòng thủ bằng coalesce(event_title_vi, ''))
+    — dùng trực tiếp e['event_title_vi'] khiến f-string render literal
+    "HPG — None" vào tin Telegram thật khi NULL. event_name_vi (cùng
+    nguồn, luôn có nội dung) làm fallback hợp lý trước khi rơi vào
+    placeholder cuối cùng."""
+    con.execute("""
+        INSERT INTO stg_corporate_event
+          (id, symbol, event_name_vi, event_title_vi, distribution_type,
+           exright_date, record_date, payout_date, public_date)
+        VALUES
+          ('e6','HPG','Phát hành cổ phiếu ESOP',NULL,'ESOP',
+           NULL,NULL,NULL,DATE '2026-04-01');
+    """)
+    events = alert_events.fetch_unalerted_events(con, ["HPG"])
+    text = alert_events.format_message(events, "2026-08-19")
+    assert "Phát hành cổ phiếu ESOP" in text
+    assert "None" not in text
+
+
+def test_format_message_placeholder_khi_ca_hai_title_deu_null(con):
+    """Ca cực đoan hơn: CẢ event_title_vi lẫn event_name_vi đều NULL —
+    tin nhắn phải có placeholder tiếng Việt rõ ràng, tuyệt đối không lộ
+    chuỗi "None" (giá trị kỹ thuật của Python) vào tin Telegram thật."""
+    con.execute("""
+        INSERT INTO stg_corporate_event
+          (id, symbol, event_name_vi, event_title_vi, distribution_type,
+           exright_date, record_date, payout_date, public_date)
+        VALUES
+          ('e7','HPG',NULL,NULL,'OTHER',
+           NULL,NULL,NULL,DATE '2026-04-01');
+    """)
+    events = alert_events.fetch_unalerted_events(con, ["HPG"])
+    text = alert_events.format_message(events, "2026-08-19")
+    assert "None" not in text
+    assert "(không có tiêu đề)" in text

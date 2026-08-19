@@ -39,7 +39,7 @@ def fetch_unalerted_events(con, symbols: list[str]) -> list[dict]:
     placeholders = ", ".join(["?"] * len(symbols))
     rows = con.execute(
         f"""
-        SELECT id, symbol, event_title_vi, distribution_type,
+        SELECT id, symbol, event_title_vi, event_name_vi, distribution_type,
                exright_date, record_date, payout_date, public_date
         FROM stg_corporate_event
         WHERE symbol IN ({placeholders})
@@ -101,7 +101,16 @@ def _format_date(value) -> str:
 def format_message(events: list[dict], run_date: str) -> str:
     lines = [f"📅 Sự kiện DN mới ({run_date}):", ""]
     for e in events:
-        lines.append(f"{e['symbol']} — {e['event_title_vi']}")
+        # event_title_vi CÓ THỂ NULL (DDL raw_corporate_event không ràng
+        # buộc NOT NULL cho cột này, stg_corporate_event.sql tự phòng thủ
+        # bằng coalesce(event_title_vi, '') khi phân loại) — dùng e[...]
+        # trực tiếp từng render literal "HPG — None" vào tin Telegram thật
+        # (fix Important #1, final review). Dùng .get(...) + fallback qua
+        # event_name_vi (cùng nguồn, luôn có nội dung), cuối cùng là
+        # placeholder tiếng Việt rõ ràng — không bao giờ để lộ giá trị kỹ
+        # thuật của Python vào tin nhắn thật.
+        title = e.get("event_title_vi") or e.get("event_name_vi") or "(không có tiêu đề)"
+        lines.append(f"{e['symbol']} — {title}")
         exright_date = e.get("exright_date")
         public_date = e.get("public_date")
         # pd.isna(...) — KHÔNG dùng `is not None`: cột DATE NULL của DuckDB
