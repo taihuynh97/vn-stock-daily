@@ -37,3 +37,15 @@ def test_mark_events_alerted_khong_the_ghi_trung_event_id(con):
     mark_events_alerted(con, ["e1"], {"e1": "HPG"})
     with pytest.raises(duckdb.ConstraintException):
         mark_events_alerted(con, ["e1"], {"e1": "HPG"})
+
+
+def test_mark_events_alerted_that_bai_giua_chung_khong_ghi_dong_nao(con):
+    """Seed dở dang (sự cố production 2026-08-19): batch phải all-or-nothing,
+    nếu không mã bị seed một phần sẽ bị xếp nhầm vào 'đã seed' và dội tin cũ."""
+    mark_events_alerted(con, ["e2"], {"e2": "VNR"})
+    with pytest.raises(duckdb.ConstraintException):
+        mark_events_alerted(con, ["e1", "e2", "e3"],
+                            {"e1": "HPG", "e2": "VNR", "e3": "MLS"})
+    assert con.execute(
+        "SELECT count(*) FROM alert_sent_log WHERE event_id = 'e1'"
+    ).fetchone()[0] == 0
