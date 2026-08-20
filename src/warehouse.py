@@ -365,6 +365,20 @@ def init_warehouse(con):
         );
         """
     )
+    # --- C2: chống lặp tin cảnh báo sự kiện ---
+    # event_id = stg_corporate_event.id (khoá ổn định, PRIMARY KEY của
+    # raw_corporate_event từ B1). KHÔNG dùng SQLite cục bộ (storage.py) —
+    # cơ chế cache-based của nó tự nhận best-effort, có thể mất khi GitHub
+    # Actions evict cache, gây gửi lặp lại toàn bộ sự kiện cũ.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alert_sent_log (
+            event_id    VARCHAR PRIMARY KEY,
+            symbol      VARCHAR,
+            alerted_at  TIMESTAMP
+        );
+        """
+    )
 
 
 def upsert_symbols(con, df, run_date) -> int:
@@ -718,3 +732,34 @@ def mark_backfill_error(con, symbol: str, note: str):
         """,
         [symbol, note],
     )
+
+
+def mark_events_alerted(con, event_ids: list[str], symbol_by_id: dict[str, str]) -> int:
+    """Ghi các event_id đã gửi/đã biết vào alert_sent_log — chống lặp tin.
+
+    event_id là PRIMARY KEY: gọi lại với cùng event_id là lỗi ở tầng gọi
+    (một sự kiện chỉ được đánh dấu đã biết đúng 1 lần), không silently
+    ignore — để lộ bug sớm thay vì che giấu.
+
+    1 câu INSERT...SELECT (không phải executemany) — atomic, khớp đúng
+    idiom mọi hàm ghi hàng loạt khác trong file này (insert_corporate_events,
+    upsert_shareholders...). Sự cố production thật (2026-08-19, seed VNR dở
+    dang do job bị ngắt giữa chừng) xác nhận executemany ghi PARTIAL khi
+    lỗi giữa batch — mã bị seed dở dang sẽ bị lần chạy sau hiểu nhầm là
+    "đã seed xong", dội lịch sử cũ vào Telegram thật. INSERT...SELECT thất
+    bại thì KHÔNG GHI DÒNG NÀO — mã đó vẫn đúng trạng thái "chưa seed",
+    lần chạy sau tự làm lại đúng, không cần can thiệp tay.
+    """
+    if not event_ids:
+        return 0
+    now = datetime.now(timezone.utc)
+    df = pd.DataFrame(
+        [{"event_id": eid, "symbol": symbol_by_id[eid], "alerted_at": now}
+         for eid in event_ids]
+    )
+    con.register("df_alert", df)
+    con.execute(
+        "INSERT INTO alert_sent_log SELECT event_id, symbol, alerted_at FROM df_alert"
+    )
+    con.unregister("df_alert")
+    return len(event_ids)
