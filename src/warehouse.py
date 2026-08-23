@@ -98,6 +98,11 @@ STATEMENT_COLS = [
     "item_id", "item_vi", "item_en", "value",
 ]
 
+# --- Cột raw_exchange_rate (nguồn: vcb_exchange_rate, tỷ giá VCB) ---
+EXCHANGE_RATE_COLS = ["currency_code", "currency_name", "buy_cash", "buy_transfer", "sell", "rate_date"]
+# --- Cột raw_news (nguồn: Company.news, tin tức 5 mã portfolio) ---
+NEWS_COLS = ["id", "symbol", "news_title", "news_short_content", "news_source_link", "public_date"]
+
 
 def get_conn():
     db = os.getenv("WAREHOUSE_DB", DEFAULT_DB)
@@ -379,6 +384,39 @@ def init_warehouse(con):
         );
         """
     )
+    # --- D: tỷ giá VCB (OR REPLACE theo ngày+loại tiền — tỷ giá có thể
+    # cập nhật lại trong cùng ngày, không phải dữ liệu sự kiện) ---
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_exchange_rate (
+            currency_code   VARCHAR,
+            currency_name   VARCHAR,
+            buy_cash        DOUBLE,
+            buy_transfer    DOUBLE,
+            sell            DOUBLE,
+            rate_date       DATE,
+            ingested_at     TIMESTAMP,
+            PRIMARY KEY (currency_code, rate_date)
+        );
+        """
+    )
+    # --- D: tin tức 5 mã portfolio (append-only) ---
+    # id ổn định (xác nhận Task 1) — Company.news() chỉ trả 50 tin GẦN NHẤT
+    # mỗi mã, cửa sổ trượt giống Company.events() (B1) — append-only để
+    # không mất tin cũ khi cửa sổ trượt qua các lần fetch.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_news (
+            id                  VARCHAR PRIMARY KEY,
+            symbol              VARCHAR,
+            news_title          VARCHAR,
+            news_short_content  VARCHAR,
+            news_source_link    VARCHAR,
+            public_date         TIMESTAMP,
+            ingested_at         TIMESTAMP
+        );
+        """
+    )
 
 
 def upsert_symbols(con, df, run_date) -> int:
@@ -490,6 +528,51 @@ def insert_corporate_events(con, df) -> int:
     )
     con.unregister("df_ev")
     after = con.execute("SELECT count(*) FROM raw_corporate_event").fetchone()[0]
+    return after - before
+
+
+def upsert_exchange_rate(con, df) -> int:
+    """Ghi tỷ giá VCB. INSERT OR REPLACE theo (currency_code, rate_date) —
+    tỷ giá có thể cập nhật lại trong cùng ngày, chạy lại an toàn."""
+    if df is None or df.empty:
+        return 0
+    cols = ", ".join(EXCHANGE_RATE_COLS)
+    con.register("df_fx", df)
+    con.execute(
+        f"""
+        INSERT OR REPLACE INTO raw_exchange_rate ({cols}, ingested_at)
+        SELECT {cols}, now() FROM df_fx;
+        """
+    )
+    con.unregister("df_fx")
+    return len(df)
+
+
+def insert_news(con, df) -> int:
+    """Ghi tin tức — APPEND-ONLY, giống hệt insert_corporate_events (B1).
+
+    Company.news() chỉ trả 50 tin GẦN NHẤT mỗi mã, cửa sổ trượt theo thời
+    gian (xác nhận Task 1, D) — nếu thay thế theo mỗi mẻ fetch, tin cũ rơi
+    khỏi cửa sổ sẽ mất vĩnh viễn. Cộng dồn thì lịch sử dày lên theo thời
+    gian bất kể giới hạn 50-tin của nguồn.
+
+    Trả về số dòng THỰC SỰ được thêm (không phải len(df)).
+    """
+    if df is None or df.empty:
+        return 0
+    before = con.execute("SELECT count(*) FROM raw_news").fetchone()[0]
+    cols = ", ".join(NEWS_COLS)
+    con.register("df_news", df)
+    con.execute(
+        f"""
+        INSERT INTO raw_news ({cols}, ingested_at)
+        SELECT {cols}, now() FROM df_news src
+        WHERE src.id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM raw_news t WHERE t.id = src.id);
+        """
+    )
+    con.unregister("df_news")
+    after = con.execute("SELECT count(*) FROM raw_news").fetchone()[0]
     return after - before
 
 

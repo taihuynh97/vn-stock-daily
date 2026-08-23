@@ -162,6 +162,23 @@ def main():
                            "ok" if n_idx else "empty", watermark=run_date)
         print(f"raw_index_daily: {n_idx} dòng")
 
+    # 2c) Tỷ giá VCB — mọi mode (D). 1 lần gọi API/ngày, rẻ.
+    fx = ingest_market.fetch_exchange_rate(run_date)
+    n_fx = warehouse.upsert_exchange_rate(con, fx)
+    warehouse.log_load(con, f"warehouse_{args.mode}", "raw_exchange_rate",
+                       n_fx, "ok" if n_fx else "empty", watermark=run_date)
+    print(f"raw_exchange_rate: {n_fx} dòng cho {run_date}")
+
+    # 2d) Tin tức 5 mã portfolio — mọi mode (D). Rẻ (5 mã), append-only.
+    portfolio_cfg = yaml.safe_load(open(ROOT / "config" / "portfolio.yml", encoding="utf-8"))
+    portfolio_symbols = [h["symbol"] for h in portfolio_cfg["holdings"]]
+    news = ingest_market.fetch_news(portfolio_symbols, source)
+    n_news = warehouse.insert_news(con, news)
+    warehouse.log_load(con, f"warehouse_{args.mode}", "raw_news",
+                       n_news, "ok" if n_news else "empty", watermark=run_date,
+                       notes=f"append-only; fetch {len(news)} dong")
+    print(f"raw_news: +{n_news} dòng mới (fetch {len(news)})")
+
     # 3) Financial ratios — weekly và monthly
     if args.mode in ("weekly", "monthly"):
         print(f"Bắt đầu fetch financials ({len(symbols)} mã)...")

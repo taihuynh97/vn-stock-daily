@@ -17,6 +17,7 @@ from vnstock.api.trading import Trading
 from vnstock.api.quote import Quote
 from vnstock.api.company import Company
 from vnstock.api.financial import Finance
+from vnstock.explorer.misc.exchange_rate import vcb_exchange_rate
 from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
@@ -855,3 +856,104 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
     out.attrs["rejected"] = rejected
     out.attrs["total_calls"] = total_calls
     return out
+
+
+_NEWS_REQUIRED = ["id", "news_title"]
+_printed_news_cols = False
+
+
+def fetch_exchange_rate(rate_date: str) -> pd.DataFrame:
+    """Tỷ giá VCB 1 ngày, qua vcb_exchange_rate() — API export thật của
+    Vietcombank, không phải scrape HTML.
+
+    buy_cash/buy_transfer/sell = '-' từ nguồn (loại tiền không áp dụng
+    giao dịch đó) -> NULL, KHÔNG PHẢI 0.0 (missing != wrong, xem dq.py).
+    """
+    try:
+        df = vcb_exchange_rate(date=rate_date)
+    except Exception as e:
+        print(f"[exchange_rate] {rate_date}: {e}")
+        return pd.DataFrame(columns=warehouse.EXCHANGE_RATE_COLS)
+    if df is None or len(df) == 0:
+        return pd.DataFrame(columns=warehouse.EXCHANGE_RATE_COLS)
+    df.columns = [str(c).lower() for c in df.columns]
+    dq.assert_columns(df, ["currency_code", "currency_name"], "vcb_exchange_rate")
+
+    def num(col):
+        # '-' và các chuỗi không parse được -> NaN qua errors='coerce',
+        # to_numeric trên chuỗi '-' không tự nhận là số nên coerce về NaN
+        # đúng ý muốn (NULL), không phải 0.0.
+        return pd.to_numeric(df[col], errors="coerce") if col in df.columns else float("nan")
+
+    out = pd.DataFrame({
+        "currency_code": df["currency_code"].astype(str).str.strip(),
+        "currency_name": df["currency_name"].astype(str).str.strip(),
+        "buy_cash": num("buy_cash"),
+        "buy_transfer": num("buy_transfer"),
+        "sell": num("sell"),
+        "rate_date": rate_date,
+    })
+    return out[warehouse.EXCHANGE_RATE_COLS]
+
+
+def _normalize_news(df, symbol) -> pd.DataFrame:
+    dq.assert_columns(df, _NEWS_REQUIRED, f"Company.news({symbol})")
+
+    def text(col):
+        if col not in df.columns:
+            return None
+        s = df[col]
+        return s.astype(str).str.strip().where(s.notna(), None)
+
+    out = pd.DataFrame({
+        "id": text("id"),
+        "symbol": symbol.upper().strip(),
+        "news_title": text("news_title"),
+        "news_short_content": text("news_short_content"),
+        "news_source_link": text("news_source_link"),
+    })
+    # public_date CỐ Ý không qua text()/_date_col() — 2 helper đó ép về
+    # CHUỖI ISO ngày (_date_col: "%Y-%m-%d", mất phần giờ), trong khi
+    # public_date là cột TIMESTAMP thật (nguồn trả "2026-08-01T10:00:00",
+    # cần giữ giờ). Giữ nguyên kiểu pandas.Timestamp (không stringify) —
+    # con.register()+INSERT sẽ để DuckDB tự chuyển NaT thành SQL NULL đúng
+    # cách; lỗi "NaT" bị stringify thành chuỗi literal (A3 fix round 1) chỉ
+    # xảy ra khi gọi .astype(str)/.dt.strftime() TRÊN cột có NaT — ở đây
+    # không gọi hàm nào như vậy nên không rơi vào bẫy đó.
+    out["public_date"] = pd.to_datetime(df["public_date"], errors="coerce") if "public_date" in df.columns else pd.NaT
+    return out[warehouse.NEWS_COLS]
+
+
+def fetch_news(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
+    """Tin tức 5 mã portfolio qua Company.news().
+
+    Nguồn chỉ trả 50 TIN GẦN NHẤT mỗi mã, cửa sổ trượt theo thời gian
+    (xác nhận Task 1, D) — xem docstring warehouse.insert_news.
+
+    Bắt dq.SchemaError theo TỪNG MÃ, giống fetch_corporate_events (B1) —
+    một mã dị thường không được xoá sổ cả mẻ.
+    """
+    global _printed_news_cols
+    frames = []
+    for symbol in symbols:
+        ingest._throttle()
+        try:
+            df = Company(symbol=symbol, source=source).news()
+        except Exception as e:
+            print(f"[news] {symbol}: {e}")
+            continue
+        if df is None or len(df) == 0:
+            continue
+        df.columns = [str(c).lower() for c in df.columns]
+        if not _printed_news_cols:
+            print(f"[news] cột thật ({symbol}): {list(df.columns)}")
+            _printed_news_cols = True
+        try:
+            frames.append(_normalize_news(df, symbol))
+        except dq.SchemaError as e:
+            print(f"[news] {symbol}: {e}")
+            continue
+    if not frames:
+        return pd.DataFrame(columns=warehouse.NEWS_COLS)
+    out = pd.concat(frames, ignore_index=True)
+    return out.drop_duplicates("id")
