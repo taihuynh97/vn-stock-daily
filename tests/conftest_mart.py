@@ -393,4 +393,14 @@ def build_fake_mart(path: str):
           ('n3','MLS','Tin dài','""" + "x" * 500 + """','https://x.com/3',
            TIMESTAMP '2026-08-21 08:00:00');
     """)
+    # n4 (mã IDV, trong portfolio.yml, chưa dùng ở fixture này): mô phỏng
+    # đúng thực tế production — nguồn VCI 100% NULL news_short_content/
+    # news_source_link (xác nhận trên 250 dòng thật đã ingest). Trước đây
+    # fixture nhồi content/link có giá trị ở MỌI dòng, che mất nhánh code
+    # NULL thật chạy trên production (final whole-branch review, mục I1).
+    con.execute("""
+        INSERT INTO stg_news VALUES
+          ('n4','IDV','Tin không có tóm tắt',NULL,NULL,
+           TIMESTAMP '2026-08-18 07:00:00');
+    """)
     con.close()

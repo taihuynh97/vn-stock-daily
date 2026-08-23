@@ -789,3 +789,15 @@ def test_get_recent_news_cat_short_content_toi_da_300_ky_tu(con):
     res = tools.get_recent_news(con, "MLS", 10)
     n3 = next(n for n in res["news"] if n["news_title"] == "Tin dài")
     assert len(n3["news_short_content"]) <= 300
+
+
+def test_get_recent_news_content_null_giu_nguyen_none_khong_thanh_chuoi_rong(con):
+    # Final whole-branch review (mục I1): nguồn VCI thực tế 100% NULL
+    # news_short_content/news_source_link — code KHÔNG được coerce NULL
+    # thành "" (đúng lớp lỗi "NULL rò rỉ thành giá trị mơ hồ" từng xảy ra ở
+    # C2 với event_title_vi → literal "None"). Dòng n4 (mã IDV) nướng sẵn
+    # NULL cho 2 trường này trong tests/conftest_mart.py.
+    res = tools.get_recent_news(con, "IDV", 10)
+    n4 = next(n for n in res["news"] if n["news_title"] == "Tin không có tóm tắt")
+    assert n4["news_short_content"] is None
+    assert n4["news_source_link"] is None

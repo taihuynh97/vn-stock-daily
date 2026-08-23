@@ -269,6 +269,9 @@ def get_recent_news(symbol: str, limit: int = 10) -> dict:
 
     Mã ngoài danh mục trả data_quality.has_data=false kèm ghi chú rõ ràng
     — không phải mã không tồn tại, chỉ là chưa được theo dõi tin tức.
+
+    news_short_content/news_source_link thường NULL (nguồn hiện tại không
+    cung cấp) — đừng coi thiếu 2 trường này là lỗi.
     """
     return tools.get_recent_news(conn(), symbol, limit)
 

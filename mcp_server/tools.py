@@ -1203,10 +1203,10 @@ def get_recent_news(con, symbol: str, limit: int = 10) -> dict:
         return {"symbol": sym, "data_quality": {"has_data": False}, **db.as_of(con)}
     news = []
     for r in _clean(rows):
-        content = r.get("news_short_content") or ""
+        content = r.get("news_short_content")
         news.append({
             "news_title": r["news_title"],
-            "news_short_content": content[:300],
+            "news_short_content": content[:300] if content else None,
             "news_source_link": r.get("news_source_link"),
             # KHÔNG dùng _date_str() ở đây: public_date là TIMESTAMP thật
             # (có giờ:phút:giây có ý nghĩa, khác rate_date là DATE thuần) —
@@ -1219,6 +1219,11 @@ def get_recent_news(con, symbol: str, limit: int = 10) -> dict:
     return {
         "symbol": sym,
         "news": news,
-        "data_quality": {"has_data": True},
+        "data_quality": {
+            "has_data": True,
+            "note": "Nguồn tin hiện tại (VCI) thường KHÔNG cung cấp "
+                    "news_short_content/news_source_link (NULL ở phần lớn "
+                    "bản ghi thật) — chỉ đảm bảo news_title/public_date đầy đủ.",
+        },
         **db.as_of(con),
     }
