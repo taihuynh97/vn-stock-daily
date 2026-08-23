@@ -10,12 +10,15 @@ from src.warehouse import EXCHANGE_RATE_COLS, NEWS_COLS
 
 
 def _fake_vcb_df():
+    # Nguồn VCB thật trả số dạng chuỗi có dấu phẩy ngăn hàng nghìn cho các
+    # loại tiền mệnh giá lớn (vd USD "25,900.00") — fixture phải mô phỏng
+    # đúng định dạng này, không dùng float trần, để bắt được bug parse.
     return pd.DataFrame({
         "CurrencyCode": ["USD", "DKK"],
         "CurrencyName": ["US DOLLAR", "DANISH KRONE"],
-        "Buy Cash": [25000.0, "-"],
-        "Buy Transfer": [25100.0, 4012.10],
-        "Sell": [25400.0, 4165.55],
+        "Buy Cash": ["25,900.00", "-"],
+        "Buy Transfer": ["25,930.00", "4,012.10"],
+        "Sell": ["26,310.00", "4,165.55"],
         "date": ["2026-08-20", "2026-08-20"],
     })
 
@@ -42,6 +45,20 @@ def test_fetch_exchange_rate_dash_thanh_null(monkeypatch):
     dkk = out[out["currency_code"] == "DKK"].iloc[0]
     assert pd.isna(dkk["buy_cash"])
     assert dkk["buy_transfer"] == 4012.10
+
+
+def test_fetch_exchange_rate_dau_phay_hang_nghin_khong_thanh_null(monkeypatch):
+    def _fake(date):
+        df = _fake_vcb_df()
+        df.columns = ["currency_code", "currency_name", "buy_cash",
+                     "buy_transfer", "sell", "date"]
+        return df
+    monkeypatch.setattr("src.ingest_market.vcb_exchange_rate", _fake)
+    out = fetch_exchange_rate("2026-08-20")
+    usd = out[out["currency_code"] == "USD"].iloc[0]
+    assert usd["buy_cash"] == 25900.0
+    assert usd["buy_transfer"] == 25930.0
+    assert usd["sell"] == 26310.0
 
 
 def test_fetch_exchange_rate_nguon_loi_tra_df_rong(monkeypatch):

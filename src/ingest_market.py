@@ -880,10 +880,17 @@ def fetch_exchange_rate(rate_date: str) -> pd.DataFrame:
     dq.assert_columns(df, ["currency_code", "currency_name"], "vcb_exchange_rate")
 
     def num(col):
-        # '-' và các chuỗi không parse được -> NaN qua errors='coerce',
-        # to_numeric trên chuỗi '-' không tự nhận là số nên coerce về NaN
-        # đúng ý muốn (NULL), không phải 0.0.
-        return pd.to_numeric(df[col], errors="coerce") if col in df.columns else float("nan")
+        # '-' và các chuỗi không parse được -> NaN qua errors='coerce'.
+        # Nguồn VCB trả số có dấu phẩy ngăn cách hàng nghìn (vd "25,900.00")
+        # với các loại tiền có mệnh giá lớn -> phải bỏ dấu phẩy TRƯỚC khi
+        # to_numeric, nếu không toàn bộ các loại tiền giá trị >= 1000
+        # (USD, EUR, GBP...) sẽ bị coerce nhầm thành NaN thay vì số thật.
+        if col not in df.columns:
+            return float("nan")
+        return pd.to_numeric(
+            df[col].astype(str).str.replace(",", "", regex=False),
+            errors="coerce",
+        )
 
     out = pd.DataFrame({
         "currency_code": df["currency_code"].astype(str).str.strip(),
