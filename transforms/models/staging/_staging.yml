@@ -154,6 +154,22 @@ models:
         tests: [not_null]
       - name: rate_date
         tests: [not_null]
+      # Fix round cuối (final whole-branch review, mục I3): lưới cảnh báo
+      # cho đúng lớp bug parse vừa xảy ra (buy_cash/buy_transfer/sell toàn
+      # NULL do dấu phẩy hàng nghìn, sửa ở 6a57da6). buy_cash KHÔNG được
+      # thêm test — NULL hợp lệ cho các loại tiền VCB không giao dịch tiền
+      # mặt. severity: warn vì đây là lưới cảnh báo, không phải ràng buộc
+      # cứng.
+      - name: buy_transfer
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: sell
+        tests:
+          - not_null:
+              config:
+                severity: warn
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns: [currency_code, rate_date]
