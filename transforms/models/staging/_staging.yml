@@ -146,3 +146,26 @@ models:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:
             [symbol, statement_type, period_type, period_label, row_seq]
+
+  - name: stg_exchange_rate
+    description: "Tỷ giá VCB hằng ngày. Khoá (currency_code, rate_date)."
+    columns:
+      - name: currency_code
+        tests: [not_null]
+      - name: rate_date
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [currency_code, rate_date]
+
+  - name: stg_news
+    description: >
+      Tin tức 5 mã portfolio (config/portfolio.yml). id ổn định qua
+      Company.news(), append-only ở tầng raw — xem Task 1/2 kế hoạch D.
+    columns:
+      - name: id
+        tests: [not_null, unique]
+      - name: symbol
+        tests: [not_null]
+      - name: news_title
+        tests: [not_null]
