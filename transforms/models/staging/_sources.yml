@@ -47,3 +47,13 @@ sources:
         freshness:
           warn_after: {count: 10, period: day}
           error_after: {count: 20, period: day}
+      - name: raw_exchange_rate
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: {count: 3, period: day}
+          error_after: {count: 10, period: day}
+      - name: raw_news
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: {count: 10, period: day}
+          error_after: {count: 20, period: day}

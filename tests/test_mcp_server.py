@@ -259,3 +259,25 @@ def test_get_thesis_update_since_date_sai_dinh_dang_tra_error_qua_mcp(b1_con, mo
     )
     payload = json.loads(content[0].text)
     assert "YYYY-MM-DD" in payload["error"]
+
+
+# Task 4 (D): get_exchange_rate_history + get_recent_news — dùng đúng
+# fixture `b1_con` (xem ghi chú I1/C1 phía trên), KHÔNG tạo fixture riêng.
+def test_get_exchange_rate_history_via_mcp_call_tool(b1_con, monkeypatch):
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+    content = asyncio.run(
+        server.mcp.call_tool("get_exchange_rate_history", {"currency_code": "USD"})
+    )
+    payload = json.loads(content[0].text)
+    assert "error" not in payload
+    assert payload["data_quality"]["has_data"] is True
+
+
+def test_get_recent_news_via_mcp_call_tool(b1_con, monkeypatch):
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+    content = asyncio.run(
+        server.mcp.call_tool("get_recent_news", {"symbol": "HPG"})
+    )
+    payload = json.loads(content[0].text)
+    assert "error" not in payload
+    assert payload["data_quality"]["has_data"] is True

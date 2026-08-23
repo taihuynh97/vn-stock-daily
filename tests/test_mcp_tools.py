@@ -747,3 +747,57 @@ def test_new_distribution_events_ngay_dung_dinh_dang_iso(con):
     r = tools._new_distribution_events(con, "AAA", "2026-05-01")["items"]
     by_date = sorted(e["exright_date"] for e in r)
     assert by_date == ["2026-05-11", "2026-05-25"]
+
+
+# --- Task 4 (D): get_exchange_rate_history + get_recent_news ---
+
+def test_get_exchange_rate_history_tra_dung_chuoi_theo_ngay(con):
+    res = tools.get_exchange_rate_history(con, "USD", 30)
+    assert res["currency_code"] == "USD"
+    history = res["history"]
+    assert len(history) == 2
+    assert history[0]["rate_date"] == "2026-08-20"  # mới nhất trước
+
+
+def test_get_exchange_rate_history_buy_cash_null_giu_none(con):
+    res = tools.get_exchange_rate_history(con, "DKK", 30)
+    assert res["history"][0]["buy_cash"] is None
+
+
+def test_get_exchange_rate_history_ma_khong_ton_tai_tra_has_data_false(con):
+    res = tools.get_exchange_rate_history(con, "ZZZ", 30)
+    assert res["data_quality"]["has_data"] is False
+
+
+def test_get_recent_news_tra_dung_thu_tu_moi_nhat_truoc(con):
+    res = tools.get_recent_news(con, "HPG", 10)
+    assert res["data_quality"]["has_data"] is True
+    titles = [n["news_title"] for n in res["news"]]
+    assert titles == ["Tiêu đề mới nhất", "Tiêu đề cũ hơn"]
+
+
+def test_get_recent_news_ma_ngoai_portfolio_has_data_false_co_ghi_chu(con):
+    res = tools.get_recent_news(con, "VCB", 10)
+    assert res["data_quality"]["has_data"] is False
+    assert "portfolio" in res["data_quality"]["note"].lower() or "danh mục" in res["data_quality"]["note"].lower()
+
+
+def test_get_recent_news_cat_short_content_toi_da_300_ky_tu(con):
+    # Fixture `con` của file này mở read_only=True — không INSERT được ở
+    # thời điểm chạy test (khác brief gốc). Dòng nội dung dài đã được nướng
+    # sẵn vào build_fake_mart() cho mã MLS (xem tests/conftest_mart.py).
+    res = tools.get_recent_news(con, "MLS", 10)
+    n3 = next(n for n in res["news"] if n["news_title"] == "Tin dài")
+    assert len(n3["news_short_content"]) <= 300
+
+
+def test_get_recent_news_content_null_giu_nguyen_none_khong_thanh_chuoi_rong(con):
+    # Final whole-branch review (mục I1): nguồn VCI thực tế 100% NULL
+    # news_short_content/news_source_link — code KHÔNG được coerce NULL
+    # thành "" (đúng lớp lỗi "NULL rò rỉ thành giá trị mơ hồ" từng xảy ra ở
+    # C2 với event_title_vi → literal "None"). Dòng n4 (mã IDV) nướng sẵn
+    # NULL cho 2 trường này trong tests/conftest_mart.py.
+    res = tools.get_recent_news(con, "IDV", 10)
+    n4 = next(n for n in res["news"] if n["news_title"] == "Tin không có tóm tắt")
+    assert n4["news_short_content"] is None
+    assert n4["news_source_link"] is None

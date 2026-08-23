@@ -19,7 +19,7 @@ build_warehouse.py --mode         raw_* (immutable)    ├─ MCP server (hội 
 
 - `transforms/` — dbt project (staging → intermediate → marts)
 - `src/scoring.py` + `config/scoring_profiles.yml` — bộ chấm điểm, đổi "gu" đầu tư ở đây
-- `mcp_server/` — 11 tool read-only cho luồng hội thoại
+- `mcp_server/` — 13 tool read-only cho luồng hội thoại
 
 ### Bật/tắt luồng hội thoại
 
