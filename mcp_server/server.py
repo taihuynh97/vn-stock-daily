@@ -252,6 +252,9 @@ def get_exchange_rate_history(currency_code: str = "USD", days: int = 30) -> dic
     """Chuỗi tỷ giá VCB (Vietcombank) theo ngày cho 1 loại ngoại tệ.
 
     currency_code: mã ISO 3 ký tự (USD, EUR, JPY...), mặc định USD.
+    days: số DÒNG gần nhất trả về (theo rate_date giảm dần), KHÔNG phải lọc
+    theo khoảng ngày lịch — nếu dữ liệu có khoảng trống, days=30 có thể trải
+    dài hơn 30 ngày lịch thật.
     buy_cash có thể NULL — loại tiền đó Vietcombank không giao dịch tiền
     mặt ngày đó, KHÔNG PHẢI tỷ giá bằng 0.
 

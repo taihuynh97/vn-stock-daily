@@ -1,10 +1,7 @@
 """Test fetch/normalize tỷ giá + tin tức (D)."""
-from unittest.mock import patch
-
 import pandas as pd
 import pytest
 
-from src import dq
 from src.ingest_market import fetch_exchange_rate, fetch_news
 from src.warehouse import EXCHANGE_RATE_COLS, NEWS_COLS
 
