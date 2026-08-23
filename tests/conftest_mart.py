@@ -360,4 +360,37 @@ def build_fake_mart(path: str):
           ('DRIFT','balance_sheet','quarter','2026-q2',31,'other',
            'Tài sản khác','Other assets',1.0);
     """)
+    # --- D: tỷ giá + tin tức ---
+    con.execute("""
+        CREATE TABLE stg_exchange_rate (
+            currency_code VARCHAR, currency_name VARCHAR, buy_cash DOUBLE,
+            buy_transfer DOUBLE, sell DOUBLE, rate_date DATE
+        );
+        INSERT INTO stg_exchange_rate VALUES
+          ('USD','US DOLLAR',25000.0,25100.0,25400.0,DATE '2026-08-19'),
+          ('USD','US DOLLAR',25050.0,25150.0,25450.0,DATE '2026-08-20'),
+          ('DKK','DANISH KRONE',NULL,4012.10,4165.55,DATE '2026-08-20');
+
+        CREATE TABLE stg_news (
+            id VARCHAR, symbol VARCHAR, news_title VARCHAR,
+            news_short_content VARCHAR, news_source_link VARCHAR,
+            public_date TIMESTAMP
+        );
+        INSERT INTO stg_news VALUES
+          ('n1','HPG','Tiêu đề mới nhất','Nội dung ngắn 1','https://x.com/1',
+           TIMESTAMP '2026-08-20 10:00:00'),
+          ('n2','HPG','Tiêu đề cũ hơn','Nội dung ngắn 2','https://x.com/2',
+           TIMESTAMP '2026-08-19 09:00:00');
+    """)
+    # n3 (mã MLS riêng, không phải HPG): fixture `con` của
+    # tests/test_mcp_tools.py mở read_only=True nên không thể INSERT ở thời
+    # điểm chạy test (brief gốc giả định INSERT được trong test — sai với
+    # fixture thật, xem task-4-report.md). Nướng sẵn dòng nội dung dài 500
+    # ký tự vào đây, dùng mã MLS (trong portfolio, không phải HPG) để không
+    # đụng test thứ tự "mới nhất trước" của HPG (chỉ trông cậy đúng 2 dòng).
+    con.execute("""
+        INSERT INTO stg_news VALUES
+          ('n3','MLS','Tin dài','""" + "x" * 500 + """','https://x.com/3',
+           TIMESTAMP '2026-08-21 08:00:00');
+    """)
     con.close()

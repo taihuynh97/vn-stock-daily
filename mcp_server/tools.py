@@ -1120,3 +1120,105 @@ def get_thesis_update(con, symbol: str, since_date: str | None = None) -> dict:
         },
         **db.as_of(con),
     }
+
+
+# --- D: tỷ giá + tin tức (Task 4) ---
+
+_PORTFOLIO_SYMBOLS = None
+
+
+def _load_portfolio_symbols() -> set[str]:
+    """5 mã trong config/portfolio.yml — cache trong tiến trình, không đọc
+    lại file mỗi lần gọi tool (đường dẫn cố định, không đổi khi server
+    chạy)."""
+    global _PORTFOLIO_SYMBOLS
+    if _PORTFOLIO_SYMBOLS is None:
+        import yaml
+        from pathlib import Path
+        path = Path(__file__).resolve().parent.parent / "config" / "portfolio.yml"
+        cfg = yaml.safe_load(open(path, encoding="utf-8"))
+        _PORTFOLIO_SYMBOLS = {h["symbol"].upper() for h in cfg["holdings"]}
+    return _PORTFOLIO_SYMBOLS
+
+
+def get_exchange_rate_history(con, currency_code: str = "USD", days: int = 30) -> dict:
+    """Chuỗi tỷ giá VCB theo ngày cho 1 loại ngoại tệ, mặc định USD."""
+    code = currency_code.upper().strip()
+    rows = db.run_query(
+        con,
+        """
+        SELECT rate_date, buy_cash, buy_transfer, sell
+        FROM stg_exchange_rate
+        WHERE currency_code = ?
+        ORDER BY rate_date DESC
+        """,
+        params=[code],
+        limit=days,
+    )
+    if not rows:
+        return {"currency_code": code, "data_quality": {"has_data": False},
+                **db.as_of(con)}
+    # _date_str() TRƯỚC _clean() (bài học A3, xem docstring _date_str): rate_date
+    # là cột DATE đọc qua .df() ra pandas.Timestamp — nếu để _clean() xử lý
+    # trước, nó tự stringify qua .isoformat() (rò rỉ "T00:00:00") rồi
+    # _date_str() nhận một str, không còn .isoformat()/.date() để cắt, trở
+    # thành no-op. Tự xác minh thực nghiệm: brief gốc gọi _clean() trước làm
+    # test rate_date == "2026-08-20" thất bại với "2026-08-20T00:00:00".
+    for r in rows:
+        r["rate_date"] = _date_str(r.get("rate_date"))
+    return {
+        "currency_code": code,
+        "history": _clean(rows),
+        "data_quality": {"has_data": True},
+        **db.as_of(con),
+    }
+
+
+def get_recent_news(con, symbol: str, limit: int = 10) -> dict:
+    """Tin tức gần đây nhất đã lưu cho 1 mã — CHỈ hoạt động cho 5 mã trong
+    config/portfolio.yml (D chỉ ingest tin cho danh mục, xem spec D §3.2)."""
+    sym = symbol.upper().strip()
+    if sym not in _load_portfolio_symbols():
+        return {
+            "symbol": sym,
+            "data_quality": {
+                "has_data": False,
+                "note": f"{sym} không nằm trong danh mục theo dõi (portfolio.yml) — "
+                        "D chỉ lưu tin tức cho các mã trong danh mục.",
+            },
+            **db.as_of(con),
+        }
+    rows = db.run_query(
+        con,
+        """
+        SELECT news_title, news_short_content, news_source_link, public_date
+        FROM stg_news
+        WHERE symbol = ?
+        ORDER BY public_date DESC
+        """,
+        params=[sym],
+        limit=limit,
+    )
+    if not rows:
+        return {"symbol": sym, "data_quality": {"has_data": False}, **db.as_of(con)}
+    news = []
+    for r in _clean(rows):
+        content = r.get("news_short_content") or ""
+        news.append({
+            "news_title": r["news_title"],
+            "news_short_content": content[:300],
+            "news_source_link": r.get("news_source_link"),
+            # KHÔNG dùng _date_str() ở đây: public_date là TIMESTAMP thật
+            # (có giờ:phút:giây có ý nghĩa, khác rate_date là DATE thuần) —
+            # _date_str() được viết chỉ để cắt phần giờ giả "T00:00:00" của
+            # cột DATE (xem docstring _date_str), áp nó vào TIMESTAMP thật
+            # sẽ cắt mất giờ đăng tin thật. _clean() ở trên đã tự
+            # .isoformat() giữ nguyên giờ.
+            "public_date": r["public_date"],
+        })
+    return {
+        "symbol": sym,
+        "news": news,
+        "data_quality": {"has_data": True},
+        **db.as_of(con),
+    }

@@ -246,5 +246,32 @@ def get_thesis_update(symbol: str, since_date: str | None = None) -> dict:
     return tools.get_thesis_update(conn(), symbol, since_date)
 
 
+@mcp.tool()
+@_safe_tool
+def get_exchange_rate_history(currency_code: str = "USD", days: int = 30) -> dict:
+    """Chuỗi tỷ giá VCB (Vietcombank) theo ngày cho 1 loại ngoại tệ.
+
+    currency_code: mã ISO 3 ký tự (USD, EUR, JPY...), mặc định USD.
+    buy_cash có thể NULL — loại tiền đó Vietcombank không giao dịch tiền
+    mặt ngày đó, KHÔNG PHẢI tỷ giá bằng 0.
+
+    Kiểm data_quality.has_data trước khi kết luận — mã ngoại tệ không có
+    trong bảng trả về has_data=false.
+    """
+    return tools.get_exchange_rate_history(conn(), currency_code, days)
+
+
+@mcp.tool()
+@_safe_tool
+def get_recent_news(symbol: str, limit: int = 10) -> dict:
+    """Tin tức gần đây nhất cho 1 mã — CHỈ hoạt động cho các mã trong danh
+    mục theo dõi (config/portfolio.yml), không phải toàn bộ thị trường.
+
+    Mã ngoài danh mục trả data_quality.has_data=false kèm ghi chú rõ ràng
+    — không phải mã không tồn tại, chỉ là chưa được theo dõi tin tức.
+    """
+    return tools.get_recent_news(conn(), symbol, limit)
+
+
 if __name__ == "__main__":
     mcp.run()
