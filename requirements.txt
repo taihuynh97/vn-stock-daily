@@ -1,4 +1,8 @@
-vnstock==4.0.4
+# vnstock bị gỡ khỏi PyPI (~2026-09-25), chuyển sang index riêng của vnstocks.com.
+# Index này không còn bản 4.0.4 (chỉ còn 4.0.8+) — 4.0.9 đã đối chiếu schema
+# Finance/Quote khớp 4.0.4. Mọi gói khác vẫn lấy từ PyPI.
+--extra-index-url https://vnstocks.com/api/simple
+vnstock==4.0.9
 anthropic>=0.40
 requests>=2.31
 pandas>=2.0
