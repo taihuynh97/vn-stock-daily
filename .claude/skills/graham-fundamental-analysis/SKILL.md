@@ -29,6 +29,51 @@ Follow the four-stage funnel (top-down when advising on market/sector allocation
 
 Investment process context (state assumptions when unknown): objective (return & risk tolerance) → suitable stock types → asset allocation → find opportunities → analyze → deploy → monitor, take profit / cut loss. Graham's allocation anchor for a defensive investor: 25–75% in stocks, remainder in high-grade bonds, 50–50 as the default; shift toward 25% stocks when the market seems dangerously high, toward 75% after major declines.
 
+## Step −1 — Intake, screening path, event gate (added 2026-10-03, mảng Q)
+
+These three rules exist because the same user got three different answers to near-identical questions (03/09 → IDC, 10/09 → banks, 12/09 → an 11-stock basket) and then watched a name from that basket collapse. The causes were process, not data: the metric, threshold and classification level changed silently between sessions, screening was ad-hoc SQL, and nothing checked for live events before valuing.
+
+### Intake card (hard gate — before any data call)
+
+The only calls allowed before the card is confirmed: reading prior analyses (`docs/analyses/`, `Artifact action:"list"`).
+
+| Field | Values | How to fill |
+|---|---|---|
+| Question type | screen → basket · single stock · compare · tactics (entry/size/exit) · re-check | From wording: "mã nào/top/lọc" → screen; ticker + "phân tích" → single stock |
+| Lens | `gia_tri` (value + margin of safety) · `tang_truong` (growth + quality) | **Always ask** unless the user named it in this message — the user explicitly does not want a default lens |
+| Holding horizon | multi-year (this user's default) · weeks | "tuần này", "đầu tháng 10" = short. Say plainly: this framework and data cannot forecast 1–4 week prices; it selects businesses to hold |
+| Prior analyses | name · date · lens · conclusion · thresholds | Read them; if the new result differs, the report MUST contain a section explaining the difference **in numbers** |
+
+Ask the lens with one short question. If no answer can be obtained (non-interactive run), do not screen: deliver the card, the prior-analysis comparison, and the question.
+
+### Screening — one path only
+
+- Every "which stock / top N / filter the market" question → MCP `screen_graham(lens)`. Report `config_version`, the remaining count after every step, `phan_tich_tiep`, `cho`, and the VN-Index benchmark it returns.
+- Never rank with hand-written SQL. `run_sql` is for digging into one symbol, not for choosing symbols.
+- Never output "the single best stock". Graham works at basket level (10–30 issues); return the basket and say why concentration is the risk.
+- Changing a threshold means editing `config/graham_screen.yml` **and** bumping `version` — never apply a modified threshold silently inside a conversation.
+
+### Event gate (mandatory before Step 4 scoring and Step 5 valuation)
+
+For every symbol you are about to score or value:
+
+1. Call `get_risk_flags(symbol)`.
+   - `cho_bctc_ke_tiep` (real loss quarter in the last 4, or latest quarterly profit down >50% YoY) → **stop**. Output "chưa định giá được" with the flags; no value range, no X/7 score. Name the next report that would settle it.
+   - `doc_tin_truoc` (deep drawdown, dilution, insider sell registrations, stale ratios, no quarterly statements) → search the web for the last 90 days (the warehouse news covers only the 5 portfolio symbols) and explain each flag with source and date before continuing.
+   - `qua` → still search the web for the last 30 days.
+2. **Unbounded contingent liabilities** (buy-back/exchange guarantees, lawsuits, guarantees for related parties, provisioning still in progress): if the size cannot be bounded from the statements, intrinsic value cannot be estimated — do not compute a range. A margin of safety absorbs estimation error inside a known range; it does not absorb an unknown liability.
+3. **Relaxed criteria:** if 2 or more of the 7 defensive criteria pass only under relaxed rules, write "7/7, N relaxed" and never "meets the defensive standard" without that qualifier.
+
+Case that produced these rules — PNJ, 12/09/2026: scored 7/7 at 38,200 đ with a value range of 38,000–65,000 đ. The warehouse already held a Q2/2026 loss of 739 bn đ in the raw income statement and two insider-family sell registrations totalling 25 M shares (published 04/09). On 28/09 PNJ guided a full-year loss of ~6,271 bn đ; the stock closed at 23,050 đ on 02/10.
+
+### Record every analysis
+
+After answering a screening or valuation question, write `docs/analyses/YYYY-MM-DD-<topic>.md` (format in `docs/analyses/README.md`): question, intake card, `config_version`, price/ratio `as_of`, step counts, basket, gate results, value ranges and thresholds, sources. The next analysis of the same symbol or sector reads it first.
+
+### Platform limits that must be stated
+
+Full list and wording: `docs/han-che-nen-tang.md`. In every report state at least: news exists only for 5 portfolio symbols; quarterly statements cover ~8 quarters and annual 8 years; revenue/profit in the marts are inferred from multiples; ownership is a monthly snapshot; no bond yield, CPI or rates in the warehouse; no forecasts or consensus; one data source (VCI) with no cross-check.
+
 ## Step 0 — Setup and data gathering
 
 - Identify: ticker, exchange, country, currency, fiscal-year convention, and the user's investor profile (defensive / enterprising). Default to defensive if unstated.
@@ -42,6 +87,11 @@ Investment process context (state assumptions when unknown): objective (return &
 | Current assets by class, current liabilities, total and long-term debt, equity — the inputs to current ratio, NCAV, liquidating value, tangible book | `get_financial_statement(symbol, 'balance_sheet', period_type='year')` — raw reported BCTC lines |
 | Non-recurring items, interest expense, detail for normalizing earnings, earnings vs. operating cash flow | `get_financial_statement(..., 'income_statement')` and `(..., 'cash_flow')` |
 | Price, market cap, EPS, BVPS, P/E, P/B, valuation band, scorecard | `get_stock_profile`, `get_valuation_history`, `get_financial_history` |
+| **Current** P/E, P/B, valuation band, market cap (price of the latest session) | `get_stock_profile` → `valuation_current` (`pe_current`, `pb_current`, `valuation_band_current`). The `valuation` block is **quarter-end** — never call a stock cheap from it, and never divide `last_close` by a quarter-end EPS (wrong after a stock dividend) |
+| Real loss quarters (not trailing-12-month) | `get_stock_profile` → `quarterly_profit` (`loss_quarters_4q_actual`); `is_loss_making` only looks at TTM profit |
+| Event gate | `get_risk_flags` |
+| Screening a market or sector | `screen_graham(lens)` — the only allowed path |
+| Market benchmark | `run_sql` on `fct_index_daily` (VNINDEX, VN30, HNXINDEX). The ticker `VNI` is a stock, not the index |
 | Dividend record, stock dividends, rights issues | `get_distribution_history` |
 | Management and governance evidence (insider %, major holders, board changes) | `get_ownership`, plus `get_recent_news` |
 | Peer P/E and P/B context | `get_sector_snapshot`, `compare_stocks` |
@@ -55,7 +105,7 @@ Investment process context (state assumptions when unknown): objective (return &
 - Use the **top-level rows** for Graham's arithmetic: `current_assets` (TÀI SẢN NGẮN HẠN), `current_liabilities` (Nợ ngắn hạn), `liabilities` (NỢ PHẢI TRẢ), `owners_equity`, `minority_interests`, `goodwill`, `intangible_fixed_assets`. Never sum the sub-items to rebuild a subtotal.
 - `item_id` is **not unique** within a statement — `short_term_investments` appears twice, `cost` and `accumulated_depreciation` three times each (tangible / leased / investment property). Key on `item_vi` + `row_seq`, and show `item_vi` to the user.
 - Deduct `minority_interests` before computing book value per share for the common — it sits inside consolidated equity.
-- **Shares outstanding:** read `number_of_shares_mkt_cap` from `fct_financial_quarterly` (via `run_sql`) — it is stated, so no derivation is needed. Do **not** compute shares from `common_shares / 10,000` on the annual balance sheet: it lags stock dividends. REE's FY2025 sheet implies 541.7M shares, but a 15% stock dividend went ex on 2026-05-18 and the warehouse carries 622,899,036 as of 2026-Q2 — the stale count would inflate every per-share figure by ~15%.
+- **Shares outstanding:** read `number_of_shares_mkt_cap` from `fct_financial_quarterly` (via `run_sql`) — it is stated, so no derivation is needed. Do **not** compute shares from `common_shares / 10,000` on the annual balance sheet: it lags stock dividends. REE's FY2025 sheet implies 541.7M shares, but a 15% stock dividend went ex on 2026-05-18 and the warehouse carries 622,899,036 as of 2026-Q2 — the stale count would inflate every per-share figure by ~15%. The same trap applies **after** the latest quarter: if `get_distribution_history` shows a stock dividend or bonus with ex-date after `ratio_as_of`, divide every per-share figure by (1 + ratio) before comparing it with today's price — PHR (80% bonus, ex 11/09/2026) looked half-price in the 12/09 screen for exactly this reason.
 - **Several ratios are already stated — read them, don't recompute.** `fct_financial_quarterly` carries `current_ratio`, `quick_ratio`, `cash_ratio`, `debt_to_equity`, `roe`, `roa`, `eps`, `bvps` per quarter (REE 2026-Q2: current_ratio 2.36). Compute only what no column provides — NCAV, the Graham number, liquidating value, multi-year averages and dispersion.
 
 Check `data_quality.has_data` before concluding anything about a symbol. Some symbols — small caps especially — have no financial statements through this source at all; that is missing data, not a failing company.
@@ -201,6 +251,8 @@ ALWAYS structure the final answer as:
 Price [x] as of [price_as_of] · Ratios as of [ratio_as_of] · com_class [NONFIN|BANK|OTHERFIN]
 Data quality [score]/100 [quality_flags if any] · Peers: [peer_basis], n = [peer_count]
 Sources: vn-stock-analysis warehouse + [external sources with dates]
+Lens [gia_tri|tang_truong] · Horizon [..] · Screen config [config_version, if screened] · Risk gate [qua|doc_tin_truoc|cho_bctc_ke_tiep]
+Differences vs prior analysis [name, date] — required when a prior analysis exists
 
 ## 1. Snapshot & business
 ## 2. Macro context (brief)
@@ -219,6 +271,7 @@ In the verdict: classify the stock (e.g., "meets the defensive standard", "enter
 
 ## Behavioral rules
 
+- **Short horizons:** when asked what to buy "this week" or "early next month", say first that neither this framework nor this data forecasts 1–4 week prices, then answer the long-horizon question. Judging a method by two weeks of one stock's price is noise; judging it by a business outcome (PNJ's loss) is signal — separate the two in post-mortems.
 - Market analysis is not security analysis: price forecasting — charts, momentum, timing signals — carries no margin of safety and competes on prediction, where the analyst has no protective cushion. Never justify a valuation by recent price action or market forecasts; Graham's investor profits from fluctuations, never predicts them.
 - Distinguish the two averages: only call a mean "earning power" when the yearly figures cluster around it; otherwise present the record year by year and say the average is unreliable.
 - If key data is missing, compute what you can, mark gaps clearly, and downgrade confidence — do not fabricate or silently substitute.
@@ -244,7 +297,8 @@ Measured on `md:vn_market` on 2026-08-24. Re-measure if the pipeline has since b
 | Series | Window available | Consequence |
 |---|---|---|
 | Annual financial statements | FY2018–FY2025 — **8 years**, ~1,564 symbols | Graham's 10-year tests cannot be run in full |
-| Quarterly statements | 2018-Q1 – 2026-Q2 (34 quarters), ~1,284 symbols | Enough for TTM, dispersion and trend work |
+| Quarterly ratios (`fct_financial_quarterly`) | 2018-Q1 – 2026-Q2 (34 quarters), ~1,585 symbols | Enough for TTM, dispersion and trend work |
+| Quarterly **raw statements** (`get_financial_statement`, `period_type='quarter'`) | **8 most recent quarters** for 1,142 symbols (measured 2026-10-03; sliding window of the B2 ingest) | Quarterly loss checks see ~8 quarters, not 12 |
 | `cash_dividend_by_fiscal_year` (from `get_distribution_history`) | up to 8 fiscal years | The usable series for the dividend-record test |
 | `distribution_events` (same tool) | **per symbol, often 1–2 years** — the source only exposes the 50 most recent events | Never infer a dividend streak from this block |
 | Ratios and scorecard | latest closed quarter | The `ratio_as_of` lag behind price is real; never present them as one date |
