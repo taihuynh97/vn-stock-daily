@@ -1,8 +1,20 @@
 version: 2
 
 models:
+  - name: int_price_adjustment
+    description: >
+      Sự kiện điều chỉnh giá phát hiện từ giá tham chiếu của sàn: factor =
+      ref_price(D) / close(phiên liền trước theo lịch VNINDEX). Một dòng mỗi
+      (mã, ngày GDKHQ). Gồm cả cổ tức tiền (factor gần 1) lẫn chia/thưởng.
+    columns:
+      - name: factor
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, ex_date]
+
   - name: int_price_features
-    description: "Chỉ báo giá, thanh khoản và biến động theo phiên."
+    description: "Chỉ báo giá, thanh khoản và biến động theo phiên — tính trên adj_close (mảng Q)."
     columns:
       - name: symbol
         tests: [not_null]

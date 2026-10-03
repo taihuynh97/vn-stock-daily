@@ -1,8 +1,37 @@
 {{ config(materialized='table', tags=['daily']) }}
 
-with p as (
+-- Mảng Q: mọi chỉ báo (MA, return, volatility, đỉnh/đáy 52 tuần) tính trên
+-- adj_close — giá đã điều chỉnh theo int_price_adjustment. Trước mảng Q chúng
+-- tính trên close thô, nên một đợt thưởng 300% (TRC 15/09/2026) hiện thành
+-- phiên giảm 75%. `close` (thô) vẫn được trả ra để hiển thị giá thật.
+--
+-- Hệ số của dòng t = tích factor các sự kiện có ex_date > t VÀ ex_date > ngày
+-- loaded_at của t. Vế sau: dòng lấy từ Quote.history SAU sự kiện đã được nguồn
+-- điều chỉnh sẵn — nhân thêm lần nữa là điều chỉnh hai lần.
+with base as (
+    select symbol, trade_date, close, volume, turnover_vnd, loaded_at
+    from {{ ref('stg_price_daily') }}
+    where not is_suspect_price
+),
+
+adj as (
     select
-        symbol, trade_date, close, volume, turnover_vnd,
+        b.symbol,
+        b.trade_date,
+        exp(coalesce(sum(ln(e.factor)), 0)) as adj_factor
+    from base b
+    left join {{ ref('int_price_adjustment') }} e
+           on e.symbol = b.symbol
+          and e.ex_date > b.trade_date
+          and e.ex_date > cast(b.loaded_at as date)
+    group by 1, 2
+),
+
+p as (
+    select
+        b.symbol, b.trade_date, b.close, b.volume, b.turnover_vnd,
+        a.adj_factor,
+        b.close * a.adj_factor as adj_close,
         -- Khoảng cách NGÀY DƯƠNG LỊCH tới phiên liền trước cùng mã (không phải
         -- số phiên). Toàn bộ model này tính MA/return/volatility theo SỐ PHIÊN
         -- (rows preceding) chứ không theo ngày lịch, nên lag(close) không phân
@@ -19,8 +48,8 @@ with p as (
             lag(trade_date) over (partition by symbol order by trade_date),
             trade_date
         ) as gap_days
-    from {{ ref('stg_price_daily') }}
-    where not is_suspect_price
+    from base b
+    join adj a using (symbol, trade_date)
 ),
 
 pg as (
@@ -46,7 +75,7 @@ pg as (
             when (gap_days is null or gap_days <= 15)
                  and volume > 0
                  and coalesce(lag(volume) over (partition by symbol order by trade_date), 0) > 0
-            then close / nullif(lag(close) over (partition by symbol order by trade_date), 0) - 1
+            then adj_close / nullif(lag(adj_close) over (partition by symbol order by trade_date), 0) - 1
             else null
         end as daily_return
     from p
@@ -57,13 +86,15 @@ windowed as (
         symbol,
         trade_date,
         close,
+        adj_close,
+        adj_factor,
         volume,
         has_gap,
         -- MA20/50/200: trung bình động theo SỐ PHIÊN giao dịch (không phải
         -- ngày lịch) — "n preceding" đếm hàng, nên tự động bỏ qua T7/CN/lễ.
-        avg(close)  over w20  as ma20,
-        avg(close)  over w50  as ma50,
-        avg(close)  over w200 as ma200,
+        avg(adj_close)  over w20  as ma20,
+        avg(adj_close)  over w50  as ma50,
+        avg(adj_close)  over w200 as ma200,
         -- turnover_vnd đã được stg_price_daily quy đổi sẵn (coalesce(value_vnd,
         -- close*volume) theo VNĐ) — dùng thẳng, không tính lại close*volume ở đây.
         avg(turnover_vnd) over w20 as avg_turnover_20d,
@@ -78,8 +109,8 @@ windowed as (
         -- CHƯA gate theo n_valid_60, việc đó làm ở SELECT cuối (volatility_60d).
         stddev_samp(daily_return) over w60 as volatility_60d_raw,
         -- Biên 52 tuần xấp xỉ bằng 250 phiên giao dịch (52 tuần x ~5 phiên/tuần).
-        max(close) over w250       as high_52w,
-        min(close) over w250       as low_52w,
+        max(adj_close) over w250   as high_52w,
+        min(adj_close) over w250   as low_52w,
         -- Suất sinh lời 1/3/6/12 tháng dùng số phiên xấp xỉ: 21 phiên/tháng
         -- (~252 phiên giao dịch/năm chia 12), nên 1m=21, 3m=63, 6m=126, 12m=250.
         -- CẢNH BÁO: lag(close, N) đếm theo SỐ PHIÊN — nếu trong N phiên gần
@@ -92,10 +123,10 @@ windowed as (
         -- với giá N phiên trước, nếu một trong hai phiên đó volume=0 thì giá
         -- tham chiếu của nó vẫn phản ánh mức giá thị trường công nhận (không
         -- bị cộng dồn nhiễu như daily_return, vốn lặp lại 60 lần trong stddev).
-        lag(close, 21)  over (partition by symbol order by trade_date) as close_1m_ago,
-        lag(close, 63)  over (partition by symbol order by trade_date) as close_3m_ago,
-        lag(close, 126) over (partition by symbol order by trade_date) as close_6m_ago,
-        lag(close, 250) over (partition by symbol order by trade_date) as close_12m_ago,
+        lag(adj_close, 21)  over (partition by symbol order by trade_date) as close_1m_ago,
+        lag(adj_close, 63)  over (partition by symbol order by trade_date) as close_3m_ago,
+        lag(adj_close, 126) over (partition by symbol order by trade_date) as close_6m_ago,
+        lag(adj_close, 250) over (partition by symbol order by trade_date) as close_12m_ago,
         -- max(gap_days) trong đúng cửa sổ N phiên tương ứng với mỗi return_Nm:
         -- nếu > 15 nghĩa là cửa sổ đó chứa một lần tạm ngừng giao dịch dài
         -- ngày, nên return_Nm ở SELECT cuối phải NULL thay vì trả về một suất
@@ -127,7 +158,7 @@ ytd as (
     select
         symbol,
         year(trade_date) as yr,
-        min_by(close, trade_date) as close_year_open
+        min_by(adj_close, trade_date) as close_year_open
     from p
     group by 1, 2
 )
@@ -136,6 +167,8 @@ select
     w.symbol,
     w.trade_date,
     w.close,
+    w.adj_close,
+    w.adj_factor,
     w.volume,
     w.has_gap,
     -- TRUE khi cửa sổ 60 phiên có ít hơn price_features_min_valid_sessions
@@ -159,15 +192,15 @@ select
     w.low_52w,
     w.sessions_1y,
     case when w.max_gap_1m  > 15 then null
-         else w.close / nullif(w.close_1m_ago,  0) - 1 end as return_1m,
+         else w.adj_close / nullif(w.close_1m_ago,  0) - 1 end as return_1m,
     case when w.max_gap_3m  > 15 then null
-         else w.close / nullif(w.close_3m_ago,  0) - 1 end as return_3m,
+         else w.adj_close / nullif(w.close_3m_ago,  0) - 1 end as return_3m,
     case when w.max_gap_6m  > 15 then null
-         else w.close / nullif(w.close_6m_ago,  0) - 1 end as return_6m,
+         else w.adj_close / nullif(w.close_6m_ago,  0) - 1 end as return_6m,
     case when w.max_gap_12m > 15 then null
-         else w.close / nullif(w.close_12m_ago, 0) - 1 end as return_12m,
-    w.close / nullif(y.close_year_open, 0) - 1 as return_ytd,
-    w.close / nullif(w.high_52w, 0) - 1        as pct_from_high_52w
+         else w.adj_close / nullif(w.close_12m_ago, 0) - 1 end as return_12m,
+    w.adj_close / nullif(y.close_year_open, 0) - 1 as return_ytd,
+    w.adj_close / nullif(w.high_52w, 0) - 1    as pct_from_high_52w
 from windowed w
 left join ytd y
        on y.symbol = w.symbol and y.yr = year(w.trade_date)
