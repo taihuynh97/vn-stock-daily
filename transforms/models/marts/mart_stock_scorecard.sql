@@ -305,6 +305,9 @@ select
     qp.net_profit_yoy           as net_profit_latest_quarter_yoy,
     qp.loss_quarters_4q_actual,
     qp.loss_quarters_12q_actual,
+    -- Mảng Q: cổng biến cố — 'qua' / 'doc_tin_truoc' / 'cho_bctc_ke_tiep'.
+    rf.risk_gate,
+    rf.flags                    as risk_flags,
     t.is_loss_making,
     dq.data_quality_score,
     dq.quarters_available,
@@ -332,6 +335,7 @@ left join (
       using (symbol, period_end_date)
 ) q using (symbol)
 left join {{ ref('int_valuation_current') }} vc using (symbol)
+left join {{ ref('mart_risk_flags') }} rf using (symbol)
 left join (
     select q.symbol, q.period_end_date, q.net_profit, q.net_profit_yoy,
            q.loss_quarters_4q_actual, q.loss_quarters_12q_actual
