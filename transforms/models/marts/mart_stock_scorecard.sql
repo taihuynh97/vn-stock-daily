@@ -9,29 +9,35 @@ with metric_values as (
     union all
 
     -- Percentile định giá so với chính mã: đã ở [0,1], dùng trực tiếp.
+    -- Mảng Q: phân vị của PE HIỆN TẠI (giá phiên mới nhất), lùi về số
+    -- ngày chốt quý khi không quy đổi được.
     select
         v.symbol, d.com_class, 'pe_pct_own_5y' as metric,
-        v.pe_pct_own_5y as value, null as pct_peer,
+        coalesce(vc.pe_pct_own_5y_current, v.pe_pct_own_5y) as value, null as pct_peer,
         'own_history' as peer_basis, v.pe_quarters_used as peer_count
     from {{ ref('int_valuation_percentile') }} v
     join (select symbol, max(period_end_date) as period_end_date
           from {{ ref('int_valuation_percentile') }} group by 1) m
       using (symbol, period_end_date)
     join {{ ref('dim_stock') }} d using (symbol)
-    where v.pe_pct_own_5y is not null
+    left join {{ ref('int_valuation_current') }} vc using (symbol)
+    where coalesce(vc.pe_pct_own_5y_current, v.pe_pct_own_5y) is not null
 
     union all
 
+    -- Mảng Q: phân vị của PB HIỆN TẠI (giá phiên mới nhất), lùi về số
+    -- ngày chốt quý khi không quy đổi được.
     select
         v.symbol, d.com_class, 'pb_pct_own_5y' as metric,
-        v.pb_pct_own_5y as value, null as pct_peer,
+        coalesce(vc.pb_pct_own_5y_current, v.pb_pct_own_5y) as value, null as pct_peer,
         'own_history' as peer_basis, v.pb_quarters_used as peer_count
     from {{ ref('int_valuation_percentile') }} v
     join (select symbol, max(period_end_date) as period_end_date
           from {{ ref('int_valuation_percentile') }} group by 1) m
       using (symbol, period_end_date)
     join {{ ref('dim_stock') }} d using (symbol)
-    where v.pb_pct_own_5y is not null
+    left join {{ ref('int_valuation_current') }} vc using (symbol)
+    where coalesce(vc.pb_pct_own_5y_current, v.pb_pct_own_5y) is not null
 
     union all
 
@@ -168,29 +174,32 @@ facts as (
     select
         v.symbol,
         to_json(list_filter([
+            -- Mảng Q: câu P/E, P/B nói theo GIÁ HIỆN TẠI và ghi rõ hai mốc ngày.
+            -- Trước đây là số ngày chốt quý ("P/E 7,0 — rẻ hơn 95%...") và agent
+            -- đọc thành "đang rẻ" dù giá đã đổi nhiều sau ngày chốt (PNJ 12/09).
+            -- Mẫu số = số quý lịch sử hợp lệ (P/E hiện tại không nằm trong tập),
+            -- nên nói "thấp hơn X% trong N quý", không còn "các quý còn lại".
+            -- Không quy đổi được (vc NULL) → câu bị list_filter bỏ, không bịa.
             {'metric': 'pe_pct_own_5y',
-             'value': v.pe_pct_own_5y,
-             -- Review vòng 1 (Minor #3): cửa sổ percentile thực tế là 12-20
-             -- quý (own_history_min_quarters..20), không phải luôn 20 — đo
-             -- được 366/805 mã dùng dưới 20 quý, ít nhất 12. Nói "5 năm qua"
-             -- với mã chỉ có 12 quý là nói quá. Nêu đúng số quý dùng
-             -- (v.pe_quarters_used, có sẵn từ int_valuation_percentile) và
-             -- đúng mẫu số: Task 6 tính percent_rank trên (số quý hợp lệ - 1)
-             -- vì không tính chính kỳ hiện tại, nên "các quý CÒN LẠI".
-             'text': 'P/E ' || replace(printf('%.1f', v.pe), '.', ',')
-                     || ' — rẻ hơn '
-                     || printf('%.0f', (1 - v.pe_pct_own_5y) * 100)
-                     || '% các quý còn lại, trong '
-                     || cast(v.pe_quarters_used as varchar)
-                     || ' quý có số liệu của chính mã'},
+             'value': vc.pe_pct_own_5y_current,
+             'text': 'P/E hiện tại ' || replace(printf('%.1f', vc.pe_current), '.', ',')
+                     || ' (giá ' || strftime(vc.price_date, '%d/%m/%Y')
+                     || ', LNST 4 quý đến ' || strftime(vc.ratio_period_end, '%d/%m/%Y')
+                     || ') — thấp hơn '
+                     || printf('%.0f', (1 - vc.pe_pct_own_5y_current) * 100)
+                     || '% trong '
+                     || cast(vc.pe_quarters_used as varchar)
+                     || ' quý lịch sử của chính mã'},
             {'metric': 'pb_pct_own_5y',
-             'value': v.pb_pct_own_5y,
-             'text': 'P/B ' || replace(printf('%.2f', v.pb), '.', ',')
-                     || ' — rẻ hơn '
-                     || printf('%.0f', (1 - v.pb_pct_own_5y) * 100)
-                     || '% các quý còn lại, trong '
-                     || cast(v.pb_quarters_used as varchar)
-                     || ' quý có số liệu của chính mã'},
+             'value': vc.pb_pct_own_5y_current,
+             'text': 'P/B hiện tại ' || replace(printf('%.2f', vc.pb_current), '.', ',')
+                     || ' (giá ' || strftime(vc.price_date, '%d/%m/%Y')
+                     || ', vốn chủ đến ' || strftime(vc.ratio_period_end, '%d/%m/%Y')
+                     || ') — thấp hơn '
+                     || printf('%.0f', (1 - vc.pb_pct_own_5y_current) * 100)
+                     || '% trong '
+                     || cast(vc.pb_quarters_used as varchar)
+                     || ' quý lịch sử của chính mã'},
             {'metric': 'roe_avg_8q',
              'value': q.roe_avg_8q,
              -- Review vòng 1 (Important #1): câu chữ KHÔNG được phụ thuộc
@@ -236,6 +245,7 @@ facts as (
     left join {{ ref('int_fundamentals_ttm') }} t
            on t.symbol = v.symbol and t.period_end_date = v.period_end_date
     left join {{ ref('int_dividend_history') }} dv on dv.symbol = v.symbol
+    left join {{ ref('int_valuation_current') }} vc on vc.symbol = v.symbol
 )
 
 select
@@ -272,6 +282,29 @@ select
     vb.pb_pct_own_5y,
     vb.valuation_band,
     vb.period_end_date          as ratio_as_of,
+    -- Mảng Q: định giá theo giá hiện tại. pe/pb/valuation_band ở trên là số
+    -- NGÀY CHỐT QUÝ, giữ để không vỡ truy vấn cũ — phân tích "đang rẻ hay đắt"
+    -- phải dùng bộ *_current này.
+    vc.pe_current,
+    vc.pb_current,
+    vc.market_cap_current,
+    vc.price_ratio              as price_ratio_since_ratio,
+    vc.pe_pct_own_5y_current,
+    vc.pb_pct_own_5y_current,
+    case
+        when vc.pe_pct_own_5y_current is null then null
+        when vc.pe_pct_own_5y_current < 0.20  then 'rất rẻ'
+        when vc.pe_pct_own_5y_current < 0.40  then 'rẻ'
+        when vc.pe_pct_own_5y_current < 0.60  then 'hợp lý'
+        when vc.pe_pct_own_5y_current < 0.80  then 'đắt'
+        else                                       'rất đắt'
+    end                         as valuation_band_current,
+    -- Mảng Q: quý lỗ THẬT từ BCTC gốc (quý BCTC mới nhất của mã).
+    qp.period_end_date          as profit_quarter_as_of,
+    qp.net_profit               as net_profit_latest_quarter,
+    qp.net_profit_yoy           as net_profit_latest_quarter_yoy,
+    qp.loss_quarters_4q_actual,
+    qp.loss_quarters_12q_actual,
     t.is_loss_making,
     dq.data_quality_score,
     dq.quarters_available,
@@ -298,6 +331,15 @@ left join (
           from {{ ref('int_quality_metrics') }} group by 1) m
       using (symbol, period_end_date)
 ) q using (symbol)
+left join {{ ref('int_valuation_current') }} vc using (symbol)
+left join (
+    select q.symbol, q.period_end_date, q.net_profit, q.net_profit_yoy,
+           q.loss_quarters_4q_actual, q.loss_quarters_12q_actual
+    from {{ ref('int_quarterly_profit') }} q
+    join (select symbol, max(period_end_date) as period_end_date
+          from {{ ref('int_quarterly_profit') }} group by 1) m
+      using (symbol, period_end_date)
+) qp using (symbol)
 left join (
     select t.symbol, t.is_loss_making from {{ ref('int_fundamentals_ttm') }} t
     join (select symbol, max(period_end_date) as period_end_date

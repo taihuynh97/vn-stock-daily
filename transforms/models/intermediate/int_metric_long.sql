@@ -46,9 +46,16 @@
   stg_financial_ratio (xem comment CTE `nulled` ở đó): ở đây alias đích trùng
   tên cột nguồn (`... as pe`), đúng tình huống đã sinh lỗi.
 #}
+{#
+  Mảng Q: pe/pb/market_cap dùng giá HIỆN TẠI (int_valuation_current), lùi về
+  số ngày chốt quý khi không quy đổi được (không có phiên quanh ngày chốt).
+  pe_current/pb_current chỉ khác NULL khi P/E/P/B ngày chốt có nghĩa, nên rào
+  "số âm không phải là rẻ" ở trên vẫn giữ nguyên.
+#}
 {% set metric_guard = {
-    'pe':                 'case when r.pe_meaningful then r.pe end',
-    'pb':                 'case when r.pb_meaningful then r.pb end',
+    'pe':                 'coalesce(vc.pe_current, case when r.pe_meaningful then r.pe end)',
+    'pb':                 'coalesce(vc.pb_current, case when r.pb_meaningful then r.pb end)',
+    'market_cap':         'coalesce(vc.market_cap_current, r.market_cap)',
     'ps':                 'case when r.ps > 0 then r.ps end',
     'ev_to_ebitda':       'case when r.ev_to_ebitda > 0 then r.ev_to_ebitda end',
     'price_to_cash_flow': 'case when r.price_to_cash_flow > 0 then r.price_to_cash_flow end',
@@ -84,6 +91,7 @@ ratio_long as (
                , {{ metric_guard.get(m, 'r.' ~ m) }} as {{ m }}
                {%- endfor %}
         from ratio_latest r
+        left join {{ ref('int_valuation_current') }} vc on vc.symbol = r.symbol
     )
     unpivot (value for metric in ({{ metric_list | join(', ') }}))
 ),
