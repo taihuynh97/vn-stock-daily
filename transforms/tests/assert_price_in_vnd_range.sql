@@ -11,16 +11,26 @@
 -- xem scripts/fix_backfill_units.py. Mã penny thật thì mọi phiên đều thấp.
 --
 -- Chặn trên vẫn giữ tuyệt đối: không cổ phiếu VN nào vượt 5 triệu VNĐ.
+-- Mảng Q: xét theo (mã, NĂM). Lỗi đơn vị thật (backfill nghìn đồng lẫn daily
+-- đồng, tháng 6/2026) nằm xen kẽ trong cùng giai đoạn. Một cổ phiếu "xu" có thể
+-- tăng thật từ 60 đ (2019) lên 1.300 đ (2025) — NAC, đã đối chiếu: khớp lệnh
+-- thật 100 cổ phiếu/phiên — nên so khác năm sẽ báo động sai.
 with per_symbol as (
     select
         symbol,
-        count(*) filter (where close < 100)      as n_duoi_100,
-        count(*) filter (where close > 1000)     as n_tren_1000,
+        year(trade_date) as yr,
+        -- Mảng Q: chỉ đếm phiên CÓ KHỚP LỆNH. Sau khi nạp lại lịch sử, một vài cổ
+        -- phiếu "xu" UPCoM có giá thật 60–90 đ ở các năm cũ (NAC, PTG — volume 0,
+        -- giá tham chiếu đứng yên) bên cạnh giá >1.000 đ năm nay; đó không phải
+        -- lỗi đơn vị. Lỗi đơn vị thật (nghìn đồng lẫn đồng) xảy ra ở phiên có
+        -- giao dịch nên vẫn bị bắt.
+        count(*) filter (where close < 100 and volume > 0)  as n_duoi_100,
+        count(*) filter (where close > 1000 and volume > 0) as n_tren_1000,
         count(*) filter (where close > 5000000)  as n_qua_lon
     from {{ ref('stg_price_daily') }}
-    group by symbol
+    group by symbol, year(trade_date)
 )
-select symbol, n_duoi_100, n_tren_1000, n_qua_lon
+select symbol, yr, n_duoi_100, n_tren_1000, n_qua_lon
 from per_symbol
 where (n_duoi_100 > 0 and n_tren_1000 > 0)
    or n_qua_lon > 0

@@ -11,7 +11,14 @@
 -- nó — bài học từ finding C4 của mảng A1.
 select symbol, trade_date, value_vnd, turnover_proxy_vnd
 from {{ ref('stg_price_daily') }}
+-- Mảng Q: chỉ xét dòng bảng giá ghi SAU khi sửa ánh xạ (có ref_price). Dòng
+-- đã qua scripts/repair_price_history.py có close ĐÃ ĐIỀU CHỈNH (Quote.history)
+-- nhưng giữ `value` là doanh số THẬT chưa điều chỉnh, nên close × volume không
+-- còn là phép thử hợp lệ cho chúng (đo trên bản sao đã sửa: 400 dòng lệch >50%,
+-- toàn mã có sự kiện chia/thưởng sau ngày đó). Mục đích của test — bắt lỗi đơn
+-- vị ×1e6 của `value` — vẫn giữ nguyên với mọi dòng mới.
 where has_value
+  and ref_price is not null
   and volume > 1000
   and turnover_proxy_vnd > 0
   and abs(value_vnd - turnover_proxy_vnd) / turnover_proxy_vnd > 0.50

@@ -20,31 +20,73 @@ with sessions as (
           where index_code = 'VNINDEX')
 ),
 
+-- Sàn hiện tại của mã — cùng quy tắc dim_stock (hồ sơ DN trước, danh sách mã
+-- sau). Không ref dim_stock: dim_stock phụ thuộc int_price_features → vòng lặp.
+exch as (
+    select s.symbol, coalesce(c.exchange, s.exchange) as exchange
+    from {{ source('warehouse', 'dim_symbols') }} s
+    left join {{ ref('stg_company_info') }} c on c.symbol = s.symbol
+),
+
 p as (
     select
         symbol,
         trade_date,
         close,
         ref_price,
-        lag(close)      over (partition by symbol order by trade_date) as prev_close,
-        lag(trade_date) over (partition by symbol order by trade_date) as prev_date
+        lag(close)      over w as prev_close,
+        lag(trade_date) over w as prev_date,
+        lag(case when volume > 0 and value_vnd > 0 then value_vnd / volume end) over w
+                               as prev_vwap
     from {{ ref('stg_price_daily') }}
     where not is_suspect_price
+    window w as (partition by symbol order by trade_date)
+),
+
+-- Giá tham chiếu "bình thường" (không có sự kiện) theo quy chế từng sàn:
+--   HOSE, HNX: = giá đóng cửa phiên trước.
+--   UPCoM:     = giá BÌNH QUÂN GIA QUYỀN phiên trước, làm tròn bước giá 100 đ.
+-- Phát hiện ở bước rà code mảng Q và đo xác nhận: 91,2% dòng UPCoM có giá tham
+-- chiếu khớp bình quân phiên trước làm tròn 100 đ (HOSE/HNX chỉ 29–43%, trùng
+-- hợp). So UPCoM với giá đóng cửa sẽ sinh "sự kiện" giả gần như mỗi ngày.
+-- Phiên trước không khớp lệnh (không có bình quân) → giá đóng cửa của nó (mà
+-- tầng ingest đặt bằng giá tham chiếu) — đúng quy chế "không giao dịch thì
+-- giữ giá tham chiếu".
+based as (
+    select
+        p.*,
+        coalesce(e.exchange, 'UNKNOWN') as exchange,
+        case
+            when e.exchange = 'UPCOM' and p.prev_vwap > 0
+                then round(p.prev_vwap / 100) * 100
+            else p.prev_close
+        end as ref_base
+    from p
+    left join exch e using (symbol)
 )
 
 select
-    p.symbol,
-    p.trade_date                as ex_date,
-    p.prev_date,
-    p.prev_close,
-    p.ref_price,
-    p.ref_price / p.prev_close  as factor
-from p
-join sessions s1 on s1.trade_date = p.trade_date
-join sessions s0 on s0.trade_date = p.prev_date
-where p.ref_price > 0
-  and p.prev_close > 0
+    b.symbol,
+    b.trade_date                 as ex_date,
+    b.prev_date,
+    b.prev_close,
+    b.ref_base,
+    b.ref_price,
+    b.exchange,
+    b.ref_price / b.ref_base     as factor
+from based b
+join sessions s1 on s1.trade_date = b.trade_date
+join sessions s0 on s0.trade_date = b.prev_date
+where b.ref_price > 0
+  and b.ref_base > 0
   and s1.session_no - s0.session_no = 1
-  -- Ngưỡng 0,05%: ngày thường ref = close phiên trước CHÍNH XÁC (factor = 1);
-  -- mọi lệch đáng kể đều là sự kiện thật. Ngưỡng chỉ để nuốt sai số dấu phẩy động.
-  and abs(p.ref_price / p.prev_close - 1) > 0.0005
+  and (
+      -- HOSE/HNX: ngày thường ref = close phiên trước CHÍNH XÁC; ngưỡng 0,05%
+      -- chỉ để nuốt sai số dấu phẩy động — mọi lệch đáng kể là sự kiện thật.
+      (b.exchange <> 'UPCOM' and abs(b.ref_price / b.ref_base - 1) > 0.0005)
+      -- UPCoM: bình quân gia quyền có nhiễu (lệnh thoả thuận, làm tròn) nên
+      -- chỉ ghi nhận lệch lớn. Sự kiện nhỏ hơn ngưỡng (cổ tức tiền, cổ tức
+      -- cổ phiếu nhỏ) KHÔNG được điều chỉnh — ghi trong docs/han-che-nen-tang.md.
+      or (b.exchange = 'UPCOM'
+          and abs(b.ref_price / b.ref_base - 1) > {{ var('upcom_adjustment_min_deviation') }})
+  )

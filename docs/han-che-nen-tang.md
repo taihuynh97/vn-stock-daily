@@ -131,6 +131,12 @@ Lịch sử trước ngày chạy script sửa được nguồn điều chỉnh 
 **Ảnh hưởng.** Nếu kho thiếu đúng phiên trước ngày GDKHQ (job lỗi), sự kiện đó không được phát
 hiện và giá trước đó không được điều chỉnh. Test `assert_adjusted_returns_within_limits` sẽ báo.
 
+Riêng **UPCoM**, giá tham chiếu là giá bình quân gia quyền phiên trước làm tròn 100 đ, không phải
+giá đóng cửa. Đo 29/09–02/10/2026: 99,4% dòng UPCoM khớp cách tính này. Vì bình quân có nhiễu,
+chỉ lệch trên 15% mới được coi là sự kiện (`upcom_adjustment_min_deviation`). Cổ tức tiền và cổ
+tức cổ phiếu nhỏ hơn 15% trên UPCoM **không được điều chỉnh**; lợi suất nhiều phiên của các mã đó
+có thể lệch đúng bằng phần cổ tức.
+
 **Agent phải làm.** Khi một mã có lợi suất bất thường, kiểm `fct_price_daily.adj_factor` và lịch
 sử phân phối trước khi kết luận.
 
