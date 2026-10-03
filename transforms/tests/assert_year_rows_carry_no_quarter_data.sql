@@ -20,5 +20,6 @@ where quarter = 5
         revenue_ttm, earnings_ttm, book_value, eps, bvps,
         revenue_yoy, earnings_yoy, revenue_cagr_3y, earnings_cagr_3y,
         growth_consistency, cast(loss_quarters_12q as double),
+        net_profit_quarter, cast(loss_quarters_12q_actual as double),
         roe_avg_8q, roe_stability, gross_margin_slope_8q
       ) is not null

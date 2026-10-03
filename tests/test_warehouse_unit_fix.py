@@ -9,7 +9,7 @@ def test_fix_backfill_price_units_scales_only_null_value_rows():
 
     con.execute(
         """
-        INSERT INTO raw_price_daily VALUES
+        INSERT INTO raw_price_daily (symbol, trade_date, open, high, low, close, volume, value, loaded_at) VALUES
         ('AAA', '2024-01-02', 50.0, 52.0, 49.0, 51.0, 100000, NULL, now()),
         ('BBB', '2026-06-08', 61200.0, 62100.0, 60900.0, 61700.0, 7352300, 451580.18, now())
         """
@@ -35,7 +35,7 @@ def test_fix_backfill_price_units_returns_zero_when_nothing_to_fix():
 
     con.execute(
         """
-        INSERT INTO raw_price_daily VALUES
+        INSERT INTO raw_price_daily (symbol, trade_date, open, high, low, close, volume, value, loaded_at) VALUES
         ('BBB', '2026-06-08', 61200.0, 62100.0, 60900.0, 61700.0, 7352300, 451580.18, now())
         """
     )

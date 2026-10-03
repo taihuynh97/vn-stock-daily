@@ -136,3 +136,12 @@ vars:
   # chỉ bắt lỗi hệ thống thật.
   fundamentals_median_ps_min: 0.1
   fundamentals_median_ps_max: 20
+  # int_price_adjustment (mảng Q): trên UPCoM giá tham chiếu = bình quân gia
+  # quyền phiên trước (không phải giá đóng cửa) nên có nhiễu; chỉ coi là sự
+  # kiện điều chỉnh khi lệch khỏi bình quân làm tròn quá ngưỡng này. Chọn bằng
+  # số đo trên dữ liệu thật (29/09–02/10/2026: so với bình quân làm tròn, 99,4%
+  # dòng UPCoM khớp tuyệt đối; chỉ 3/2.972 dòng lệch >15% và đều do hệ điều
+  # chỉnh) — xem docs/Q-ket-qua-va-no-ky-thuat.md. Sự kiện nhỏ hơn ngưỡng trên
+  # UPCoM KHÔNG được điều chỉnh.
+  upcom_adjustment_min_deviation: 0.15
+

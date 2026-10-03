@@ -19,7 +19,14 @@ select
     t.revenue_cagr_3y,
     t.earnings_cagr_3y,
     t.growth_consistency,
+    -- loss_quarters_12q: số quý có LNST LŨY KẾ 4 QUÝ âm — KHÔNG phải số quý lỗ.
+    -- Giữ tên cũ để không vỡ truy vấn; dùng loss_quarters_*_actual (mảng Q).
     t.loss_quarters_12q,
+    qp.net_profit                as net_profit_quarter,
+    qp.net_profit_yoy            as net_profit_quarter_yoy,
+    qp.is_loss_quarter,
+    qp.loss_quarters_4q_actual,
+    qp.loss_quarters_12q_actual,
     q.roe_avg_8q,
     q.roe_stability,
     q.gross_margin_slope_8q
@@ -55,6 +62,11 @@ from {{ ref('stg_financial_ratio') }} f
 left join {{ ref('int_fundamentals_ttm') }} t
        on t.symbol = f.symbol
       and t.period_end_date = f.period_end_date
+      and f.quarter between 1 and 4
+left join {{ ref('int_quarterly_profit') }} qp
+       on qp.symbol = f.symbol
+      and qp.year = f.year
+      and qp.quarter = f.quarter
       and f.quarter between 1 and 4
 left join {{ ref('int_quality_metrics') }} q
        on q.symbol = f.symbol

@@ -69,3 +69,6 @@ Bấm **Run workflow** ở tab Actions để chạy tay kiểm tra trước khi 
 - **vnstock đổi API:** mọi lời gọi vnstock gói trong `src/ingest.py`; thư viện cập nhật thì chỉ sửa 1 file. Một số nguồn dữ liệu/mã có thể cần API key vnstock miễn phí.
 - **Chi phí:** mỗi lần chạy gọi Claude API 1 lần (~vài nghìn token), rất nhỏ. GitHub Actions miễn phí trong hạn mức repo cá nhân.
 - **Cron GHA** chạy theo UTC và đôi khi trễ vài phút lúc cao điểm — không sao với job cuối phiên.
+- **Hạn chế nền tảng của phân tích** (tin tức chỉ 5 mã, BCTC gốc 8 quý/8 năm, tỷ số trễ, không có vĩ mô ngoài tỷ giá, một nguồn VCI...): xem `docs/han-che-nen-tang.md`.
+- **Giá:** `fct_price_daily.close` là giá khớp thật, `adj_close` là giá đã điều chỉnh chia/thưởng/cổ tức. Từ 07/06 đến khi merge mảng Q, giá đóng cửa hằng ngày bị lấy nhầm giá tham chiếu — sau merge chạy một lần `python scripts/repair_price_history.py --db md:vn_market --apply` (~80 phút). Chi tiết: `docs/Q-ket-qua-va-no-ky-thuat.md`.
+- **Sàng lọc:** tool MCP `screen_graham` với ngưỡng trong `config/graham_screen.yml` (có `version`); `get_risk_flags` là cổng biến cố bắt buộc trước khi định giá.

@@ -104,3 +104,31 @@ models:
               min_value: 0
               max_value: 100
               where: "safety_score is not null"
+
+  - name: mart_risk_flags
+    description: >
+      Cổng biến cố (mảng Q): mỗi mã một dòng. risk_gate = 'cho_bctc_ke_tiep' khi
+      có quý lỗ thật trong 4 quý hoặc LNST quý giảm >50% so với cùng kỳ;
+      'doc_tin_truoc' khi chỉ có cảnh báo (giá giảm sâu, pha loãng, nội bộ đăng
+      ký bán, tỷ số cũ, thiếu BCTC quý); 'qua' khi không có cờ nào.
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: risk_gate
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['qua', 'doc_tin_truoc', 'cho_bctc_ke_tiep']
+
+  - name: fct_index_daily
+    description: "VNINDEX/VN30/HNXINDEX kèm return 1m/3m/6m/12m/YTD. Mã VNI trong fct_price_daily là cổ phiếu, KHÔNG phải VN-Index."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [index_code, trade_date]
+
+  - name: mart_scorecard_daily
+    description: "Ảnh chụp scorecard theo ngày phiên của thị trường (incremental) — để tái lập và đối chiếu phân tích cũ."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [snapshot_date, symbol]
+

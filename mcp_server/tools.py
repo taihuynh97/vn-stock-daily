@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from mcp_server import db
-from src import scoring
+from src import graham_screen, scoring
 
 RELIABLE_MIN = 60
 
@@ -243,6 +243,29 @@ def get_stock_profile(con, symbol: str) -> dict:
             "roe_stability": r.get("roe_stability"),
             "dividend_years_consecutive": r.get("dividend_years_consecutive"),
             "is_loss_making": r.get("is_loss_making"),
+        },
+        # Mảng Q: định giá theo GIÁ HIỆN TẠI — khối "valuation" ở trên là số
+        # NGÀY CHỐT QUÝ (ratio_as_of). Nói "đang rẻ/đắt" phải dùng khối này.
+        "valuation_current": {
+            "pe": r.get("pe_current"), "pb": r.get("pb_current"),
+            "pe_pct_own_5y": r.get("pe_pct_own_5y_current"),
+            "pb_pct_own_5y": r.get("pb_pct_own_5y_current"),
+            "band": r.get("valuation_band_current"),
+            "market_cap": r.get("market_cap_current"),
+            "price_ratio_since_ratio": r.get("price_ratio_since_ratio"),
+        },
+        # Mảng Q: quý lỗ THẬT từ BCTC gốc (is_loss_making ở trên chỉ xét LNST
+        # lũy kế 4 quý — một quý lỗ giữa ba quý lãi vẫn ra False).
+        "quarterly_profit": {
+            "as_of": _date_str(raw.get("profit_quarter_as_of")),
+            "net_profit_latest_quarter": r.get("net_profit_latest_quarter"),
+            "net_profit_latest_quarter_yoy": r.get("net_profit_latest_quarter_yoy"),
+            "loss_quarters_4q_actual": r.get("loss_quarters_4q_actual"),
+            "loss_quarters_12q_actual": r.get("loss_quarters_12q_actual"),
+        },
+        "risk": {
+            "gate": r.get("risk_gate"),
+            "flags": _parse_json_list(r.get("risk_flags")),
         },
         "facts": facts,
         "data_quality": {
@@ -1227,3 +1250,115 @@ def get_recent_news(con, symbol: str, limit: int = 10) -> dict:
         },
         **db.as_of(con),
     }
+
+
+# --- Mảng Q: phễu tất định + cổng biến cố -----------------------------------
+
+def _parse_json_list(v) -> list:
+    """Chuỗi JSON danh sách → list; NULL/hỏng → [] (không bịa nội dung)."""
+    if isinstance(v, list):
+        return v
+    if not isinstance(v, str) or not v:
+        return []
+    try:
+        out = json.loads(v)
+    except (ValueError, TypeError):
+        return []
+    return out if isinstance(out, list) else []
+
+
+_SCREEN_SQL = """
+SELECT s.*, f.current_ratio, f.earnings_cagr_3y, f.revenue_cagr_3y,
+       f.growth_consistency
+FROM mart_stock_scorecard s
+LEFT JOIN (
+    SELECT f.symbol, f.current_ratio, f.earnings_cagr_3y, f.revenue_cagr_3y,
+           f.growth_consistency
+    FROM fct_financial_quarterly f
+    JOIN (SELECT symbol, max(period_end_date) AS ped
+          FROM fct_financial_quarterly
+          WHERE quarter BETWEEN 1 AND 4 GROUP BY 1) m
+      ON m.symbol = f.symbol AND m.ped = f.period_end_date
+    WHERE f.quarter BETWEEN 1 AND 4
+) f USING (symbol)
+"""
+
+_SCREEN_DATE_COLS = ("price_as_of", "ratio_as_of")
+
+
+def _screen_records(df: pd.DataFrame) -> list[dict]:
+    out = []
+    for raw in df.to_dict(orient="records"):
+        dates = {k: _date_str(raw.get(k)) for k in _SCREEN_DATE_COLS if k in raw}
+        r = _clean(raw)
+        r.update(dates)
+        r["risk_flags"] = _parse_json_list(raw.get("risk_flags"))
+        out.append(r)
+    return out
+
+
+def screen_graham(con, lens: str = "gia_tri", limit: int = 30) -> dict:
+    """Phễu sàng lọc TẤT ĐỊNH theo lăng kính (config/graham_screen.yml).
+
+    Cùng dữ liệu + cùng `config_version` → cùng kết quả, bất kể ai hỏi hay
+    hỏi bằng câu nào. `phan_tich_tiep`: qua phễu, risk_gate 'qua' hoặc
+    'doc_tin_truoc' (phải đọc tin trước khi kết luận). `cho`: qua phễu nhưng
+    risk_gate 'cho_bctc_ke_tiep' — KHÔNG định giá được cho tới BCTC kế tiếp.
+    """
+    cfg = graham_screen.load_config()
+    df = con.execute(_SCREEN_SQL).df()
+    res = graham_screen.run(df, lens, cfg)
+    bench = db.run_query(
+        con,
+        "SELECT index_code, trade_date, close, return_1m, return_3m, return_ytd "
+        "FROM fct_index_daily WHERE index_code = 'VNINDEX' "
+        "ORDER BY trade_date DESC",
+        limit=1,
+    )
+    for b in bench:
+        b["trade_date"] = _date_str(b.get("trade_date"))
+    return {
+        "lens": res["lens"],
+        "lens_label": res["label"],
+        "config_version": res["config_version"],
+        "steps": res["steps"],
+        "n_phan_tich_tiep": int(len(res["passed"])),
+        "n_cho": int(len(res["waiting"])),
+        "phan_tich_tiep": _screen_records(res["passed"].head(limit)),
+        "cho": _screen_records(res["waiting"].head(limit)),
+        "khong_kiem_duoc_quy_lo": res["unverifiable"],
+        "benchmark": _clean(bench[0]) if bench else None,
+        "note": "Qua phễu ≠ đáng mua. Mã trong `cho` chưa định giá được. Mã "
+                "`doc_tin_truoc` phải đọc tin trước khi kết luận. Ghi "
+                "config_version vào báo cáo để đối chiếu lần sau. P/E, P/B ở "
+                "đây là theo GIÁ HIỆN TẠI (pe_current/pb_current).",
+        **db.as_of(con),
+    }
+
+
+def get_risk_flags(con, symbol: str) -> dict:
+    """Cổng biến cố của một mã: risk_gate + danh sách cờ kèm mức độ."""
+    sym = symbol.upper().strip()
+    rows = db.run_query(
+        con, "SELECT * FROM mart_risk_flags WHERE symbol = ?", params=[sym], limit=1
+    )
+    if not rows:
+        return {"error": f"Không có cờ rủi ro cho {sym}.", **db.as_of(con)}
+    raw = rows[0]
+    r = _clean(raw)
+    return {
+        "symbol": sym,
+        "risk_gate": r.get("risk_gate"),
+        "n_severe": r.get("n_severe"),
+        "n_warn": r.get("n_warn"),
+        "flags": _parse_json_list(raw.get("flags")),
+        "profit_as_of": _date_str(raw.get("profit_as_of")),
+        "flags_as_of": _date_str(raw.get("flags_as_of")),
+        "gate_meaning": {
+            "qua": "Không có cờ — vẫn phải đọc tin trước khi kết luận.",
+            "doc_tin_truoc": "Có cảnh báo — đọc tin (web) và nêu rủi ro cụ thể trước khi định giá.",
+            "cho_bctc_ke_tiep": "Có biến cố lợi nhuận — KHÔNG đưa khoảng giá trị; chờ BCTC kế tiếp.",
+        },
+        **db.as_of(con),
+    }
+

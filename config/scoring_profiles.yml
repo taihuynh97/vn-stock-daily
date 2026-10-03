@@ -31,6 +31,7 @@ profiles:
     require:
       dividend_years_min: 3
       roe_avg_8q_min: 0.12
+      exclude_recent_loss_quarters: true
 
   deep_value:
     label: "Định giá sâu — mở rộng xuống mid-cap"
@@ -45,6 +46,7 @@ profiles:
       safety: 0.15
     require:
       exclude_loss_making: true
+      exclude_recent_loss_quarters: true
 
   quality_growth:
     label: "Chất lượng & tăng trưởng"
@@ -59,3 +61,4 @@ profiles:
       safety: 0.10
     require:
       roe_avg_8q_min: 0.15
+      exclude_recent_loss_quarters: true

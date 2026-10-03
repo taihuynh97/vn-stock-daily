@@ -292,3 +292,36 @@ def test_screen_report_separates_ranked_unscored_and_rejected(monkeypatch):
     # Bất biến khoá lại ngữ nghĩa "đếm theo từng điều kiện": tổng các giá trị
     # lớn hơn số mã bị loại. Đây là dòng mà logic "chỉ lý do đầu tiên" làm đỏ.
     assert sum(r["rejected_counts"].values()) > r["rejected_total"]
+
+
+# --- Mảng Q ---------------------------------------------------------------
+
+def test_exclude_recent_loss_quarters_loại_mã_có_quý_lỗ_thật():
+    prof = _profile()
+    prof["require"] = {"exclude_recent_loss_quarters": True}
+    df = _rows()
+    df["loss_quarters_4q_actual"] = [1.0, 0.0, 0.0, 0.0, None]
+    ok, rejected = scoring.apply_universe(df, prof)
+    assert "AAA" not in set(ok.symbol)
+    reason = rejected.set_index("symbol").loc["AAA", "reject_reason"]
+    assert "quý lỗ" in reason
+    # NULL (không có BCTC quý): quy ước "thiếu dữ liệu thì trượt", nhưng lý do
+    # phải tách riêng, không được ghi thành "có quý lỗ".
+    eee = rejected.set_index("symbol").loc["EEE", "reject_reason"]
+    assert "không có BCTC quý" in eee
+    assert "có quý lỗ" not in eee
+
+
+def test_vũ_trụ_dùng_vốn_hoá_hiện_tại_khi_có():
+    prof = _profile()
+    df = _rows()
+    df["market_cap_current"] = [5e11, 5e12, 5e12, 5e12, 5e12]   # AAA giảm dưới 1.000 tỷ
+    ok, rejected = scoring.apply_universe(df, prof)
+    assert "AAA" not in set(ok.symbol)
+    assert "vốn hoá" in rejected.set_index("symbol").loc["AAA", "reject_reason"]
+
+
+def test_các_profile_thật_đều_bật_loại_quý_lỗ():
+    cfg = scoring.load_profiles()
+    for name, prof in cfg["profiles"].items():
+        assert prof["require"].get("exclude_recent_loss_quarters") is True, name

@@ -46,9 +46,16 @@
   stg_financial_ratio (xem comment CTE `nulled` ở đó): ở đây alias đích trùng
   tên cột nguồn (`... as pe`), đúng tình huống đã sinh lỗi.
 #}
+{#
+  Mảng Q: pe/pb/market_cap dùng giá HIỆN TẠI (int_valuation_current), lùi về
+  số ngày chốt quý khi không quy đổi được (không có phiên quanh ngày chốt).
+  pe_current/pb_current chỉ khác NULL khi P/E/P/B ngày chốt có nghĩa, nên rào
+  "số âm không phải là rẻ" ở trên vẫn giữ nguyên.
+#}
 {% set metric_guard = {
-    'pe':                 'case when r.pe_meaningful then r.pe end',
-    'pb':                 'case when r.pb_meaningful then r.pb end',
+    'pe':                 'coalesce(vc.pe_current, case when r.pe_meaningful then r.pe end)',
+    'pb':                 'coalesce(vc.pb_current, case when r.pb_meaningful then r.pb end)',
+    'market_cap':         'coalesce(vc.market_cap_current, r.market_cap)',
     'ps':                 'case when r.ps > 0 then r.ps end',
     'ev_to_ebitda':       'case when r.ev_to_ebitda > 0 then r.ev_to_ebitda end',
     'price_to_cash_flow': 'case when r.price_to_cash_flow > 0 then r.price_to_cash_flow end',
@@ -84,6 +91,7 @@ ratio_long as (
                , {{ metric_guard.get(m, 'r.' ~ m) }} as {{ m }}
                {%- endfor %}
         from ratio_latest r
+        left join {{ ref('int_valuation_current') }} vc on vc.symbol = r.symbol
     )
     unpivot (value for metric in ({{ metric_list | join(', ') }}))
 ),
@@ -105,6 +113,19 @@ fund_long as (
     unpivot (value for metric in (
         revenue_yoy, earnings_yoy, revenue_cagr_3y, earnings_cagr_3y,
         growth_consistency, loss_quarters_12q))
+),
+-- Mảng Q: số quý lỗ THẬT (BCTC gốc) trong 12 quý, lấy ở quý BCTC mới nhất của
+-- mã — thay loss_quarters_12q (đếm TTM âm) trong thành phần safety.
+-- com_class/icb lấy từ stg_company_info như các khối khác.
+profit_long as (
+    select qp.symbol, c.com_class, c.icb_code_lv2,
+           'loss_quarters_12q_actual' as metric,
+           cast(qp.loss_quarters_12q_actual as double) as value
+    from {{ ref('int_quarterly_profit') }} qp
+    join (select symbol, max(period_end_date) as period_end_date
+          from {{ ref('int_quarterly_profit') }} group by 1) m
+      using (symbol, period_end_date)
+    left join {{ ref('stg_company_info') }} c using (symbol)
 ),
 
 qual_latest as (
@@ -164,6 +185,7 @@ select symbol, com_class, icb_code_lv2, lower(metric) as metric, value
 from (
     select * from ratio_long
     union all select * from fund_long
+    union all select * from profit_long
     union all select * from qual_long
     union all select * from div_long
     union all select * from price_long

@@ -403,4 +403,88 @@ def build_fake_mart(path: str):
           ('n4','IDV','Tin không có tóm tắt',NULL,NULL,
            TIMESTAMP '2026-08-18 07:00:00');
     """)
+    # --- Mảng Q: cột định giá hiện tại, quý lỗ thật, cổng rủi ro, chỉ số ---
+    # Thêm bằng ALTER + UPDATE để không phải viết lại các câu INSERT theo vị
+    # trí ở trên (cùng lý do các test raw_price_daily phải ghi rõ danh sách cột).
+    # Kịch bản: AAA qua cổng; VCB (BANK) chỉ có cảnh báo; CCC có quý lỗ thật
+    # → bị chặn; DDD không có BCTC quý.
+    con.execute("""
+        ALTER TABLE mart_stock_scorecard ADD COLUMN pe_current DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN pb_current DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN market_cap_current DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN price_ratio_since_ratio DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN pe_pct_own_5y_current DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN pb_pct_own_5y_current DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN valuation_band_current VARCHAR;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN profit_quarter_as_of DATE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN net_profit_latest_quarter DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN net_profit_latest_quarter_yoy DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN loss_quarters_4q_actual DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN loss_quarters_12q_actual DOUBLE;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN risk_gate VARCHAR;
+        ALTER TABLE mart_stock_scorecard ADD COLUMN risk_flags VARCHAR;
+        UPDATE mart_stock_scorecard SET pe_current=8.6, pb_current=1.09,
+            market_cap_current=5.4e12, price_ratio_since_ratio=1.08,
+            pe_pct_own_5y_current=0.10, pb_pct_own_5y_current=0.15,
+            valuation_band_current='rất rẻ', profit_quarter_as_of=DATE '2026-06-30',
+            net_profit_latest_quarter=3e11, net_profit_latest_quarter_yoy=0.12,
+            loss_quarters_4q_actual=0, loss_quarters_12q_actual=0,
+            risk_gate='qua', risk_flags='[]'
+          WHERE symbol='AAA';
+        UPDATE mart_stock_scorecard SET pe_current=14.0, pb_current=2.4,
+            market_cap_current=4.6e14, price_ratio_since_ratio=0.92,
+            pe_pct_own_5y_current=0.40, pb_pct_own_5y_current=0.38,
+            valuation_band_current='hợp lý', profit_quarter_as_of=DATE '2026-06-30',
+            net_profit_latest_quarter=9e12, net_profit_latest_quarter_yoy=0.05,
+            loss_quarters_4q_actual=0, loss_quarters_12q_actual=0,
+            risk_gate='doc_tin_truoc',
+            risk_flags='[{"code":"pha_loang_von","severity":"canh_bao","text":"1 đợt phát hành riêng lẻ/quyền mua/chuyển đổi trong 12 tháng"}]'
+          WHERE symbol='VCB';
+        UPDATE mart_stock_scorecard SET pe_current=3.6, pb_current=0.45,
+            market_cap_current=5.4e11, price_ratio_since_ratio=0.9,
+            pe_pct_own_5y_current=0.02, valuation_band_current='rất rẻ',
+            profit_quarter_as_of=DATE '2026-06-30', net_profit_latest_quarter=-5e10,
+            loss_quarters_4q_actual=1, loss_quarters_12q_actual=2,
+            risk_gate='cho_bctc_ke_tiep',
+            risk_flags='[{"code":"lo_quy_gan_day","severity":"nghiem_trong","text":"Có 1 quý lỗ trong 4 quý BCTC gần nhất (đến 30/06/2026)"}]'
+          WHERE symbol='CCC';
+        UPDATE mart_stock_scorecard SET risk_gate='doc_tin_truoc',
+            risk_flags='[{"code":"khong_co_bctc_quy","severity":"canh_bao","text":"Không có BCTC quý trong 200 ngày gần đây — không kiểm được quý lỗ"}]'
+          WHERE symbol='DDD';
+
+        ALTER TABLE fct_financial_quarterly ADD COLUMN current_ratio DOUBLE;
+        ALTER TABLE fct_financial_quarterly ADD COLUMN earnings_cagr_3y DOUBLE;
+        ALTER TABLE fct_financial_quarterly ADD COLUMN revenue_cagr_3y DOUBLE;
+        ALTER TABLE fct_financial_quarterly ADD COLUMN growth_consistency DOUBLE;
+        UPDATE fct_financial_quarterly SET current_ratio=2.1, earnings_cagr_3y=0.14,
+            revenue_cagr_3y=0.09, growth_consistency=0.75
+          WHERE symbol='AAA' AND year=2026 AND quarter=2;
+        INSERT INTO fct_financial_quarterly
+            (symbol, year, quarter, period_end_date, period_type, com_class,
+             earnings_cagr_3y, revenue_cagr_3y, growth_consistency)
+          VALUES ('VCB',2026,2,DATE '2026-06-30','quarter','BANK',0.12,0.08,0.8);
+
+        CREATE TABLE mart_risk_flags (
+            symbol VARCHAR, risk_gate VARCHAR, n_severe BIGINT, n_warn BIGINT,
+            flags VARCHAR, lo_quy_gan_day BOOLEAN, loi_nhuan_quy_giam_manh BOOLEAN,
+            gia_giam_sau BOOLEAN, pha_loang_von BOOLEAN, noi_bo_dang_ky_ban BOOLEAN,
+            ty_so_cu BOOLEAN, khong_co_bctc_quy BOOLEAN, profit_as_of DATE,
+            flags_as_of DATE
+        );
+        INSERT INTO mart_risk_flags SELECT symbol, risk_gate,
+            CASE WHEN risk_gate='cho_bctc_ke_tiep' THEN 1 ELSE 0 END,
+            CASE WHEN risk_gate='doc_tin_truoc' THEN 1 ELSE 0 END,
+            risk_flags, symbol='CCC', FALSE, FALSE, symbol='VCB', FALSE, FALSE,
+            symbol='DDD', profit_quarter_as_of, DATE '2026-10-03'
+          FROM mart_stock_scorecard;
+
+        CREATE TABLE fct_index_daily (
+            index_code VARCHAR, trade_date DATE, open DOUBLE, high DOUBLE,
+            low DOUBLE, close DOUBLE, volume BIGINT, return_1m DOUBLE,
+            return_3m DOUBLE, return_6m DOUBLE, return_12m DOUBLE, return_ytd DOUBLE
+        );
+        INSERT INTO fct_index_daily VALUES
+          ('VNINDEX',DATE '2026-08-06',1700,1710,1690,1705,6e8,0.01,0.03,0.05,0.12,0.04),
+          ('VNINDEX',DATE '2026-08-07',1705,1720,1700,1712,6e8,0.02,0.04,0.06,0.13,0.05);
+    """)
     con.close()
