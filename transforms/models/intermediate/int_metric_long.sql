@@ -106,6 +106,19 @@ fund_long as (
         revenue_yoy, earnings_yoy, revenue_cagr_3y, earnings_cagr_3y,
         growth_consistency, loss_quarters_12q))
 ),
+-- Mảng Q: số quý lỗ THẬT (BCTC gốc) trong 12 quý, lấy ở quý BCTC mới nhất của
+-- mã — thay loss_quarters_12q (đếm TTM âm) trong thành phần safety.
+-- com_class/icb lấy từ stg_company_info như các khối khác.
+profit_long as (
+    select qp.symbol, c.com_class, c.icb_code_lv2,
+           'loss_quarters_12q_actual' as metric,
+           cast(qp.loss_quarters_12q_actual as double) as value
+    from {{ ref('int_quarterly_profit') }} qp
+    join (select symbol, max(period_end_date) as period_end_date
+          from {{ ref('int_quarterly_profit') }} group by 1) m
+      using (symbol, period_end_date)
+    left join {{ ref('stg_company_info') }} c using (symbol)
+),
 
 qual_latest as (
     select q.symbol, q.com_class, c.icb_code_lv2,
@@ -164,6 +177,7 @@ select symbol, com_class, icb_code_lv2, lower(metric) as metric, value
 from (
     select * from ratio_long
     union all select * from fund_long
+    union all select * from profit_long
     union all select * from qual_long
     union all select * from div_long
     union all select * from price_long

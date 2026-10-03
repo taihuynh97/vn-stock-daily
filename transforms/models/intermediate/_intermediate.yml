@@ -13,6 +13,24 @@ models:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns: [symbol, ex_date]
 
+  - name: int_quarterly_profit
+    description: >
+      LNST từng quý đọc thẳng từ BCTC gốc (không suy từ tỷ số TTM) cùng số quý
+      lỗ thật trong 4 và 12 quý. Thay cho loss_quarters_12q (đếm quý có LNST
+      lũy kế 4 quý âm) ở thành phần safety và cổng rủi ro (mảng Q).
+    columns:
+      - name: net_profit
+        tests: [not_null]
+      - name: profit_item_id
+        tests:
+          - accepted_values:
+              values: ['attributable_to_parent_company',
+                       'net_profit_attributable_to_shareholders_of_the_group',
+                       'net_profit_loss_after_tax', 'profit_after_tax']
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, year, quarter]
+
   - name: int_price_features
     description: "Chỉ báo giá, thanh khoản và biến động theo phiên — tính trên adj_close (mảng Q)."
     columns:
