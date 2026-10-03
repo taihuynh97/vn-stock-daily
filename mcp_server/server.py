@@ -287,9 +287,6 @@ def get_recent_news(symbol: str, limit: int = 10) -> dict:
     return tools.get_recent_news(conn(), symbol, limit)
 
 
-if __name__ == "__main__":
-    mcp.run()
-
 
 @mcp.tool()
 @_safe_tool
@@ -319,3 +316,10 @@ def get_risk_flags(symbol: str) -> dict:
     """
     return tools.get_risk_flags(conn(), symbol)
 
+
+# Phải là câu lệnh CUỐI CÙNG của file: mcp.run() chặn luồng, mọi @mcp.tool()
+# khai báo SAU dòng này không bao giờ được đăng ký khi chạy `python -m
+# mcp_server.server` (lỗi thật ở mảng Q — test import module không bắt được,
+# xem test_main_guard_là_câu_lệnh_cuối).
+if __name__ == "__main__":
+    mcp.run()

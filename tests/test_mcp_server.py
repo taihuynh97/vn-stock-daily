@@ -313,3 +313,16 @@ def test_server_đăng_ký_đủ_15_tool():
     names = {t.name for t in asyncio.run(server.mcp.list_tools())}
     assert len(names) == 15
     assert {"screen_graham", "get_risk_flags"} <= names
+
+
+def test_main_guard_là_câu_lệnh_cuối():
+    """Mảng Q: hai tool mới từng được khai báo SAU `if __name__ == "__main__":
+    mcp.run()` — mcp.run() chặn luồng nên khi chạy thật (`python -m
+    mcp_server.server`) chúng không bao giờ được đăng ký, trong khi mọi test
+    (import module) vẫn xanh. Khoá cấu trúc: khối main phải là câu lệnh cuối."""
+    import ast
+    from pathlib import Path
+    tree = ast.parse(Path(server.__file__).read_text(encoding="utf-8"))
+    last = tree.body[-1]
+    assert isinstance(last, ast.If)
+    assert "__main__" in ast.unparse(last.test)
