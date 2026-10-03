@@ -281,3 +281,35 @@ def test_get_recent_news_via_mcp_call_tool(b1_con, monkeypatch):
     payload = json.loads(content[0].text)
     assert "error" not in payload
     assert payload["data_quality"]["has_data"] is True
+
+
+# Mảng Q: hai tool mới qua ĐÚNG đường MCP (serialize JSON ở tầng FastMCP —
+# lớp lỗi NaT/NaN mà gọi hàm Python trần không bắt được, xem I1 phía trên).
+def test_screen_graham_via_mcp_call_tool(b1_con, monkeypatch):
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+    content = asyncio.run(server.mcp.call_tool("screen_graham", {"lens": "gia_tri"}))
+    payload = json.loads(content[0].text)
+    assert "error" not in payload
+    assert payload["phan_tich_tiep"][0]["symbol"] == "AAA"
+    assert payload["config_version"]
+
+
+def test_screen_graham_lăng_kính_lạ_trả_lỗi_sạch(b1_con, monkeypatch):
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+    content = asyncio.run(server.mcp.call_tool("screen_graham", {"lens": "xyz"}))
+    payload = json.loads(content[0].text)
+    assert "Lăng kính lạ" in payload["error"]
+
+
+def test_get_risk_flags_via_mcp_call_tool(b1_con, monkeypatch):
+    monkeypatch.setattr(server, "conn", lambda: b1_con)
+    content = asyncio.run(server.mcp.call_tool("get_risk_flags", {"symbol": "DDD"}))
+    payload = json.loads(content[0].text)
+    assert payload["risk_gate"] == "doc_tin_truoc"
+    assert payload["flags"][0]["code"] == "khong_co_bctc_quy"
+
+
+def test_server_đăng_ký_đủ_15_tool():
+    names = {t.name for t in asyncio.run(server.mcp.list_tools())}
+    assert len(names) == 15
+    assert {"screen_graham", "get_risk_flags"} <= names

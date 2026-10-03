@@ -801,3 +801,58 @@ def test_get_recent_news_content_null_giu_nguyen_none_khong_thanh_chuoi_rong(con
     n4 = next(n for n in res["news"] if n["news_title"] == "Tin không có tóm tắt")
     assert n4["news_short_content"] is None
     assert n4["news_source_link"] is None
+
+
+# --- Mảng Q: phễu tất định, cổng biến cố, định giá hiện tại ----------------
+
+def test_screen_graham_gia_tri_trả_đủ_khối(con):
+    res = tools.screen_graham(con, "gia_tri", limit=10)
+    assert res["lens"] == "gia_tri"
+    assert res["config_version"]
+    assert [s["id"] for s in res["steps"]][0] == "vu_tru"
+    assert [r["symbol"] for r in res["phan_tich_tiep"]] == ["AAA"]
+    assert res["phan_tich_tiep"][0]["price_as_of"] == "2026-08-07"   # không rò "T00:00:00"
+    assert res["benchmark"]["index_code"] == "VNINDEX"
+    assert res["benchmark"]["trade_date"] == "2026-08-07"
+    assert "price_as_of" in res and "ratio_as_of" in res
+
+
+def test_screen_graham_gọi_hai_lần_giống_hệt(con):
+    a = tools.screen_graham(con, "gia_tri")
+    b = tools.screen_graham(con, "gia_tri")
+    assert a == b
+
+
+def test_screen_graham_lăng_kính_lạ_ném_lỗi(con):
+    with pytest.raises(ValueError):
+        tools.screen_graham(con, "luot_song")
+
+
+def test_screen_graham_tang_truong_chạy_được(con):
+    res = tools.screen_graham(con, "tang_truong")
+    assert res["lens"] == "tang_truong"
+    assert all(s["remaining"] >= 0 for s in res["steps"])
+
+
+def test_get_risk_flags_mã_bị_chặn(con):
+    res = tools.get_risk_flags(con, "ccc")
+    assert res["risk_gate"] == "cho_bctc_ke_tiep"
+    assert res["flags"][0]["code"] == "lo_quy_gan_day"
+    assert res["profit_as_of"] == "2026-06-30"
+    assert "cho_bctc_ke_tiep" in res["gate_meaning"]
+
+
+def test_get_risk_flags_mã_lạ(con):
+    assert "error" in tools.get_risk_flags(con, "ZZZ")
+
+
+def test_get_stock_profile_có_định_giá_hiện_tại_và_rủi_ro(con):
+    res = tools.get_stock_profile(con, "AAA")
+    assert res["valuation_current"]["pe"] == 8.6
+    assert res["valuation_current"]["band"] == "rất rẻ"
+    assert res["quarterly_profit"]["loss_quarters_4q_actual"] == 0
+    assert res["quarterly_profit"]["as_of"] == "2026-06-30"
+    assert res["risk"] == {"gate": "qua", "flags": []}
+    ccc = tools.get_stock_profile(con, "CCC")
+    assert ccc["risk"]["gate"] == "cho_bctc_ke_tiep"
+    assert ccc["risk"]["flags"][0]["severity"] == "nghiem_trong"

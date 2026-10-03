@@ -1,4 +1,4 @@
-"""Chạy cả 13 tool MCP trên dữ liệu thật để nghiệm thu.
+"""Chạy cả 15 tool MCP trên dữ liệu thật để nghiệm thu.
 
     export WAREHOUSE_DB=md:vn_market
     export motherduck_token=<token>
@@ -50,6 +50,8 @@ def main():
                tools.get_thesis_update(con, "HPG"))
     ok &= show("get_exchange_rate_history(USD)",
                tools.get_exchange_rate_history(con, "USD"))
+    ok &= show("screen_graham(gia_tri)", tools.screen_graham(con, "gia_tri", limit=10))
+    ok &= show("get_risk_flags(HPG)", tools.get_risk_flags(con, "HPG"))
     ok &= show("get_recent_news(HPG)",
                tools.get_recent_news(con, "HPG"))
     ok &= show("run_sql", {"rows": db.run_query(

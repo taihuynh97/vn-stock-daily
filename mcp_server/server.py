@@ -72,7 +72,15 @@ def run_sql(query: str, limit: int = 200) -> dict:
 
     Bảng chính: dim_stock, dim_industry_hierarchy, fct_price_daily,
     fct_financial_quarterly, mart_valuation_band, mart_sector_snapshot,
-    mart_stock_scorecard, mart_data_quality.
+    mart_stock_scorecard, mart_data_quality, mart_risk_flags,
+    fct_index_daily (VNINDEX/VN30/HNXINDEX), mart_scorecard_daily (ảnh chụp
+    scorecard theo ngày).
+
+    LƯU Ý: mã `VNI` trong fct_price_daily là MỘT CỔ PHIẾU, không phải VN-Index
+    — chỉ số nằm ở fct_index_daily. Giá: `close` là giá khớp thật, `adj_close`
+    là giá đã điều chỉnh chia/thưởng; tự tính lợi suất nhiều phiên phải dùng
+    adj_close. Định giá hiện tại: pe_current/pb_current trong scorecard — đừng
+    tự chia last_close cho eps của fct_financial_quarterly.
     """
     c = conn()
     rows = db.run_query(c, query, limit=min(limit, 1000))
@@ -281,3 +289,33 @@ def get_recent_news(symbol: str, limit: int = 10) -> dict:
 
 if __name__ == "__main__":
     mcp.run()
+
+
+@mcp.tool()
+@_safe_tool
+def screen_graham(lens: str = "gia_tri", limit: int = 30) -> dict:
+    """Phễu sàng lọc TẤT ĐỊNH — dùng cho MỌI câu hỏi kiểu "mã nào đáng mua",
+    "top N", "lọc cổ phiếu". Không tự viết SQL xếp hạng thay cho tool này.
+
+    lens: 'gia_tri' (giá trị + biên an toàn Graham: P/E, P/B hiện tại, cổ
+          tức, thanh toán, biên ⅓) hoặc 'tang_truong' (ROE bền, CAGR LNST,
+          độ đều tăng trưởng, P/E trần).
+    Trả số mã còn lại sau TỪNG bước, `config_version` (ghi vào báo cáo),
+    `phan_tich_tiep` và `cho` (bị cổng biến cố chặn — không định giá), cùng
+    VN-Index làm mốc. Qua phễu chưa phải kết luận: mỗi mã còn phải qua
+    get_risk_flags + đọc tin trước khi định giá.
+    """
+    return tools.screen_graham(conn(), lens, limit)
+
+
+@mcp.tool()
+@_safe_tool
+def get_risk_flags(symbol: str) -> dict:
+    """Cổng biến cố của một mã — BẮT BUỘC gọi trước khi đưa khoảng giá trị.
+
+    risk_gate: 'qua' | 'doc_tin_truoc' (có cảnh báo: giá giảm sâu, pha loãng,
+    nội bộ đăng ký bán, tỷ số cũ, thiếu BCTC quý) | 'cho_bctc_ke_tiep' (có
+    quý lỗ thật trong 4 quý hoặc LNST quý giảm >50% cùng kỳ — không định giá).
+    """
+    return tools.get_risk_flags(conn(), symbol)
+
