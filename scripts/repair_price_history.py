@@ -17,7 +17,7 @@ Ba việc, theo đúng thứ tự:
 Mặc định chỉ in kế hoạch (dry-run). Thêm --apply mới ghi.
 
     python scripts/repair_price_history.py                       # dry-run, WAREHOUSE_DB
-    python scripts/repair_price_history.py --db md:vn_market --apply
+    python scripts/repair_price_history.py --db md:vn_market --apply   # ~80 phút
     python scripts/repair_price_history.py --symbols TRC,PHR --apply
     python scripts/repair_price_history.py --apply --since "2026-10-04 09:00"   # chạy tiếp
 
@@ -121,16 +121,32 @@ def merge_history(con, hist: pd.DataFrame, repaired_at: datetime) -> int:
                ON r.symbol = h.symbol AND r.trade_date = CAST(h.trade_date AS DATE)
     """)
     con.unregister("hist_df")
-    con.execute("""
-        INSERT OR REPLACE INTO raw_price_daily
-            (symbol, trade_date, open, high, low, close, volume, value, ref_price,
-             foreign_buy_volume, foreign_sell_volume, foreign_buy_value,
-             foreign_sell_value, loaded_at)
-        SELECT symbol, trade_date, open, high, low, close, volume, value, NULL,
-               foreign_buy_volume, foreign_sell_volume, foreign_buy_value,
-               foreign_sell_value, ?
-        FROM _repair_hist
-    """, [repaired_at])
+    # DELETE + INSERT trong một giao dịch thay vì INSERT OR REPLACE: chạy được
+    # cả khi bảng đích không có PRIMARY KEY (bản sao dựng bằng CREATE TABLE AS
+    # — lần chạy thử đầu tiên đã gãy đúng chỗ này) và không bao giờ để lại
+    # trạng thái nửa vời nếu bị ngắt giữa chừng.
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("""
+            DELETE FROM raw_price_daily
+            USING _repair_hist h
+            WHERE raw_price_daily.symbol = h.symbol
+              AND raw_price_daily.trade_date = h.trade_date
+        """)
+        con.execute("""
+            INSERT INTO raw_price_daily
+                (symbol, trade_date, open, high, low, close, volume, value, ref_price,
+                 foreign_buy_volume, foreign_sell_volume, foreign_buy_value,
+                 foreign_sell_value, loaded_at)
+            SELECT symbol, trade_date, open, high, low, close, volume, value, NULL,
+                   foreign_buy_volume, foreign_sell_volume, foreign_buy_value,
+                   foreign_sell_value, ?
+            FROM _repair_hist
+        """, [repaired_at])
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
     n = con.execute("SELECT count(*) FROM _repair_hist").fetchone()[0]
     con.execute("DROP TABLE _repair_hist")
     return n
@@ -163,7 +179,9 @@ def main():
     ranges = symbol_ranges(con, symbols, since)
     if args.limit:
         ranges = ranges.head(args.limit)
-    print(f"Nạp lại lịch sử: {len(ranges)} mã (~{len(ranges) / 60:.0f} phút ở 60 lượt/phút)")
+    # Đo thật 2026-10-03 trên bản sao cục bộ: ~3,1 giây/mã (throttle + gọi API
+    # + ghi), tức ~80 phút cho ~1.580 mã — chậm hơn nhiều so với 60 lượt/phút.
+    print(f"Nạp lại lịch sử: {len(ranges)} mã (~{len(ranges) * 3.1 / 60:.0f} phút, ~3 giây/mã)")
 
     if not args.apply:
         print("Dry-run — thêm --apply để ghi.")
