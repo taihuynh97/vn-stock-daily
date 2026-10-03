@@ -9,7 +9,7 @@ def test_delete_trade_date_removes_only_matching_rows():
 
     con.execute(
         """
-        INSERT INTO raw_price_daily VALUES
+        INSERT INTO raw_price_daily (symbol, trade_date, open, high, low, close, volume, value, loaded_at) VALUES
         ('AAA', '2026-06-05', 1, 2, 3, 4, 100, 1.0, now()),
         ('AAA', '2026-06-07', 1, 2, 3, 4, 100, 1.0, now()),
         ('BBB', '2026-06-07', 1, 2, 3, 4, 100, 1.0, now())
@@ -31,7 +31,7 @@ def test_delete_trade_date_returns_zero_when_nothing_matches():
 
     con.execute(
         """
-        INSERT INTO raw_price_daily VALUES
+        INSERT INTO raw_price_daily (symbol, trade_date, open, high, low, close, volume, value, loaded_at) VALUES
         ('AAA', '2026-06-05', 1, 2, 3, 4, 100, 1.0, now())
         """
     )

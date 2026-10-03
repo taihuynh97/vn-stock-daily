@@ -85,10 +85,19 @@ def fetch_industries_icb(source: str = "VCI") -> pd.DataFrame:
     return out.drop_duplicates("icb_code").reset_index(drop=True)
 
 
-def fetch_eod_prices(symbols, source: str = "VCI", batch_size: int = 50) -> pd.DataFrame:
-    """Giá EOD cho danh sách mã qua bulk price_board. Trả DataFrame raw_price_daily."""
+def fetch_eod_prices(symbols, source: str = "VCI", batch_size: int = 50,
+                     run_date: str | None = None) -> pd.DataFrame:
+    """Giá EOD cho danh sách mã qua bulk price_board. Trả DataFrame raw_price_daily.
+
+    `trade_date` lấy từ NGÀY GIAO DỊCH của chính bảng giá (xem
+    `board_trading_date`), không phải `date.today()`. Ngày lễ, bảng giá vẫn
+    mang phiên gần nhất — tầng gọi so `out.attrs["market_trading_date"]` với
+    ngày chạy để bỏ qua (đó là cách phiên ma 31/08–02/09/2026 đã sinh ra).
+
+    Ném `dq.SchemaError` nếu kết quả vi phạm hợp đồng OHLC — xem
+    `dq.assert_ohlc_consistent`."""
     global _printed_cols
-    trade_date = date.today().isoformat()
+    run_date = run_date or date.today().isoformat()
     frames = []
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i:i + batch_size]
@@ -110,39 +119,130 @@ def fetch_eod_prices(symbols, source: str = "VCI", batch_size: int = 50) -> pd.D
     if not frames:
         return pd.DataFrame()
     raw = pd.concat(frames, ignore_index=True)
-    return _normalize_board(raw, trade_date)
+    out = _normalize_board(raw, run_date)
+    dq.assert_ohlc_consistent(out, f"Trading({source}).price_board")
+    return out
 
 
-def _normalize_board(df, trade_date) -> pd.DataFrame:
-    """Map cột price_board → schema raw_price_daily. close+volume là bắt buộc;
-    open/high/low để None (sẽ lấp đầy ở Phase 1.5 backfill qua Quote.history)."""
+# Ánh xạ cột bảng giá → raw_price_daily, theo THỨ TỰ ƯU TIÊN của ứng viên.
+# Tên đầy đủ (VCI, cột MultiIndex đã làm phẳng) đứng trước; tên ngắn phía sau
+# chỉ khớp HẬU TỐ ".<tên>" — không bao giờ khớp chuỗi con tự do.
+#
+# Lỗi gốc mảng Q: hàm cũ `_find(cols, "match_price", ..., "close", "price")`
+# trả cột ĐẦU TIÊN chứa BẤT KỲ từ khoá nào; vì cột listing.* đứng trước
+# match.* nên "price" khớp `listing.ref_price`. Từ 07/06 đến 02/10/2026 mọi
+# giá đóng cửa hằng ngày là giá tham chiếu (= giá đóng cửa phiên trước),
+# 52–63% dòng có close nằm ngoài [low, high]. ĐỪNG quay lại khớp chuỗi con.
+_BOARD_COLUMNS = {
+    "symbol": ("listing.symbol", "symbol", "ticker"),
+    "trading_date": ("listing.trading_date", "trading_date"),
+    "close": ("match.match_price", "match_price", "matchprice", "last_price"),
+    "ref_price": ("listing.ref_price", "match.reference_price", "ref_price", "reference_price"),
+    "open": ("match.open_price", "open_price"),
+    "high": ("match.highest", "highest", "high_price"),
+    "low": ("match.lowest", "lowest", "low_price"),
+    "volume": ("match.accumulated_volume", "accumulated_volume", "total_volume"),
+    # accumulated_value: TRIỆU đồng (stg_price_daily nhân 1e6).
+    "value": ("match.accumulated_value", "accumulated_value", "total_value"),
+    # Khối ngoại: khối lượng cổ phiếu và giá trị tính bằng ĐỒNG (khác `value`).
+    # Bảng giá không nạp bù được — ngày nào không lưu là mất.
+    "foreign_buy_volume": ("match.foreign_buy_volume", "foreign_buy_volume"),
+    "foreign_sell_volume": ("match.foreign_sell_volume", "foreign_sell_volume"),
+    "foreign_buy_value": ("match.foreign_buy_value", "foreign_buy_value"),
+    "foreign_sell_value": ("match.foreign_sell_value", "foreign_sell_value"),
+}
+
+
+def _pick(cols, *candidates):
+    """Tên cột khớp ứng viên ĐẦU TIÊN có mặt — khớp chính xác, rồi khớp hậu tố
+    '.<ứng viên>'. Ưu tiên theo thứ tự ứng viên, không theo thứ tự cột."""
+    cols = list(cols)
+    for cand in candidates:
+        if cand in cols:
+            return cand
+        for c in cols:
+            if c.endswith("." + cand):
+                return c
+    return None
+
+
+def board_trading_date(df) -> str | None:
+    """Ngày giao dịch của bảng giá: giá trị phổ biến nhất của cột trading_date.
+
+    Mã tạm ngừng mang ngày cũ; mã huỷ niêm yết có thể NULL — lấy mode để một
+    vài mã như vậy không làm lệch ngày của cả thị trường. Hoà → ngày mới nhất."""
+    col = _pick(df.columns, *_BOARD_COLUMNS["trading_date"])
+    if col is None:
+        return None
+    dates = pd.to_datetime(df[col], errors="coerce").dropna()
+    if dates.empty:
+        return None
+    counts = dates.dt.date.value_counts()
+    # Hoà số lượng → lấy ngày MỚI NHẤT (mã tạm ngừng chỉ có thể mang ngày cũ hơn).
+    best = max(counts.index, key=lambda d: (counts[d], d))
+    return best.isoformat()
+
+
+def _normalize_board(df, run_date) -> pd.DataFrame:
+    """Map cột price_board → schema raw_price_daily (+ ref_price, khối ngoại).
+
+    - `trade_date` = ngày giao dịch của bảng giá; dòng của mã có ngày giao dịch
+      khác (tạm ngừng, huỷ niêm yết) bị bỏ — chúng không có phiên hôm nay.
+      Không có cột ngày → dùng `run_date` (hành vi cũ).
+    - Mã không khớp lệnh (giá khớp 0/rỗng, khối lượng 0): close = giá tham
+      chiếu, volume = 0, open/high/low = NULL — 0 ở các cột này là "không có
+      giao dịch", không phải giá thật.
+    """
     cols = list(df.columns)
-    sym = _find(cols, "symbol", "ticker", "code")
-    close = _find(cols, "match_price", "matchprice", "last_price", "close", "price")
-    vol = _find(cols, "accumulated_volume", "total_volume", "totalvol", "volume", "nmtotaltradedqty")
-    openc = _find(cols, "open_price", "open")
-    high = _find(cols, "high_price", "highest")
-    low = _find(cols, "low_price", "lowest")
-    val = _find(cols, "accumulated_value", "total_value", "value")
-
-    if sym is None or close is None:
+    c = {k: _pick(cols, *v) for k, v in _BOARD_COLUMNS.items()}
+    if c["symbol"] is None or (c["close"] is None and c["ref_price"] is None):
         print(f"[normalize] thiếu cột symbol/close. Cột có: {cols}")
         return pd.DataFrame()
 
+    market_date = board_trading_date(df)
+    if market_date is not None:
+        row_dates = pd.to_datetime(df[c["trading_date"]], errors="coerce").dt.date.astype(str)
+        df = df[row_dates == market_date]
+    trade_date = market_date or run_date
+
+    def num(key):
+        return pd.to_numeric(df[c[key]], errors="coerce") if c[key] else pd.Series(None, index=df.index, dtype="float64")
+
+    match = num("close")
+    ref = num("ref_price")
+    vol = num("volume").fillna(0)
+    traded = (match > 0) & (vol > 0)
+
+    def ohlc(key):
+        v = num(key)
+        return v.where(traded & (v > 0))
+
     out = pd.DataFrame({
-        "symbol": df[sym].astype(str).str.upper().str.strip(),
+        "symbol": df[c["symbol"]].astype(str).str.upper().str.strip(),
         "trade_date": trade_date,
-        "open": _col(df, openc),
-        "high": _col(df, high),
-        "low": _col(df, low),
-        "close": pd.to_numeric(df[close], errors="coerce"),
-        "volume": pd.to_numeric(df[vol], errors="coerce") if vol else None,
-        "value": _col(df, val),
+        "open": ohlc("open"),
+        "high": ohlc("high"),
+        "low": ohlc("low"),
+        "close": match.where(traded, ref),
+        "volume": vol.where(traded, 0).astype("int64"),
+        "value": num("value"),
+        "ref_price": ref,
+        "foreign_buy_volume": num("foreign_buy_volume"),
+        "foreign_sell_volume": num("foreign_sell_volume"),
+        "foreign_buy_value": num("foreign_buy_value"),
+        "foreign_sell_value": num("foreign_sell_value"),
     })
-    return out.dropna(subset=["close"]).drop_duplicates("symbol").reset_index(drop=True)
+    out = out[out["close"] > 0].drop_duplicates("symbol").reset_index(drop=True)
+    out.attrs["market_trading_date"] = trade_date
+    return out
 
 
 def _find(cols, *keys):
+    """Cột ĐẦU TIÊN (theo thứ tự cột) chứa BẤT KỲ từ khoá nào — khớp chuỗi con.
+
+    CẢNH BÁO: không ưu tiên theo thứ tự từ khoá. Chỉ an toàn khi tên cột của
+    nguồn đơn giản và không chồng lấn (Quote.history: time/open/high/...).
+    Đã gây lỗi giá đóng cửa sai 4 tháng ở bảng giá — bảng giá dùng `_pick`."""
     for c in cols:
         if any(k in c for k in keys):
             return c

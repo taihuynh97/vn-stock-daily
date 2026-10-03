@@ -273,6 +273,7 @@ def init_warehouse(con):
     _ratio_ddl_types = {"ratio_type": "VARCHAR", "loaded_at": "TIMESTAMP"}
     _ratio_ddl_types.update({col: "DOUBLE" for col in RATIO_NUM_COLS})
     _ensure_columns(con, "raw_financial_ratio", _ratio_ddl_types)
+    _ensure_columns(con, "raw_price_daily", PRICE_EXTRA_COLUMNS)
     _ensure_column(con, "etl_load_log", "rows_rejected", "BIGINT")
     # raw_company_info cũng đã tồn tại từ trước (schema cũ 7 cột trên
     # MotherDuck) — migrate thêm các cột mới của COMPANY_COLS tương tự trên.
@@ -450,15 +451,45 @@ def upsert_symbols(con, df, run_date) -> int:
     return len(df)
 
 
+# Cột bổ sung của raw_price_daily (mảng Q). Thêm bằng ALTER idempotent trong
+# init_warehouse để bảng production cũ tự nâng cấp ở lần chạy đầu sau merge.
+#  - ref_price: giá tham chiếu của phiên. ref_price(D) / close(phiên trước) ≠ 1
+#    đánh dấu sự kiện điều chỉnh giá (chia/thưởng/cổ tức) — dbt dùng để điều
+#    chỉnh chuỗi giá (int_price_adjustment).
+#  - foreign_*: khối ngoại trong phiên; khối lượng = cổ phiếu, giá trị = ĐỒNG.
+PRICE_EXTRA_COLUMNS = {
+    "ref_price": "DOUBLE",
+    "foreign_buy_volume": "BIGINT",
+    "foreign_sell_volume": "BIGINT",
+    "foreign_buy_value": "DOUBLE",
+    "foreign_sell_value": "DOUBLE",
+}
+PRICE_COLUMNS = ["symbol", "trade_date", "open", "high", "low", "close", "volume",
+                 "value", *PRICE_EXTRA_COLUMNS]
+
+
 def upsert_prices(con, df) -> int:
-    """Ghi giá EOD. INSERT OR REPLACE theo (symbol, trade_date) → chạy lại an toàn."""
+    """Ghi giá EOD. INSERT OR REPLACE theo (symbol, trade_date) → chạy lại an toàn.
+
+    Nhận cả DataFrame bảng giá (đủ cột) lẫn DataFrame lịch sử Quote.history
+    (thiếu ref_price/khối ngoại → ghi NULL)."""
     if df is None or df.empty:
         return 0
+    df = df.copy()
+    for col in PRICE_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[PRICE_COLUMNS]
     con.register("df_px", df)
+    cols = ", ".join(PRICE_COLUMNS)
     con.execute(
-        """
-        INSERT OR REPLACE INTO raw_price_daily
-        SELECT symbol, trade_date, open, high, low, close, volume, value, now()
+        f"""
+        INSERT OR REPLACE INTO raw_price_daily ({cols}, loaded_at)
+        SELECT symbol, CAST(trade_date AS DATE), open, high, low, close,
+               CAST(volume AS BIGINT), value, CAST(ref_price AS DOUBLE),
+               CAST(foreign_buy_volume AS BIGINT), CAST(foreign_sell_volume AS BIGINT),
+               CAST(foreign_buy_value AS DOUBLE), CAST(foreign_sell_value AS DOUBLE),
+               now()
         FROM df_px;
         """
     )

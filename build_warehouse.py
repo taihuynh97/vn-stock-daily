@@ -146,11 +146,20 @@ def main():
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", 0,
                            "skipped", notes="non-trading day (weekend)")
     else:
-        prices = ingest_market.fetch_eod_prices(symbols, source, cfg.get("price_board_batch", 50))
-        n_px = warehouse.upsert_prices(con, prices)
-        warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", n_px,
-                           "ok" if n_px else "empty", watermark=run_date)
-        print(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
+        prices = ingest_market.fetch_eod_prices(symbols, source, cfg.get("price_board_batch", 50),
+                                                run_date=run_date)
+        board_date = prices.attrs.get("market_trading_date") if not prices.empty else None
+        if board_date is not None and board_date != run_date:
+            # Ngày lễ (T2–T6 nhưng sàn nghỉ): bảng giá vẫn mang phiên gần nhất.
+            # Ghi vào sẽ tạo "phiên ma" (31/08–02/09/2026) — bỏ qua.
+            print(f"{run_date}: bảng giá đang ở phiên {board_date} — ngày nghỉ, bỏ qua giá EOD.")
+            warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", 0,
+                               "skipped", notes=f"holiday (board trading_date {board_date})")
+        else:
+            n_px = warehouse.upsert_prices(con, prices)
+            warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", n_px,
+                               "ok" if n_px else "empty", watermark=run_date)
+            print(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
 
     # 2b) Chỉ số thị trường — mọi mode
     if ingest_market.is_trading_day(date.today()):

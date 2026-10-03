@@ -45,3 +45,36 @@ def status_for(rows_loaded: int, rows_rejected: int, threshold: float = 0.05) ->
     if rows_rejected / total > threshold:
         return "degraded"
     return "ok"
+
+
+def assert_ohlc_consistent(df: pd.DataFrame, source: str, max_bad_ratio: float = 0.05) -> None:
+    """Raise SchemaError nếu quá `max_bad_ratio` số dòng CÓ KHỚP LỆNH có close
+    nằm ngoài [low, high].
+
+    Hợp đồng này tồn tại vì lỗi ánh xạ bảng giá (mảng Q): close lấy nhầm giá
+    tham chiếu suốt 4 tháng, 52–63% dòng vi phạm mà không job nào đỏ. Dòng
+    không khớp lệnh (volume 0) hoặc thiếu high/low không được tính — không có
+    biên để so. Một vài dòng lệch lẻ (giá điều chỉnh, làm tròn) được chấp nhận.
+    """
+    if df is None or df.empty:
+        return
+    needed = {"close", "high", "low", "volume"}
+    if not needed <= set(df.columns):
+        return
+    close = pd.to_numeric(df["close"], errors="coerce")
+    high = pd.to_numeric(df["high"], errors="coerce")
+    low = pd.to_numeric(df["low"], errors="coerce")
+    vol = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
+    checkable = (vol > 0) & high.notna() & low.notna() & close.notna()
+    n = int(checkable.sum())
+    if n == 0:
+        return
+    bad = checkable & ((close > high * 1.0001) | (close < low * 0.9999))
+    ratio = int(bad.sum()) / n
+    if ratio > max_bad_ratio:
+        sample = df.loc[bad, ["symbol", "low", "high", "close"]].head(5).to_dict("records") \
+            if "symbol" in df.columns else []
+        raise SchemaError(
+            f"[{source}] {ratio:.1%} dòng có khớp lệnh có close ngoài [low, high] "
+            f"(ngưỡng {max_bad_ratio:.0%}) — nghi ánh xạ cột sai. Ví dụ: {sample}"
+        )
