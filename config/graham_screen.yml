@@ -1,0 +1,47 @@
+# Phễu sàng lọc tất định (mảng Q) — dùng chung cho tool MCP `screen_graham`.
+#
+# Vì sao có file này: trước mảng Q, mỗi lần sàng lọc là một câu SQL agent tự
+# viết với ngưỡng và thước đo khác nhau (03/09 chọn KCN theo ROE, 10/09 chọn
+# ngân hàng theo CAGR, 12/09 ra rổ 11 mã theo số Graham) — cùng dữ liệu cho ba
+# kết quả. Ngưỡng nằm ở đây, có `version`; mọi báo cáo phải ghi version đã dùng.
+#
+# ĐỔI NGƯỠNG = TĂNG VERSION. Không sửa ngưỡng mà giữ version cũ — đối chiếu
+# phân tích cũ sẽ sai mà không ai biết.
+version: "2026-10-03.1"
+
+lenses:
+  gia_tri:
+    label: "Giá trị + biên an toàn (Graham)"
+    universe:
+      exchanges: [HOSE, HNX]
+      min_market_cap_vnd: 1_000_000_000_000      # 1.000 tỷ (vốn hoá hiện tại)
+      min_avg_turnover_20d_vnd: 2_000_000_000    # 2 tỷ/phiên
+      min_data_quality_score: 60
+    steps:
+      - {id: vu_tru,       label: "Vốn hoá ≥1.000 tỷ, GTGD ≥2 tỷ/phiên, chất lượng dữ liệu ≥60, HOSE/HNX"}
+      - {id: co_lai,       label: "Có lãi: LNST 4 quý dương và không có quý lỗ thật trong cửa sổ BCTC (~8 quý)"}
+      - {id: pe_toi_da,    label: "P/E hiện tại trong (0; 15]", max: 15}
+      - {id: so_graham,    label: "P/E × P/B hiện tại ≤ 22,5 (giá ≤ số Graham)", max: 22.5}
+      - {id: co_tuc,       label: "Cổ tức tiền ≥5 năm liên tiếp", min_years: 5}
+      - {id: thanh_toan,   label: "Phi tài chính: thanh toán hiện hành ≥1,5 (ngân hàng/tài chính: không áp dụng)", min: 1.5}
+      - {id: bien_an_toan, label: "Biên an toàn ⅓: P/E × P/B ≤ 10 (giá ≤ ⅔ số Graham)", max: 10}
+    # Số Graham = √(22,5 × EPS × BVPS) ⇒ giá/số Graham = √(P/E × P/B / 22,5).
+    # Tính trên P/E, P/B HIỆN TẠI (đã quy đổi giá) — không bao giờ chia
+    # last_close cho EPS của quý cũ (sai khi có thưởng cổ phiếu sau ngày chốt).
+    sort: pe_x_pb_asc
+
+  tang_truong:
+    label: "Tăng trưởng + chất lượng"
+    universe:
+      exchanges: [HOSE, HNX]
+      min_market_cap_vnd: 2_000_000_000_000      # 2.000 tỷ
+      min_avg_turnover_20d_vnd: 3_000_000_000    # 3 tỷ/phiên
+      min_data_quality_score: 60
+    steps:
+      - {id: vu_tru,        label: "Vốn hoá ≥2.000 tỷ, GTGD ≥3 tỷ/phiên, chất lượng dữ liệu ≥60, HOSE/HNX"}
+      - {id: co_lai,        label: "Có lãi: LNST 4 quý dương và không có quý lỗ thật trong cửa sổ BCTC (~8 quý)"}
+      - {id: roe_ben,       label: "ROE trung bình 8 quý ≥15% và độ bền ≥0,6", min_roe: 0.15, min_stability: 0.6}
+      - {id: tang_truong,   label: "CAGR LNST 3 năm ≥10% và doanh thu ≥5%", min_earnings_cagr: 0.10, min_revenue_cagr: 0.05}
+      - {id: deu_dan,       label: "Tăng trưởng doanh thu đều: ≥60% số quý tăng so với cùng kỳ", min: 0.6}
+      - {id: pe_tran,       label: "P/E hiện tại trong (0; 25]", max: 25}
+    sort: quality_growth_desc

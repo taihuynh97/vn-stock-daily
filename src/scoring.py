@@ -27,6 +27,10 @@ KNOWN_UNIVERSE_KEYS = {
 }
 KNOWN_REQUIRE_KEYS = {
     "dividend_years_min", "roe_avg_8q_min", "exclude_loss_making",
+    # Mảng Q: loại mã có quý lỗ THẬT (BCTC gốc) trong 4 quý gần nhất.
+    # `exclude_loss_making` chỉ xét LNST lũy kế 4 quý — PNJ 2026-Q2 lỗ 739 tỷ
+    # vẫn qua vì 3 quý trước lãi lớn.
+    "exclude_recent_loss_quarters",
 }
 
 
@@ -127,7 +131,12 @@ def apply_universe(df: pd.DataFrame, profile: dict) -> tuple[pd.DataFrame, pd.Da
     if uni.get("exchanges"):
         checks.append((~out["exchange"].isin(uni["exchanges"]), "ngoài sàn cho phép"))
     if uni.get("min_market_cap_vnd") is not None:
-        checks.append((out["market_cap"].fillna(0) < uni["min_market_cap_vnd"],
+        # Mảng Q: vốn hoá HIỆN TẠI (quy đổi theo giá phiên mới nhất) khi mart có;
+        # market_cap gốc lấy từ hồ sơ DN/ngày chốt quý, có thể cũ nhiều tháng.
+        mcap = out["market_cap"]
+        if "market_cap_current" in out.columns:
+            mcap = out["market_cap_current"].fillna(out["market_cap"])
+        checks.append((mcap.fillna(0) < uni["min_market_cap_vnd"],
                         "vốn hoá dưới ngưỡng"))
     if uni.get("min_avg_turnover_20d_vnd") is not None:
         checks.append((out["avg_turnover_20d"].fillna(0) < uni["min_avg_turnover_20d_vnd"],
@@ -155,6 +164,12 @@ def apply_universe(df: pd.DataFrame, profile: dict) -> tuple[pd.DataFrame, pd.Da
         # → coi như có lỗ, loại), KHÔNG phải fillna(False) (không biết → coi
         # như không lỗ, cho qua) — chiều ngược sẽ đi ngược đúng quy ước trên.
         checks.append((out["is_loss_making"].fillna(True).astype(bool), "đang lỗ"))
+    if req.get("exclude_recent_loss_quarters"):
+        # Cùng quy ước "thiếu dữ liệu thì trượt": không có BCTC quý → không kiểm
+        # được → loại, nhưng ghi lý do RIÊNG để không lẫn với "có quý lỗ".
+        lq = out["loss_quarters_4q_actual"]
+        checks.append((lq.fillna(0) > 0, "có quý lỗ trong 4 quý gần nhất"))
+        checks.append((lq.isna(), "không có BCTC quý để kiểm quý lỗ"))
 
     n = len(out)
     reason_lists: list[list[str]] = [[] for _ in range(n)]
