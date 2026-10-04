@@ -35,6 +35,71 @@ def _throttle() -> None:
     if wait > 0:
         time.sleep(wait)
 
+
+class SourceBreaker:
+    """Ngắt mạch cho vòng lặp gọi API theo từng mã.
+
+    - `before()` gọi trước mỗi mã: False nếu đã quá `deadline` (time.monotonic)
+      hoặc đã dừng → vòng lặp phải `break`.
+    - `record(ok)` gọi sau mỗi mã: `pause_after` mã lỗi LIÊN TIẾP → ngủ
+      `pause_seconds`; quá `max_pauses` lần nghỉ mà vẫn lỗi liên tiếp → dừng
+      ("nguon_treo"). Một mã thành công đặt lại bộ đếm.
+
+    Lý do (04/10/2026): từ máy chủ GitHub (Azure), iq.vietcap.com.vn hết thời
+    gian chờ liên tục — mỗi mã tốn ~5 phút do vnstock tự thử lại 9 lần x 30
+    giây; 51 phút đi được ~120/1.603 mã, GitHub cắt job trước khi dbt chạy.
+    Cùng lúc, gọi từ máy ở VN trả lời 0,1–1,3 giây — nguồn chặn theo IP.
+    Mặc định: SOURCE_PAUSE_AFTER=3, SOURCE_PAUSE_SECONDS=180, SOURCE_MAX_PAUSES=2
+    → nguồn chặn hẳn thì mất tối đa ~50 phút rồi bỏ giai đoạn, thay vì hàng giờ.
+    """
+
+    def __init__(self, name: str, deadline: float | None = None,
+                 pause_after: int | None = None, pause_seconds: float | None = None,
+                 max_pauses: int | None = None):
+        self.name = name
+        self.deadline = deadline
+        self.pause_after = pause_after if pause_after is not None else int(_os.getenv("SOURCE_PAUSE_AFTER", "3"))
+        self.pause_seconds = pause_seconds if pause_seconds is not None else float(_os.getenv("SOURCE_PAUSE_SECONDS", "180"))
+        self.max_pauses = max_pauses if max_pauses is not None else int(_os.getenv("SOURCE_MAX_PAUSES", "2"))
+        self.consecutive = self.pauses = self.n_errors = self.n_done = 0
+        self.stopped, self.reason = False, None
+
+    def before(self) -> bool:
+        if self.stopped:
+            return False
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            self.stopped, self.reason = True, "het_ngan_sach"
+            print(f"[{self.name}] hết ngân sách sau {self.n_done} mã — dừng.", flush=True)
+            return False
+        return True
+
+    def record(self, ok: bool) -> None:
+        self.n_done += 1
+        if ok:
+            self.consecutive = 0
+            return
+        self.n_errors += 1
+        self.consecutive += 1
+        if self.consecutive < self.pause_after:
+            return
+        if self.pauses >= self.max_pauses:
+            self.stopped, self.reason = True, "nguon_treo"
+            print(f"[{self.name}] {self.consecutive} mã lỗi liên tiếp sau {self.pauses} lần nghỉ"
+                  f" — nguồn treo/chặn, dừng giai đoạn sau {self.n_done} mã.", flush=True)
+            return
+        print(f"[{self.name}] {self.consecutive} mã lỗi liên tiếp — nghỉ "
+              f"{self.pause_seconds:.0f} giây.", flush=True)
+        time.sleep(self.pause_seconds)
+        self.pauses += 1
+        self.consecutive = 0
+
+    def notes(self) -> str:
+        """Tóm tắt một dòng cho etl_load_log.notes."""
+        s = f"{self.n_done} ma, {self.n_errors} loi, {self.pauses} lan nghi"
+        if self.stopped:
+            s += f"; dung som: {self.reason}"
+        return s
+
 from vnstock.api.quote import Quote
 from vnstock.api.financial import Finance
 from vnstock.api.company import Company
