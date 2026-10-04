@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from src import ingest_market, warehouse
+from src import ingest, ingest_market, warehouse
 
 load_dotenv()
 ROOT = Path(__file__).resolve().parent
@@ -70,6 +70,13 @@ def _skip_for_budget(con, mode, table, deadline, run_date) -> bool:
     warehouse.log_load(con, f"warehouse_{mode}", table, 0, "partial",
                        watermark=run_date, notes="het_ngan_sach: bo qua giai doan")
     return True
+
+
+def _phase_status(breaker, n_rows) -> str:
+    """'partial' nếu giai đoạn dừng sớm (hết ngân sách / nguồn treo)."""
+    if breaker.stopped:
+        return "partial"
+    return "ok" if n_rows else "empty"
 
 
 def _order_statement_symbols(con, symbols, period):
@@ -282,10 +289,12 @@ def main():
     if args.mode in ("weekly", "monthly") and not _skip_for_budget(
             con, args.mode, "raw_financial_ratio", deadline, run_date):
         _log(f"Bắt đầu fetch financials ({len(symbols)} mã)...")
-        fin = ingest_market.fetch_financials(symbols, source)
+        br_fin = ingest.SourceBreaker("ratios", deadline=deadline)
+        fin = ingest_market.fetch_financials(symbols, source, breaker=br_fin)
         n_fin = warehouse.upsert_financial_ratios(con, fin)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_ratio", n_fin,
-                           "ok" if n_fin else "empty", watermark=run_date)
+                           _phase_status(br_fin, n_fin), watermark=run_date,
+                           notes=br_fin.notes())
         _log(f"raw_financial_ratio: {n_fin} dòng")
 
     # 3b) Sự kiện doanh nghiệp (B1) — chạy CẢ weekly lẫn monthly.
@@ -296,11 +305,12 @@ def main():
     if args.mode in ("weekly", "monthly") and not _skip_for_budget(
             con, args.mode, "raw_corporate_event", deadline, run_date):
         _log(f"Bắt đầu fetch sự kiện DN ({len(symbols)} mã)...")
-        events = ingest_market.fetch_corporate_events(symbols, source)
+        br_ev = ingest.SourceBreaker("events", deadline=deadline)
+        events = ingest_market.fetch_corporate_events(symbols, source, breaker=br_ev)
         n_ev = warehouse.insert_corporate_events(con, events)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_corporate_event",
-                           n_ev, "ok" if n_ev else "empty", watermark=run_date,
-                           notes=f"append-only; fetch {len(events)} dong")
+                           n_ev, _phase_status(br_ev, n_ev), watermark=run_date,
+                           notes=f"append-only; fetch {len(events)} dong; {br_ev.notes()}")
         _log(f"raw_corporate_event: +{n_ev} dòng mới (fetch {len(events)})")
 
     # 4) Dim_industry (phân ngành ICB) + company info — monthly only
@@ -313,10 +323,12 @@ def main():
         _log(f"dim_industry: {n_ind} ngành ICB")
 
         _log(f"Bắt đầu fetch company info ({len(symbols)} mã)...")
-        info = ingest_market.fetch_company_info(symbols, source)
+        br_info = ingest.SourceBreaker("company_info", deadline=deadline)
+        info = ingest_market.fetch_company_info(symbols, source, breaker=br_info)
         n_info = warehouse.upsert_company_info(con, info)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_company_info", n_info,
-                           "ok" if n_info else "empty", watermark=run_date)
+                           _phase_status(br_info, n_info), watermark=run_date,
+                           notes=br_info.notes())
         _log(f"raw_company_info: {n_info} mã")
         n_exch = warehouse.update_symbol_exchanges(con)
         warehouse.log_load(con, f"warehouse_{args.mode}", "dim_symbols", n_exch,
@@ -325,18 +337,20 @@ def main():
         _log(f"dim_symbols.exchange: cập nhật {n_exch} mã")
 
         _log(f"Bắt đầu fetch cơ cấu sở hữu ({len(symbols)} mã)...")
-        sh = ingest_market.fetch_shareholders(symbols, source, run_date)
+        br_sh = ingest.SourceBreaker("shareholders", deadline=deadline)
+        sh = ingest_market.fetch_shareholders(symbols, source, run_date, breaker=br_sh)
         n_sh = warehouse.upsert_shareholders(con, sh)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_shareholder",
-                           n_sh, "ok" if n_sh else "empty", watermark=run_date,
-                           notes=f"snapshot {run_date}")
+                           n_sh, _phase_status(br_sh, n_sh), watermark=run_date,
+                           notes=f"snapshot {run_date}; {br_sh.notes()}")
         _log(f"raw_shareholder: {n_sh} dòng (snapshot {run_date})")
 
-        of = ingest_market.fetch_officers(symbols, source, run_date)
+        br_of = ingest.SourceBreaker("officers", deadline=deadline)
+        of = ingest_market.fetch_officers(symbols, source, run_date, breaker=br_of)
         n_of = warehouse.upsert_officers(con, of)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_officer",
-                           n_of, "ok" if n_of else "empty", watermark=run_date,
-                           notes=f"snapshot {run_date}")
+                           n_of, _phase_status(br_of, n_of), watermark=run_date,
+                           notes=f"snapshot {run_date}; {br_of.notes()}")
         _log(f"raw_officer: {n_of} dòng (snapshot {run_date})")
 
     # 5) BCTC chi tiết (B2) — quarter chạy CẢ weekly lẫn monthly, cùng lý

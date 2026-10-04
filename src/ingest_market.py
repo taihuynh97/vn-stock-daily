@@ -358,7 +358,8 @@ def fetch_index_history(
     return out.drop_duplicates(["index_code", "trade_date"]).reset_index(drop=True)
 
 
-def fetch_financials(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
+def fetch_financials(symbols: list[str], source: str = "VCI",
+        breaker=None) -> pd.DataFrame:
     """Tỷ số tài chính theo quý (TTM) + cả năm qua Company.ratio_summary().
 
     Company.ratio_summary() trả mỗi dòng = 1 quý, quarter 1-4 = TTM kết thúc
@@ -367,13 +368,20 @@ def fetch_financials(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
     global _printed_fin_cols
     frames = []
     rejected = 0
+    # Ngắt mạch + hạn chót (04/10/2026): xem ingest.SourceBreaker. Tầng gọi
+    # truyền breaker vào để đọc lại trạng thái dừng sớm sau vòng lặp.
+    br = breaker or ingest.SourceBreaker("ratios")
     for symbol in symbols:
+        if not br.before():
+            break
         ingest._throttle()
         try:
             df = Company(symbol=symbol, source=source).ratio_summary()
         except Exception as e:
             print(f"[financials] {symbol}: {e}")
+            br.record(False)
             continue
+        br.record(True)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
@@ -427,17 +435,25 @@ def _normalize_financials(df, symbol) -> pd.DataFrame:
     return out[warehouse.RATIO_ALL_COLS]
 
 
-def fetch_company_info(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
+def fetch_company_info(symbols: list[str], source: str = "VCI",
+        breaker=None) -> pd.DataFrame:
     global _printed_info_cols
     frames = []
     rejected = 0
+    # Ngắt mạch + hạn chót (04/10/2026): xem ingest.SourceBreaker. Tầng gọi
+    # truyền breaker vào để đọc lại trạng thái dừng sớm sau vòng lặp.
+    br = breaker or ingest.SourceBreaker("company_info")
     for symbol in symbols:
+        if not br.before():
+            break
         ingest._throttle()
         try:
             df = Company(symbol=symbol, source=source).overview()
         except Exception as e:
             print(f"[company_info] {symbol}: {e}")
+            br.record(False)
             continue
+        br.record(True)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
@@ -588,7 +604,8 @@ EVENT_DATE_COLS = [
 _EVENT_REQUIRED = ["id", "event_code", "event_title_vi"]
 
 
-def fetch_corporate_events(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
+def fetch_corporate_events(symbols: list[str], source: str = "VCI",
+        breaker=None) -> pd.DataFrame:
     """Sự kiện DN (cổ tức, phát hành, ĐHCĐ, giao dịch cổ đông lớn) qua
     Company.events().
 
@@ -604,13 +621,20 @@ def fetch_corporate_events(symbols: list[str], source: str = "VCI") -> pd.DataFr
     """
     global _printed_event_cols
     frames, rejected = [], 0
+    # Ngắt mạch + hạn chót (04/10/2026): xem ingest.SourceBreaker. Tầng gọi
+    # truyền breaker vào để đọc lại trạng thái dừng sớm sau vòng lặp.
+    br = breaker or ingest.SourceBreaker("events")
     for symbol in symbols:
+        if not br.before():
+            break
         ingest._throttle()
         try:
             df = Company(symbol=symbol, source=source).events()
         except Exception as e:
             print(f"[events] {symbol}: {e}")
+            br.record(False)
             continue
+        br.record(True)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
@@ -698,7 +722,8 @@ _OFFICER_REQUIRED = ["officer_name", "officer_position"]
 
 
 def fetch_shareholders(symbols: list[str], source: str = "VCI",
-                       snapshot_date: str = None) -> pd.DataFrame:
+                       snapshot_date: str = None,
+        breaker=None) -> pd.DataFrame:
     """Cơ cấu cổ đông đã công bố qua Company.shareholders().
 
     LƯU Ý về ngữ nghĩa dữ liệu (đo 2026-08-16): tổng share_own_percent
@@ -715,13 +740,20 @@ def fetch_shareholders(symbols: list[str], source: str = "VCI",
     global _printed_shareholder_cols
     snap = snapshot_date or date.today().isoformat()
     frames, rejected = [], 0
+    # Ngắt mạch + hạn chót (04/10/2026): xem ingest.SourceBreaker. Tầng gọi
+    # truyền breaker vào để đọc lại trạng thái dừng sớm sau vòng lặp.
+    br = breaker or ingest.SourceBreaker("shareholders")
     for symbol in symbols:
+        if not br.before():
+            break
         ingest._throttle()
         try:
             df = Company(symbol=symbol, source=source).shareholders()
         except Exception as e:
             print(f"[shareholders] {symbol}: {e}")
+            br.record(False)
             continue
+        br.record(True)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
@@ -774,19 +806,27 @@ def _normalize_shareholders(df, symbol, snapshot_date: str) -> pd.DataFrame:
 
 
 def fetch_officers(symbols: list[str], source: str = "VCI",
-                   snapshot_date: str = None) -> pd.DataFrame:
+                   snapshot_date: str = None,
+        breaker=None) -> pd.DataFrame:
     """Ban lãnh đạo + tỉ lệ sở hữu qua Company.officers(). Cùng cơ chế
     snapshot như fetch_shareholders."""
     global _printed_officer_cols
     snap = snapshot_date or date.today().isoformat()
     frames, rejected = [], 0
+    # Ngắt mạch + hạn chót (04/10/2026): xem ingest.SourceBreaker. Tầng gọi
+    # truyền breaker vào để đọc lại trạng thái dừng sớm sau vòng lặp.
+    br = breaker or ingest.SourceBreaker("officers")
     for symbol in symbols:
+        if not br.before():
+            break
         ingest._throttle()
         try:
             df = Company(symbol=symbol, source=source).officers()
         except Exception as e:
             print(f"[officers] {symbol}: {e}")
+            br.record(False)
             continue
+        br.record(True)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
