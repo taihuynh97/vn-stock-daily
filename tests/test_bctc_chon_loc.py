@@ -244,3 +244,13 @@ def test_mã_mới_mà_nguồn_không_có_bctc_chỉ_dò_1_lần():
         out = ingest_market.fetch_financial_statements(["NODATA"], known={}, now=NOW)
     assert _calls(src, "NODATA") == ["income_statement"]
     assert out.attrs["n_probe_only"] == 1
+
+
+def test_parse_only_và_want():
+    import build_warehouse as bw
+    assert bw._parse_only(None) is None and bw._want(None, "events")
+    only = bw._parse_only("events, statements")
+    assert only == {"events", "statements"}
+    assert bw._want(only, "statements") and not bw._want(only, "ratios")
+    with pytest.raises(SystemExit):
+        bw._parse_only("events,giá")
