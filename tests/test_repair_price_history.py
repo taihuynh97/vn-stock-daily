@@ -100,3 +100,23 @@ def test_symbol_ranges_bỏ_mã_đã_sửa_sau_mốc_resume(con):
                 "WHERE symbol = 'BBB'")
     r = rp.symbol_ranges(con, repaired_since=datetime(2026, 10, 3, 8, 0, 0))
     assert list(r["symbol"]) == ["AAA"]
+
+
+def test_resume_coi_mã_đã_sửa_dù_còn_sót_dòng_cũ(con):
+    """Lỗi thật 04/10/2026: nguồn lịch sử không trả phiên không khớp lệnh nên
+    mã đã sửa vẫn còn vài dòng loaded_at cũ. Tiêu chí cũ (min(loaded_at) <
+    mốc) coi ~280 mã đó là "chưa sửa" và tải lại thừa."""
+    # AAA: đã sửa các phiên lịch sử, chỉ còn sót phiên 01/09 (không khớp lệnh).
+    con.execute("UPDATE raw_price_daily SET loaded_at = TIMESTAMP '2026-10-04 03:00:00' "
+                "WHERE symbol = 'AAA' AND trade_date <> DATE '2026-09-01'")
+    r = rp.symbol_ranges(con, repaired_since=datetime(2026, 10, 4, 2, 20, 0))
+    assert list(r["symbol"]) == ["BBB"]
+
+
+def test_resume_không_coi_dòng_hằng_ngày_mới_là_đã_sửa(con):
+    """Job ngày ghi phiên MỚI sau mốc cho mọi mã — đó không phải dòng đã sửa.
+    Tiêu chí max(loaded_at) đơn thuần sẽ bỏ qua nhầm mã chưa sửa."""
+    con.execute("INSERT INTO raw_price_daily (symbol, trade_date, close, volume, loaded_at) "
+                "VALUES ('BBB', DATE '2026-10-05', 5100, 10, TIMESTAMP '2026-10-05 15:30:00')")
+    r = rp.symbol_ranges(con, repaired_since=datetime(2026, 10, 4, 2, 20, 0))
+    assert list(r["symbol"]) == ["AAA", "BBB"]

@@ -83,16 +83,23 @@ def delete_phantom_sessions(con) -> int:
 def symbol_ranges(con, symbols=None, repaired_since: datetime | None = None) -> pd.DataFrame:
     """[symbol, first_date] cho mỗi mã có trong raw_price_daily.
 
-    `repaired_since`: bỏ mã mà MỌI dòng đã có loaded_at >= mốc này (đã sửa ở
-    lần chạy trước) — để chạy tiếp sau khi bị ngắt."""
+    `repaired_since`: bỏ mã đã được sửa ở lần chạy trước (để chạy tiếp sau khi
+    bị ngắt). "Đã sửa" = có ít nhất một dòng LỊCH SỬ (trade_date trước ngày của
+    mốc) được ghi lại sau mốc.
+
+    Không dùng min(loaded_at) >= mốc: nguồn lịch sử không trả phiên không khớp
+    lệnh nên mã đã sửa vẫn còn vài dòng loaded_at cũ — lần chạy tiếp 04/10/2026
+    tải lại thừa ~280 mã vì thế. Không dùng max(loaded_at) >= mốc đơn thuần: job
+    ngày ghi phiên MỚI sau mốc cho mọi mã, sẽ bỏ qua nhầm mã chưa sửa."""
     where, params = "", []
     if symbols:
         where = f"WHERE symbol IN ({', '.join('?' for _ in symbols)})"
         params += [s.upper().strip() for s in symbols]
     having = ""
     if repaired_since is not None:
-        having = "HAVING min(loaded_at) < ?"
-        params.append(repaired_since)
+        having = ("HAVING count(*) FILTER (WHERE loaded_at >= ? "
+                  "AND trade_date < CAST(? AS DATE)) = 0")
+        params += [repaired_since, repaired_since]
     return con.execute(
         f"SELECT symbol, min(trade_date) AS first_date FROM raw_price_daily "
         f"{where} GROUP BY symbol {having} ORDER BY symbol",
