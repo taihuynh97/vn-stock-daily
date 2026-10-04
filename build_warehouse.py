@@ -48,6 +48,28 @@ def _log(msg: str) -> None:
     print(f"[{datetime.now(timezone.utc):%H:%M:%S}Z] {msg}", flush=True)
 
 
+PHASES = ['prices', 'index', 'fx', 'news', 'ratios', 'events', 'company', 'statements', 'statements_year']
+
+
+class _Skip(Exception):
+    """Bỏ qua một giai đoạn bọc try/except do --only không chọn nó."""
+
+
+def _parse_only(raw):
+    """--only "events,statements" → {"events", "statements"}; None → mọi giai đoạn."""
+    if not raw:
+        return None
+    chosen = {x.strip() for x in raw.split(",") if x.strip()}
+    unknown = chosen - set(PHASES)
+    if unknown:
+        raise SystemExit(f"--only: giai đoạn lạ {sorted(unknown)}. Có: {', '.join(PHASES)}")
+    return chosen
+
+
+def _want(only, phase) -> bool:
+    return only is None or phase in only
+
+
 def _budget_deadline() -> float | None:
     """Hạn chót (time.monotonic) từ INGEST_BUDGET_MINUTES; không đặt → None.
 
@@ -193,7 +215,14 @@ def main():
         default="daily",
         help="daily=giá EOD+universe; weekly=+financials; monthly=+company_info",
     )
+    parser.add_argument(
+        "--only",
+        help=("Chỉ chạy các giai đoạn này (phân tách dấu phẩy), trong phạm vi --mode: "
+              + ", ".join(PHASES) + ". Dùng để chạy lại phần còn thiếu khi một lần chạy "
+              "bị dừng sớm — vd --mode weekly --only events,statements."),
+    )
     args = parser.parse_args()
+    only = _parse_only(args.only)
 
     key = os.getenv("VNSTOCK_API_KEY")
     if key:
@@ -224,7 +253,9 @@ def main():
         con.close()
         return
 
-    if not ingest_market.is_trading_day(date.today()):
+    if not _want(only, "prices"):
+        pass
+    elif not ingest_market.is_trading_day(date.today()):
         print(f"{run_date} không phải ngày giao dịch (T7/CN) — bỏ qua giá EOD.")
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", 0,
                            "skipped", notes="non-trading day (weekend)")
@@ -245,7 +276,7 @@ def main():
             _log(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
 
     # 2b) Chỉ số thị trường — mọi mode
-    if ingest_market.is_trading_day(date.today()):
+    if _want(only, "index") and ingest_market.is_trading_day(date.today()):
         n_idx = 0
         for code in cfg.get("indices", []):
             idx_df = ingest_market.fetch_index_history(code, run_date, run_date, source)
@@ -259,11 +290,15 @@ def main():
     # các bước sau (đặc biệt BCTC monthly, đo thật 767 phút — xem
     # docs/B2-ket-qua-va-no-ky-thuat.md).
     try:
+        if not _want(only, "fx"):
+            raise _Skip()
         fx = ingest_market.fetch_exchange_rate(run_date)
         n_fx = warehouse.upsert_exchange_rate(con, fx)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_exchange_rate",
                            n_fx, "ok" if n_fx else "empty", watermark=run_date)
         _log(f"raw_exchange_rate: {n_fx} dòng cho {run_date}")
+    except _Skip:
+        pass
     except Exception as e:
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_exchange_rate",
                            0, "degraded", watermark=run_date, notes=str(e)[:500])
@@ -272,6 +307,8 @@ def main():
     # 2d) Tin tức 5 mã portfolio — mọi mode (D). Rẻ (5 mã), append-only.
     # Bọc try/except cùng lý do với 2c).
     try:
+        if not _want(only, "news"):
+            raise _Skip()
         portfolio_cfg = yaml.safe_load(open(ROOT / "config" / "portfolio.yml", encoding="utf-8"))
         portfolio_symbols = [h["symbol"] for h in portfolio_cfg["holdings"]]
         news = ingest_market.fetch_news(portfolio_symbols, source)
@@ -280,13 +317,15 @@ def main():
                            n_news, "ok" if n_news else "empty", watermark=run_date,
                            notes=f"append-only; fetch {len(news)} dong")
         _log(f"raw_news: +{n_news} dòng mới (fetch {len(news)})")
+    except _Skip:
+        pass
     except Exception as e:
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_news",
                            0, "degraded", watermark=run_date, notes=str(e)[:500])
         _log(f"raw_news: LỖI ({e}) — bỏ qua, không chặn bước sau")
 
     # 3) Financial ratios — weekly và monthly
-    if args.mode in ("weekly", "monthly") and not _skip_for_budget(
+    if args.mode in ("weekly", "monthly") and _want(only, "ratios") and not _skip_for_budget(
             con, args.mode, "raw_financial_ratio", deadline, run_date):
         _log(f"Bắt đầu fetch financials ({len(symbols)} mã)...")
         br_fin = ingest.SourceBreaker("ratios", deadline=deadline)
@@ -302,7 +341,7 @@ def main():
     # vừa chốt quyền trong cùng tháng. Monthly cũng chạy vì nó là superset
     # của weekly (giống cách financials đã làm ở nhánh phía trên) — không
     # có lý do bỏ sót sự kiện DN riêng ở lần chạy tháng.
-    if args.mode in ("weekly", "monthly") and not _skip_for_budget(
+    if args.mode in ("weekly", "monthly") and _want(only, "events") and not _skip_for_budget(
             con, args.mode, "raw_corporate_event", deadline, run_date):
         _log(f"Bắt đầu fetch sự kiện DN ({len(symbols)} mã)...")
         br_ev = ingest.SourceBreaker("events", deadline=deadline)
@@ -314,7 +353,7 @@ def main():
         _log(f"raw_corporate_event: +{n_ev} dòng mới (fetch {len(events)})")
 
     # 4) Dim_industry (phân ngành ICB) + company info — monthly only
-    if args.mode == "monthly" and not _skip_for_budget(
+    if args.mode == "monthly" and _want(only, "company") and not _skip_for_budget(
             con, args.mode, "raw_company_info", deadline, run_date):
         ind = ingest_market.fetch_industries_icb(source)
         n_ind = warehouse.upsert_industries(con, ind)
@@ -367,7 +406,7 @@ def main():
     # Chọn lọc (spec 2026-10-04-bctc-chon-loc): dò báo cáo KQKD, chỉ tải đủ 3
     # báo cáo khi có kỳ mới / mã mới / quá 90 ngày; mã cũ nhất đi trước; dừng
     # có kiểm soát khi hết ngân sách hoặc nguồn treo.
-    if args.mode in ("weekly", "monthly") and not _skip_for_budget(
+    if args.mode in ("weekly", "monthly") and _want(only, "statements") and not _skip_for_budget(
             con, args.mode, "raw_financial_statement", deadline, run_date):
         st_q: dict = {}
         n_stmt_q, n_err_q, n_call_q = _ingest_statements_chunked(
@@ -386,7 +425,7 @@ def main():
     # đổi, không cần nhịp tuần; xếp cùng nhịp với company_info/shareholders
     # bên trên thay vì chạy tuần vô ích). Thêm bước lọc mã đã có dữ liệu
     # year còn tươi — xem _symbols_need_year_fetch.
-    if args.mode == "monthly" and not _skip_for_budget(
+    if args.mode == "monthly" and _want(only, "statements_year") and not _skip_for_budget(
             con, args.mode, "raw_financial_statement", deadline, run_date):
         year_symbols = _symbols_need_year_fetch(con, symbols)
         st_y: dict = {}
