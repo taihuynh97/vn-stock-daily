@@ -9,6 +9,11 @@ on:
 jobs:
   warehouse-monthly:
     runs-on: ubuntu-latest
+    # Log theo thời gian thực: không có dòng này, mọi dòng print bị giữ
+    # trong bộ đệm và chỉ hiện ra khi đầy — 19/09 cả giờ log hiện cùng lúc
+    # 15:51, không ai thấy job kẹt ở đâu (chẩn đoán 04/10/2026).
+    env:
+      PYTHONUNBUFFERED: "1"
     # Fix trần 360 phút của GitHub Actions (final review B2): GitHub GIẾT
     # job ở đúng mốc 360 phút mà không cảnh báo gì. Đặt 350 để job tự fail
     # RÕ RÀNG trước mốc đó (có dòng lỗi timeout trong log) thay vì bị giết
