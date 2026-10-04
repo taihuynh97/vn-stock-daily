@@ -100,6 +100,32 @@ class SourceBreaker:
             s += f"; dung som: {self.reason}"
         return s
 
+
+def apply_vnstock_timeout() -> None:
+    """Đặt thời gian chờ MẶC ĐỊNH của vnstock.core.utils.client.send_request.
+
+    vnstock 4.0.9 gọi send_request mà không truyền timeout (vd Company.events),
+    nên mặc định 30 giây của hàm là con số thật; biến VNSTOCK_TIMEOUT của
+    vnstock KHÔNG đi tới đường gọi này. Khi iq.vietcap.com.vn bóp lưu lượng, lần
+    thử đầu treo đủ thời gian chờ rồi vnstock thử lại tới 9 lần → ~5 phút/mã
+    (đo 04/10/2026). Mặc định 15 giây (VNSTOCK_REQUEST_TIMEOUT); lệnh bình
+    thường đo được 0,1–7 giây.
+
+    Sửa __defaults__ của CHÍNH đối tượng hàm nên mọi module đã `from ... import
+    send_request` đều nhận. Phụ thuộc chi tiết nội bộ của vnstock — test
+    tests/test_vnstock_timeout.py sẽ đỏ nếu bản nâng cấp đổi chữ ký hàm."""
+    import inspect
+    from vnstock.core.utils import client
+    fn = client.send_request
+    names = [n for n, prm in inspect.signature(fn).parameters.items()
+             if prm.default is not inspect.Parameter.empty]
+    if "timeout" not in names or fn.__defaults__ is None:
+        print("[ingest] vnstock.send_request không còn tham số timeout — bỏ qua chỉnh thời gian chờ.")
+        return
+    defaults = list(fn.__defaults__)
+    defaults[names.index("timeout")] = int(float(_os.getenv("VNSTOCK_REQUEST_TIMEOUT", "15")))
+    fn.__defaults__ = tuple(defaults)
+
 from vnstock.api.quote import Quote
 from vnstock.api.financial import Finance
 from vnstock.api.company import Company
@@ -241,3 +267,6 @@ def _num(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+apply_vnstock_timeout()
