@@ -6,23 +6,34 @@ không vỡ khi một mã hay một nguồn lỗi.
 """
 from datetime import date, timedelta
 import os as _os
+import threading
 import time
 import pandas as pd
 
 # Guest tier: 20 req/phút → cần ≥3s giữa các call.
 # Community (API key): 60 req/phút → ~1,05s.
 # Đặt VNSTOCK_MIN_INTERVAL=1.05 khi có key Community để nạp lại nhanh hơn 3 lần.
-_last_call_time: float = 0.0
 _MIN_CALL_INTERVAL = float(_os.getenv("VNSTOCK_MIN_INTERVAL", "3.1"))
+
+# An toàn đa luồng (BCTC song song, 04/10/2026): mỗi lần gọi GIỮ CHỖ một khe
+# thời gian dưới khoá rồi mới ngủ ngoài khoá. Tổng tốc độ của mọi luồng cộng
+# lại vẫn ≤ 1 lần / _MIN_CALL_INTERVAL — tức vẫn dưới hạn mức 60 lần/phút của
+# khoá API dù chạy nhiều luồng. Bản cũ dùng một biến toàn cục không khoá: hai
+# luồng đọc cùng giá trị sẽ gọi cùng lúc và vượt hạn mức.
+_lock = threading.Lock()
+_next_slot: float = 0.0
 
 
 def _throttle() -> None:
-    """Chờ đủ khoảng cách giữa các lần gọi API để tránh rate limit."""
-    global _last_call_time
-    wait = _MIN_CALL_INTERVAL - (time.monotonic() - _last_call_time)
+    """Chờ tới khe gọi kế tiếp của nhịp giãn cách chung (an toàn đa luồng)."""
+    global _next_slot
+    with _lock:
+        now = time.monotonic()
+        start = max(now, _next_slot)
+        _next_slot = start + _MIN_CALL_INTERVAL
+    wait = start - time.monotonic()
     if wait > 0:
         time.sleep(wait)
-    _last_call_time = time.monotonic()
 
 from vnstock.api.quote import Quote
 from vnstock.api.financial import Finance

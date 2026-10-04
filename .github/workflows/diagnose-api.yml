@@ -33,8 +33,14 @@ jobs:
           VNSTOCK_MIN_INTERVAL: "1.05"
           DIAG_WHERE: "GitHub Actions (ubuntu-latest)"
         run: python -m scripts.diagnose_api --n "${{ github.event.inputs.n || '30' }}" --max-minutes 45 --out diag.json
+      - name: Đo BCTC quý gọi song song 5 luồng (cùng hạn mức 60 lần/phút)
+        env:
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+          VNSTOCK_MIN_INTERVAL: "1.05"
+          DIAG_WHERE: "GitHub Actions (ubuntu-latest)"
+        run: python -m scripts.diagnose_api --n 30 --statements-workers 5 --out diag-parallel.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: diag-api
-          path: diag.json
+          path: diag*.json

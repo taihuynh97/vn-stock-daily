@@ -19,6 +19,7 @@ import os
 import platform
 import statistics
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -106,6 +107,50 @@ def _call(records, endpoint, fn, throttle):
     print(f"  {endpoint:<17} {dt:6.2f}s {'ok' if ok else 'LỖI ' + err}", flush=True)
 
 
+def _parallel_statements(args, symbols, started, Finance, ingest):
+    """Đo BCTC quý gọi song song: thông lượng thật (lần gọi/phút) và lỗi.
+
+    Câu hỏi: gọi song song có đưa thông lượng lên sát hạn mức 60 lần/phút
+    (nhịp 1,05 giây) mà nguồn không chặn/treo nhiều hơn không?"""
+    from concurrent.futures import ThreadPoolExecutor
+    records: list[dict] = []
+    lock = threading.Lock()
+
+    def one(sym, st):
+        recs: list[dict] = []
+        _call(recs, st, lambda: getattr(Finance(symbol=sym, source="VCI", period="quarter"), st)(),
+              ingest._throttle)
+        with lock:
+            records.extend(recs)
+
+    jobs = [(s, st) for s in symbols for st in ("income_statement", "balance_sheet", "cash_flow")]
+    t0 = time.monotonic()
+    with ThreadPoolExecutor(max_workers=args.statements_workers) as ex:
+        list(ex.map(lambda j: one(*j), jobs))
+    elapsed = time.monotonic() - t0
+    meta = {
+        "where": f"{args.where} — BCTC song song {args.statements_workers} luồng",
+        "vnstock": __import__("importlib.metadata").metadata.version("vnstock"),
+        "python": platform.python_version(),
+        "n_symbols": len(symbols),
+        "min_interval": os.getenv("VNSTOCK_MIN_INTERVAL", "3.1"),
+        "started_utc": started.strftime("%Y-%m-%d %H:%M"),
+        "elapsed_min": round(elapsed / 60, 1),
+        "stopped_early": False,
+    }
+    md = to_markdown(summarize(records), meta)
+    md += f"\n\nThông lượng thật: **{len(records) / elapsed * 60:.1f} lần gọi/phút** ({len(records)} lần trong {elapsed:.0f} giây)."
+    print("\n" + md, flush=True)
+    if os.getenv("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write(md + "\n")
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump({"meta": meta, "summary": summarize(records), "records": records}, f,
+                      ensure_ascii=False, indent=2)
+    return 0
+
+
 def main():
     load_dotenv()
     ap = argparse.ArgumentParser(description="Đo độ trễ API vnstock (chỉ đọc)")
@@ -114,6 +159,8 @@ def main():
                     help="Ngân sách thời gian; hết thì dừng và báo kết quả dở dang")
     ap.add_argument("--out", help="Ghi kết quả JSON ra file")
     ap.add_argument("--where", default=os.getenv("DIAG_WHERE") or platform.node())
+    ap.add_argument("--statements-workers", type=int, default=0,
+                    help="Chỉ đo BCTC quý, gọi song song N luồng (dùng chung nhịp giãn cách)")
     args = ap.parse_args()
 
     key = os.getenv("VNSTOCK_API_KEY")
@@ -130,6 +177,8 @@ def main():
 
     symbols = DEFAULT_SYMBOLS[: args.n]
     started = datetime.now(timezone.utc)
+    if args.statements_workers:
+        return _parallel_statements(args, symbols, started, Finance, ingest)
     deadline = time.monotonic() + args.max_minutes * 60
     end = started.date().isoformat()
     start = (started.date() - timedelta(days=14)).isoformat()

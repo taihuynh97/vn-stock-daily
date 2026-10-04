@@ -8,8 +8,10 @@ Mọi call đi qua ingest._throttle() để dùng chung ngân sách rate limit v
 Vì cấu trúc cột của price_board tuỳ nguồn, phần chuẩn hoá cột được tách riêng và
 in ra cột thật ở lần chạy đầu để dễ tinh chỉnh.
 """
+import os
 import re
-from datetime import date
+import time
+from datetime import date, datetime, timedelta
 import pandas as pd
 
 from vnstock.api.listing import Listing
@@ -881,7 +883,12 @@ def _unpivot_statement(df, symbol: str, statement_type: str, period_type: str) -
 
 
 def fetch_financial_statements(symbols: list[str], source: str = "VCI",
-                               period: str = "quarter") -> pd.DataFrame:
+                               period: str = "quarter", known: dict | None = None,
+                               refresh_days: int = 90, deadline: float | None = None,
+                               now: datetime | None = None,
+                               pause_after: int | None = None,
+                               pause_seconds: float | None = None,
+                               max_pauses: int = 3) -> pd.DataFrame:
     """Chi tiết BCTC (income_statement + balance_sheet + cash_flow) qua
     Company.Finance(symbol, source, period).
 
@@ -910,52 +917,150 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
     warehouse.log_load), chỗ nào không cần thì coi như không có gì đổi.
     Trước bản sửa này, lỗi mạng chỉ được in 1 dòng log rồi biến mất — job
     có thể hỏng hàng trăm mã mà etl_load_log vẫn ghi status="ok".
+
+    Chế độ CHỌN LỌC (`known` khác None — spec 2026-10-04-bctc-chon-loc):
+    gọi `income_statement` trước để DÒ; chỉ gọi tiếp `balance_sheet` +
+    `cash_flow` khi mã chưa có trong kho, nguồn có kỳ mới hơn kỳ đã lưu, hoặc
+    lần tải đủ gần nhất cũ hơn `refresh_days`. Dò lỗi → bỏ hai báo cáo còn lại.
+    Lý do: báo cáo chỉ đổi theo quý nhưng job tuần tải lại cả 8 kỳ của mọi mã
+    (~4.800 lần gọi, ~5 giây/lần từ GitHub → ~7 giờ > trần 6 giờ); gọi song
+    song bị nguồn chặn (55/90 lần hết thời gian chờ, đo 04/10/2026).
+    `known`: {mã: {"latest_label": "2026-q2", "full_at": datetime|None}}.
+
+    `deadline` (time.monotonic): quá hạn thì dừng trước mã kế tiếp.
+    Tạm nghỉ: `pause_after` lỗi liên tiếp → ngủ `pause_seconds`; quá
+    `max_pauses` lần nghỉ mà vẫn lỗi liên tiếp → dừng ("nguon_treo"). Mặc định
+    lấy từ STATEMENT_PAUSE_AFTER (5) và STATEMENT_PAUSE_SECONDS (180).
+    attrs thêm: n_full, n_probe_only, n_symbols_done, stopped_early, stop_reason.
     """
+    if pause_after is None:
+        pause_after = int(os.getenv("STATEMENT_PAUSE_AFTER", "5"))
+    if pause_seconds is None:
+        pause_seconds = float(os.getenv("STATEMENT_PAUSE_SECONDS", "180"))
+    now = now or datetime.now()
     frames, rejected, total_calls, n_errors = [], 0, 0, 0
+    n_full = n_probe_only = n_done = 0
+    st = {"consecutive": 0, "pauses": 0, "stopped": False, "reason": None}
+
+    def call(symbol, statement_type):
+        nonlocal total_calls, n_errors, rejected
+        total_calls += 1
+        row, status = _fetch_statement_one(symbol, statement_type, source, period)
+        if status == "error":
+            n_errors += 1
+            st["consecutive"] += 1
+            if st["consecutive"] >= pause_after:
+                if st["pauses"] >= max_pauses:
+                    st["stopped"], st["reason"] = True, "nguon_treo"
+                    print(f"[statements] {st['consecutive']} lỗi liên tiếp sau "
+                          f"{st['pauses']} lần nghỉ — nguồn treo, dừng bước BCTC.", flush=True)
+                else:
+                    print(f"[statements] {st['consecutive']} lỗi liên tiếp — nghỉ "
+                          f"{pause_seconds:.0f} giây cho nguồn hồi.", flush=True)
+                    time.sleep(pause_seconds)
+                    st["pauses"] += 1
+                    st["consecutive"] = 0
+            return row, status
+        st["consecutive"] = 0
+        if status == "rejected":
+            rejected += 1
+        if row is not None:
+            frames.append(row)
+        return row, status
+
     for symbol in symbols:
-        for statement_type in _STATEMENT_TYPES:
-            ingest._throttle()
-            total_calls += 1
-            try:
-                fin = Finance(symbol=symbol, source=source, period=period)
-                df = getattr(fin, statement_type)()
-            except Exception as e:
-                # I4 (final review B2): ĐẾM lỗi mạng/timeout/RetryError.
-                # Cố ý tách khỏi `rejected` (chỉ dành cho dq.SchemaError ở
-                # khối except phía dưới): "không lấy được dữ liệu" và "lấy
-                # được nhưng sai schema" là hai sự cố khác nhau, trộn chung
-                # một bộ đếm sẽ làm ngưỡng degraded của dq.status_for mất ý
-                # nghĩa (mạng chập chờn sẽ bị hiểu nhầm là nguồn đổi schema).
-                print(f"[statements] {symbol}/{statement_type}: {e}")
-                n_errors += 1
-                continue
-            if df is None or len(df) == 0:
-                continue
-            df.columns = [str(c).lower() for c in df.columns]
-            if not _printed_statement_cols.get(statement_type):
-                print(f"[statements] cột thật ({symbol}/{statement_type}): {list(df.columns)}")
-                _printed_statement_cols[statement_type] = True
-            try:
-                row = _unpivot_statement(df, symbol, statement_type, period)
-            except dq.SchemaError as e:
-                print(f"[statements] {symbol}/{statement_type}: {e}")
-                rejected += 1
-                continue
-            if row is not None and not row.empty:
-                frames.append(row)
+        if deadline is not None and time.monotonic() > deadline:
+            st["stopped"], st["reason"] = True, "het_ngan_sach"
+            break
+        if known is None:
+            for statement_type in _STATEMENT_TYPES:
+                call(symbol, statement_type)
+                if st["stopped"]:
+                    break
+        else:
+            row, status = call(symbol, _STATEMENT_PROBE)
+            if not st["stopped"] and status != "error":
+                if _need_full_statements(known.get(symbol), row, now, refresh_days):
+                    n_full += 1
+                    for statement_type in _STATEMENT_TYPES:
+                        if statement_type == _STATEMENT_PROBE:
+                            continue
+                        call(symbol, statement_type)
+                        if st["stopped"]:
+                            break
+                else:
+                    n_probe_only += 1
+        n_done += 1
+        if st["stopped"]:
+            break
+
     if rejected and dq.status_for(len(frames), rejected) == "degraded":
         raise dq.SchemaError(
             f"[Finance statements] {rejected}/{total_calls} (mã, báo cáo) sai "
             "schema — nguồn có thể đã đổi"
         )
     print(f"[statements] {n_errors}/{total_calls} lần gọi lỗi mạng/API "
-          f"(không phải schema); {rejected} báo cáo sai schema")
+          f"(không phải schema); {rejected} báo cáo sai schema"
+          + (f"; dò {n_probe_only + n_full} mã, tải đủ {n_full}" if known is not None else ""))
     out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
         columns=warehouse.STATEMENT_COLS)
     out.attrs["n_errors"] = n_errors
     out.attrs["rejected"] = rejected
     out.attrs["total_calls"] = total_calls
+    out.attrs["n_full"] = n_full
+    out.attrs["n_probe_only"] = n_probe_only
+    out.attrs["n_symbols_done"] = n_done
+    out.attrs["stopped_early"] = st["stopped"]
+    out.attrs["stop_reason"] = st["reason"]
     return out
+
+
+_STATEMENT_PROBE = "income_statement"
+
+
+def _need_full_statements(k: dict | None, probe_row, now: datetime, refresh_days: int) -> bool:
+    """Có cần gọi tiếp balance_sheet + cash_flow cho mã này không.
+
+    Dò rỗng (nguồn không có BCTC cho mã) → KHÔNG, kể cả mã mới: 316 mã hoạt
+    động chưa có BCTC trong kho (04/10/2026), phần lớn vì nguồn không có."""
+    if probe_row is None or probe_row.empty:
+        return False
+    if not k or not k.get("latest_label"):
+        return True
+    full_at = k.get("full_at")
+    if full_at is None or pd.isna(full_at) or (now - pd.Timestamp(full_at).to_pydatetime()) > timedelta(days=refresh_days):
+        return True
+    latest_seen = str(probe_row["period_label"].astype(str).str.lower().max())
+    return latest_seen > str(k["latest_label"]).lower()
+
+
+def _fetch_statement_one(symbol: str, statement_type: str, source: str, period: str):
+    """Một lần gọi: trả (DataFrame dạng dài | None, trạng thái).
+
+    Trạng thái: "ok" | "empty" (nguồn không có — bình thường) | "error" (mạng/
+    timeout/RetryError) | "rejected" (sai schema). Tách "error" khỏi
+    "rejected" như I4 của B2 — xem docstring fetch_financial_statements."""
+    ingest._throttle()
+    try:
+        fin = Finance(symbol=symbol, source=source, period=period)
+        df = getattr(fin, statement_type)()
+    except Exception as e:
+        print(f"[statements] {symbol}/{statement_type}: {e}", flush=True)
+        return None, "error"
+    if df is None or len(df) == 0:
+        return None, "empty"
+    df.columns = [str(c).lower() for c in df.columns]
+    if not _printed_statement_cols.get(statement_type):
+        print(f"[statements] cột thật ({symbol}/{statement_type}): {list(df.columns)}")
+        _printed_statement_cols[statement_type] = True
+    try:
+        row = _unpivot_statement(df, symbol, statement_type, period)
+    except dq.SchemaError as e:
+        print(f"[statements] {symbol}/{statement_type}: {e}")
+        return None, "rejected"
+    if row is None or row.empty:
+        return None, "empty"
+    return row, "ok"
 
 
 _NEWS_REQUIRED = ["id", "news_title"]
