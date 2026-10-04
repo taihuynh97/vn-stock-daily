@@ -37,6 +37,9 @@ jobs:
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
           VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
           VNSTOCK_MIN_INTERVAL: "1.05"
+          # Bước nạp tự dừng có kiểm soát sau 270 phút (spec 2026-10-04-bctc-chon-loc)
+          # để còn thời gian cho dbt trong trần 350 phút của job.
+          INGEST_BUDGET_MINUTES: "270"
         run: python build_warehouse.py --mode monthly
 
       - name: Đối chiếu chéo warehouse
@@ -48,10 +51,12 @@ jobs:
         run: python -m scripts.reconcile_warehouse --sample 5
 
       - name: dbt deps
+        if: ${{ !cancelled() }}
         working-directory: transforms
         run: dbt deps --profiles-dir .
 
       - name: dbt seed
+        if: ${{ !cancelled() }}
         working-directory: transforms
         env:
           WAREHOUSE_DB: "md:vn_market"
@@ -59,6 +64,7 @@ jobs:
         run: dbt seed --profiles-dir . --no-partial-parse
 
       - name: dbt build (toàn bộ)
+        if: ${{ !cancelled() }}
         working-directory: transforms
         env:
           WAREHOUSE_DB: "md:vn_market"
@@ -66,6 +72,7 @@ jobs:
         run: dbt build --profiles-dir . --no-partial-parse
 
       - name: dbt source freshness
+        if: ${{ !cancelled() }}
         working-directory: transforms
         env:
           WAREHOUSE_DB: "md:vn_market"

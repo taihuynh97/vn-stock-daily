@@ -877,3 +877,33 @@ def mark_events_alerted(con, event_ids: list[str], symbol_by_id: dict[str, str])
     )
     con.unregister("df_alert")
     return len(event_ids)
+
+
+def statement_freshness(con, period_type: str) -> pd.DataFrame:
+    """Độ tươi BCTC từng mã — dùng để chọn và xếp mã khi nạp BCTC chọn lọc.
+
+    Cột: symbol, latest_label (kỳ mới nhất của báo cáo KQKD, chuỗi 'YYYY-qN'
+    so sánh được theo thứ tự chữ), probe_at (lần gần nhất báo cáo KQKD được
+    ghi = lần dò gần nhất), full_at (lần CŨ HƠN trong hai lần ghi gần nhất
+    của balance_sheet và cash_flow — "tải đủ" nghĩa là cả hai đều mới; thiếu
+    một trong hai → NULL). Mốc lấy từ ingested_at của chính bảng, không cần
+    bảng theo dõi riêng (spec 2026-10-04-bctc-chon-loc)."""
+    return con.execute(
+        """
+        WITH s AS (
+            SELECT symbol,
+                   max(period_label) FILTER (WHERE statement_type = 'income_statement') AS latest_label,
+                   max(ingested_at)  FILTER (WHERE statement_type = 'income_statement') AS probe_at,
+                   max(ingested_at)  FILTER (WHERE statement_type = 'balance_sheet')    AS bs_at,
+                   max(ingested_at)  FILTER (WHERE statement_type = 'cash_flow')        AS cf_at
+            FROM raw_financial_statement
+            WHERE period_type = ?
+            GROUP BY symbol
+        )
+        SELECT symbol, lower(latest_label) AS latest_label, probe_at,
+               CASE WHEN bs_at IS NULL OR cf_at IS NULL THEN NULL
+                    ELSE least(bs_at, cf_at) END AS full_at
+        FROM s
+        """,
+        [period_type],
+    ).df()
