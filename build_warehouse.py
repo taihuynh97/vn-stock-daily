@@ -12,8 +12,9 @@ Biến môi trường:
 """
 import os
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+import pandas as pd
 import yaml
 from dotenv import load_dotenv
 
@@ -101,22 +102,63 @@ def _phase_status(breaker, n_rows) -> str:
     return "ok" if n_rows else "empty"
 
 
-def _order_statement_symbols(con, symbols, period):
-    """Xếp mã cho bước BCTC chọn lọc: mã CHƯA CÓ trong kho trước (theo chữ
-    cái), rồi theo lần dò gần nhất TĂNG DẦN (cũ nhất trước). Trả (thứ tự,
-    known) — known đưa thẳng vào fetch_financial_statements(known=...).
+def _portfolio_symbols() -> list[str]:
+    cfg = yaml.safe_load(open(ROOT / "config" / "portfolio.yml", encoding="utf-8"))
+    return [h["symbol"] for h in cfg["holdings"]]
 
-    Đây là phần "xoay vòng" tối thiểu: job bị dừng giữa chừng (hết ngân sách,
-    nguồn treo) thì lần sau tự bắt đầu từ các mã cũ nhất. Trước 04/10/2026
-    job luôn chạy từ mã đầu danh sách nên mã cuối không bao giờ được làm mới."""
+
+EMPTY_PROBE_SKIP_DAYS = 30
+
+
+def _order_statement_symbols(con, symbols, period, now=None,
+                             empty_skip_days=EMPTY_PROBE_SKIP_DAYS):
+    """Xếp mã cho bước BCTC chọn lọc. Trả (thứ tự, known).
+
+    1. Mã chưa có BCTC trong kho và CHƯA TỪNG dò (theo chữ cái) — đứng đầu.
+    2. Mã chưa có BCTC, lần dò gần nhất rỗng nhưng đã quá `empty_skip_days`
+       ngày (cũ nhất trước). Dò rỗng trong `empty_skip_days` ngày → BỎ QUA hẳn:
+       ~300 mã nguồn không có BCTC từng chiếm trọn lô đầu mỗi tuần (04/10/2026).
+    3. Mã đã có BCTC, theo lần dò gần nhất tăng dần (cũ nhất trước).
+
+    Đây là phần "xoay vòng" tối thiểu: job dừng giữa chừng thì lần sau tự làm
+    tiếp từ các mã cũ nhất. known đưa thẳng vào fetch_financial_statements."""
+    now = now or datetime.now()
+    sym_set = set(symbols)
     fr = warehouse.statement_freshness(con, period)
-    fr = fr[fr["symbol"].isin(set(symbols))]
+    fr = fr[fr["symbol"].isin(sym_set)]
     have = set(fr["symbol"])
-    missing = sorted(s for s in symbols if s not in have)
+    ps = warehouse.statement_probe_status(con, period)
+    ps = ps[ps["symbol"].isin(sym_set - have)].set_index("symbol")
+    cutoff = pd.Timestamp(now - timedelta(days=empty_skip_days))
+    never, stale_empty = [], []
+    for sym in sorted(sym_set - have):
+        if sym not in ps.index:
+            never.append(sym)
+        elif ps.loc[sym, "result"] == "empty" and pd.Timestamp(ps.loc[sym, "probed_at"]) > cutoff:
+            continue
+        else:
+            stale_empty.append((pd.Timestamp(ps.loc[sym, "probed_at"]), sym))
     present = fr.sort_values(["probe_at", "symbol"], kind="mergesort")["symbol"].tolist()
     known = {r.symbol: {"latest_label": r.latest_label, "full_at": r.full_at}
              for r in fr.itertuples(index=False)}
-    return missing + present, known
+    return never + [s for _, s in sorted(stale_empty)] + present, known
+
+
+def _weekly_event_symbols(con, symbols, min_market_cap_vnd, portfolio):
+    """Mã nạp sự kiện DN ở job TUẦN: vốn hoá ≥ ngưỡng (dim_stock) + danh mục.
+
+    04/10/2026: nguồn bóp lưu lượng sau vài nghìn lệnh/ngày; sự kiện của ~1.000
+    mã nhỏ/kém thanh khoản ít khi dùng trong phân tích. Ngưỡng 500 tỷ (~600 mã)
+    bao trọn vũ trụ hồ sơ sàng lọc rộng nhất (deep_value). Job THÁNG vẫn quét
+    mọi mã. Chưa có dim_stock (kho mới) → dùng mọi mã."""
+    try:
+        big = {r[0] for r in con.execute(
+            "SELECT symbol FROM dim_stock WHERE market_cap >= ?", [min_market_cap_vnd]
+        ).fetchall()}
+    except Exception:
+        return list(symbols)
+    keep = big | set(portfolio)
+    return [s for s in symbols if s in keep]
 
 
 def _ingest_statements_chunked(con, symbols, source, period, deadline=None,
@@ -161,6 +203,8 @@ def _ingest_statements_chunked(con, symbols, source, period, deadline=None,
         chunk = symbols[i:i + STATEMENT_CHUNK_SIZE]
         df = ingest_market.fetch_financial_statements(chunk, source, period=period, **extra)
         n_rows = warehouse.upsert_financial_statements(con, df)
+        if selective and df.attrs.get("probes"):
+            warehouse.record_statement_probes(con, period, df.attrs["probes"])
         total_rows += n_rows
         # n_errors/total_calls đi kèm DataFrame qua df.attrs — xem
         # fetch_financial_statements.
@@ -309,8 +353,7 @@ def main():
     try:
         if not _want(only, "news"):
             raise _Skip()
-        portfolio_cfg = yaml.safe_load(open(ROOT / "config" / "portfolio.yml", encoding="utf-8"))
-        portfolio_symbols = [h["symbol"] for h in portfolio_cfg["holdings"]]
+        portfolio_symbols = _portfolio_symbols()
         news = ingest_market.fetch_news(portfolio_symbols, source)
         n_news = warehouse.insert_news(con, news)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_news",
@@ -344,8 +387,14 @@ def main():
     if args.mode in ("weekly", "monthly") and _want(only, "events") and not _skip_for_budget(
             con, args.mode, "raw_corporate_event", deadline, run_date):
         _log(f"Bắt đầu fetch sự kiện DN ({len(symbols)} mã)...")
+        ev_symbols = symbols
+        if args.mode == "weekly":
+            ev_symbols = _weekly_event_symbols(
+                con, symbols, cfg.get("weekly_events_min_market_cap_vnd", 500_000_000_000),
+                _portfolio_symbols())
+            _log(f"Sự kiện DN tuần: {len(ev_symbols)}/{len(symbols)} mã (vốn hoá đủ lớn + danh mục)")
         br_ev = ingest.SourceBreaker("events", deadline=deadline)
-        events = ingest_market.fetch_corporate_events(symbols, source, breaker=br_ev)
+        events = ingest_market.fetch_corporate_events(ev_symbols, source, breaker=br_ev)
         n_ev = warehouse.insert_corporate_events(con, events)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_corporate_event",
                            n_ev, _phase_status(br_ev, n_ev), watermark=run_date,

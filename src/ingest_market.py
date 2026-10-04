@@ -980,6 +980,7 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
     now = now or datetime.now()
     frames, rejected, total_calls, n_errors = [], 0, 0, 0
     n_full = n_probe_only = n_done = 0
+    probes: list[tuple[str, str]] = []
     st = {"consecutive": 0, "pauses": 0, "stopped": False, "reason": None}
 
     def call(symbol, statement_type):
@@ -1019,6 +1020,7 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
                     break
         else:
             row, status = call(symbol, _STATEMENT_PROBE)
+            probes.append((symbol, {"ok": "ok", "empty": "empty"}.get(status, "error")))
             if not st["stopped"] and status != "error":
                 if _need_full_statements(known.get(symbol), row, now, refresh_days):
                     n_full += 1
@@ -1052,6 +1054,7 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
     out.attrs["n_symbols_done"] = n_done
     out.attrs["stopped_early"] = st["stopped"]
     out.attrs["stop_reason"] = st["reason"]
+    out.attrs["probes"] = probes
     return out
 
 

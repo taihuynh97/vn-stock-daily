@@ -418,6 +418,21 @@ def init_warehouse(con):
         );
         """
     )
+    # --- Kết quả dò BCTC gần nhất theo mã (04/10/2026) ---
+    # Nhớ mã mà nguồn KHÔNG có BCTC ('empty') để không dò lại mỗi tuần: ~300
+    # mã như vậy từng chiếm trọn lô BCTC đầu tiên khi nguồn đang bóp lưu lượng.
+    # Chỉ ghi 'ok'/'empty' — lỗi mạng không cho biết gì về dữ liệu.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS statement_probe (
+            symbol      VARCHAR,
+            period_type VARCHAR,
+            result      VARCHAR,
+            probed_at   TIMESTAMP,
+            PRIMARY KEY (symbol, period_type)
+        );
+        """
+    )
 
 
 def upsert_symbols(con, df, run_date) -> int:
@@ -907,3 +922,31 @@ def statement_freshness(con, period_type: str) -> pd.DataFrame:
         """,
         [period_type],
     ).df()
+
+
+def record_statement_probes(con, period_type: str, probes, probed_at=None) -> int:
+    """Ghi kết quả dò BCTC [(symbol, 'ok'|'empty'|'error'), ...].
+
+    Bỏ qua 'error' (lỗi mạng không phải thông tin về dữ liệu, và không được ghi
+    đè một kết quả 'empty'/'ok' đã biết). Trả số dòng đã ghi."""
+    rows = [(sym, period_type, res) for sym, res in probes if res in ("ok", "empty")]
+    if not rows:
+        return 0
+    df = pd.DataFrame(rows, columns=["symbol", "period_type", "result"])
+    df["probed_at"] = pd.Timestamp(probed_at or datetime.now())
+    con.register("df_probe", df)
+    con.execute("""
+        INSERT OR REPLACE INTO statement_probe (symbol, period_type, result, probed_at)
+        SELECT symbol, period_type, result, probed_at FROM df_probe
+    """)
+    con.unregister("df_probe")
+    return len(rows)
+
+
+def statement_probe_status(con, period_type: str) -> pd.DataFrame:
+    """[symbol, result, probed_at] — kết quả dò BCTC gần nhất của từng mã."""
+    return con.execute(
+        "SELECT symbol, result, probed_at FROM statement_probe WHERE period_type = ?",
+        [period_type],
+    ).df()
+
