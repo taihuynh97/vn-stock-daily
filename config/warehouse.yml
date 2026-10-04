@@ -24,3 +24,9 @@ indices:
   - VNINDEX
   - VN30
   - HNXINDEX
+
+# Job TUẦN chỉ nạp sự kiện DN cho mã có vốn hoá ≥ ngưỡng này (+ mã danh mục);
+# job THÁNG vẫn quét mọi mã. Lý do (04/10/2026): nguồn iq.vietcap.com.vn bóp
+# lưu lượng sau vài nghìn lệnh/ngày. 500 tỷ ≈ 600/1.603 mã, bao trọn vũ trụ
+# của hồ sơ sàng lọc rộng nhất (deep_value: vốn hoá ≥500 tỷ).
+weekly_events_min_market_cap_vnd: 500_000_000_000
