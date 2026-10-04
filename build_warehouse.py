@@ -11,7 +11,7 @@ Biến môi trường:
   VNSTOCK_API_KEY  (khuyến nghị) nâng rate limit lên 60 req/phút.
 """
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 import yaml
 from dotenv import load_dotenv
@@ -41,6 +41,12 @@ STATEMENT_CHUNK_SIZE = 100
 STATEMENT_YEAR_FRESH_DAYS = 300
 
 
+def _log(msg: str) -> None:
+    """In kèm mốc giờ UTC — để đọc được mỗi giai đoạn mất bao lâu từ log CI
+    (trước 04/10/2026 log không có giờ và bị giữ trong bộ đệm, không đo được)."""
+    print(f"[{datetime.now(timezone.utc):%H:%M:%S}Z] {msg}", flush=True)
+
+
 def _ingest_statements_chunked(con, symbols, source, period):
     """Fetch + ghi BCTC theo TỪNG LÔ STATEMENT_CHUNK_SIZE mã (fix trần 360
     phút CI — xem STATEMENT_CHUNK_SIZE).
@@ -59,7 +65,7 @@ def _ingest_statements_chunked(con, symbols, source, period):
         return 0, 0, 0
     total_rows = n_errors = total_calls = 0
     n_chunks = (len(symbols) + STATEMENT_CHUNK_SIZE - 1) // STATEMENT_CHUNK_SIZE
-    print(f"Bắt đầu fetch BCTC chi tiết, period={period} ({len(symbols)} mã, "
+    _log(f"Bắt đầu fetch BCTC chi tiết, period={period} ({len(symbols)} mã, "
           f"{n_chunks} lô x {STATEMENT_CHUNK_SIZE})...")
     for i in range(0, len(symbols), STATEMENT_CHUNK_SIZE):
         chunk = symbols[i:i + STATEMENT_CHUNK_SIZE]
@@ -71,7 +77,7 @@ def _ingest_statements_chunked(con, symbols, source, period):
         # không phải sửa mọi chỗ gọi/test hiện có).
         n_errors += int(df.attrs.get("n_errors", 0))
         total_calls += int(df.attrs.get("total_calls", 0))
-        print(f"[statements/{period}] lô {i // STATEMENT_CHUNK_SIZE + 1}/{n_chunks} "
+        _log(f"[statements/{period}] lô {i // STATEMENT_CHUNK_SIZE + 1}/{n_chunks} "
               f"({len(chunk)} mã): +{n_rows} dòng, cộng dồn {total_rows} dòng, "
               f"{n_errors} lỗi mạng/API")
     return total_rows, n_errors, total_calls
@@ -96,7 +102,7 @@ def _symbols_need_year_fetch(con, symbols):
     ).fetchall()
     fresh = {r[0] for r in rows}
     need = [s for s in symbols if s not in fresh]
-    print(f"[statements/year] bỏ qua {len(symbols) - len(need)} mã đã có dữ liệu "
+    _log(f"[statements/year] bỏ qua {len(symbols) - len(need)} mã đã có dữ liệu "
           f"year trong {STATEMENT_YEAR_FRESH_DAYS} ngày gần đây; "
           f"thực sự fetch {len(need)}/{len(symbols)} mã")
     return need
@@ -130,7 +136,7 @@ def main():
     n_sym = warehouse.upsert_symbols(con, uni, run_date)
     warehouse.log_load(con, f"warehouse_{args.mode}", "dim_symbols", n_sym,
                        "ok" if n_sym else "empty")
-    print(f"dim_symbols: {n_sym} mã ({', '.join(cfg['exchanges'])})")
+    _log(f"dim_symbols: {n_sym} mã ({', '.join(cfg['exchanges'])})")
 
     # 2) Giá EOD toàn thị trường (bulk) — mọi mode đều có
     symbols = warehouse.get_active_symbols(con)
@@ -159,7 +165,7 @@ def main():
             n_px = warehouse.upsert_prices(con, prices)
             warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", n_px,
                                "ok" if n_px else "empty", watermark=run_date)
-            print(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
+            _log(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
 
     # 2b) Chỉ số thị trường — mọi mode
     if ingest_market.is_trading_day(date.today()):
@@ -169,7 +175,7 @@ def main():
             n_idx += warehouse.upsert_index_prices(con, idx_df)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_index_daily", n_idx,
                            "ok" if n_idx else "empty", watermark=run_date)
-        print(f"raw_index_daily: {n_idx} dòng")
+        _log(f"raw_index_daily: {n_idx} dòng")
 
     # 2c) Tỷ giá VCB — mọi mode (D). 1 lần gọi API/ngày, rẻ. Bọc try/except:
     # đây là nguồn phụ, lỗi ở đây (vd VCB đổi tên cột) KHÔNG được phép chặn
@@ -180,11 +186,11 @@ def main():
         n_fx = warehouse.upsert_exchange_rate(con, fx)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_exchange_rate",
                            n_fx, "ok" if n_fx else "empty", watermark=run_date)
-        print(f"raw_exchange_rate: {n_fx} dòng cho {run_date}")
+        _log(f"raw_exchange_rate: {n_fx} dòng cho {run_date}")
     except Exception as e:
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_exchange_rate",
                            0, "degraded", watermark=run_date, notes=str(e)[:500])
-        print(f"raw_exchange_rate: LỖI ({e}) — bỏ qua, không chặn bước sau")
+        _log(f"raw_exchange_rate: LỖI ({e}) — bỏ qua, không chặn bước sau")
 
     # 2d) Tin tức 5 mã portfolio — mọi mode (D). Rẻ (5 mã), append-only.
     # Bọc try/except cùng lý do với 2c).
@@ -196,20 +202,20 @@ def main():
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_news",
                            n_news, "ok" if n_news else "empty", watermark=run_date,
                            notes=f"append-only; fetch {len(news)} dong")
-        print(f"raw_news: +{n_news} dòng mới (fetch {len(news)})")
+        _log(f"raw_news: +{n_news} dòng mới (fetch {len(news)})")
     except Exception as e:
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_news",
                            0, "degraded", watermark=run_date, notes=str(e)[:500])
-        print(f"raw_news: LỖI ({e}) — bỏ qua, không chặn bước sau")
+        _log(f"raw_news: LỖI ({e}) — bỏ qua, không chặn bước sau")
 
     # 3) Financial ratios — weekly và monthly
     if args.mode in ("weekly", "monthly"):
-        print(f"Bắt đầu fetch financials ({len(symbols)} mã)...")
+        _log(f"Bắt đầu fetch financials ({len(symbols)} mã)...")
         fin = ingest_market.fetch_financials(symbols, source)
         n_fin = warehouse.upsert_financial_ratios(con, fin)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_ratio", n_fin,
                            "ok" if n_fin else "empty", watermark=run_date)
-        print(f"raw_financial_ratio: {n_fin} dòng")
+        _log(f"raw_financial_ratio: {n_fin} dòng")
 
     # 3b) Sự kiện doanh nghiệp (B1) — chạy CẢ weekly lẫn monthly.
     # Weekly vì GDKHQ có ngày cụ thể, chạy tháng dễ lỡ sự kiện vừa công bố
@@ -217,13 +223,13 @@ def main():
     # của weekly (giống cách financials đã làm ở nhánh phía trên) — không
     # có lý do bỏ sót sự kiện DN riêng ở lần chạy tháng.
     if args.mode in ("weekly", "monthly"):
-        print(f"Bắt đầu fetch sự kiện DN ({len(symbols)} mã)...")
+        _log(f"Bắt đầu fetch sự kiện DN ({len(symbols)} mã)...")
         events = ingest_market.fetch_corporate_events(symbols, source)
         n_ev = warehouse.insert_corporate_events(con, events)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_corporate_event",
                            n_ev, "ok" if n_ev else "empty", watermark=run_date,
                            notes=f"append-only; fetch {len(events)} dong")
-        print(f"raw_corporate_event: +{n_ev} dòng mới (fetch {len(events)})")
+        _log(f"raw_corporate_event: +{n_ev} dòng mới (fetch {len(events)})")
 
     # 4) Dim_industry (phân ngành ICB) + company info — monthly only
     if args.mode == "monthly":
@@ -231,34 +237,34 @@ def main():
         n_ind = warehouse.upsert_industries(con, ind)
         warehouse.log_load(con, f"warehouse_{args.mode}", "dim_industry", n_ind,
                            "ok" if n_ind else "empty", watermark=run_date)
-        print(f"dim_industry: {n_ind} ngành ICB")
+        _log(f"dim_industry: {n_ind} ngành ICB")
 
-        print(f"Bắt đầu fetch company info ({len(symbols)} mã)...")
+        _log(f"Bắt đầu fetch company info ({len(symbols)} mã)...")
         info = ingest_market.fetch_company_info(symbols, source)
         n_info = warehouse.upsert_company_info(con, info)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_company_info", n_info,
                            "ok" if n_info else "empty", watermark=run_date)
-        print(f"raw_company_info: {n_info} mã")
+        _log(f"raw_company_info: {n_info} mã")
         n_exch = warehouse.update_symbol_exchanges(con)
         warehouse.log_load(con, f"warehouse_{args.mode}", "dim_symbols", n_exch,
                            "ok" if n_exch else "empty", watermark=run_date,
                            notes="sync exchange tu raw_company_info")
-        print(f"dim_symbols.exchange: cập nhật {n_exch} mã")
+        _log(f"dim_symbols.exchange: cập nhật {n_exch} mã")
 
-        print(f"Bắt đầu fetch cơ cấu sở hữu ({len(symbols)} mã)...")
+        _log(f"Bắt đầu fetch cơ cấu sở hữu ({len(symbols)} mã)...")
         sh = ingest_market.fetch_shareholders(symbols, source, run_date)
         n_sh = warehouse.upsert_shareholders(con, sh)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_shareholder",
                            n_sh, "ok" if n_sh else "empty", watermark=run_date,
                            notes=f"snapshot {run_date}")
-        print(f"raw_shareholder: {n_sh} dòng (snapshot {run_date})")
+        _log(f"raw_shareholder: {n_sh} dòng (snapshot {run_date})")
 
         of = ingest_market.fetch_officers(symbols, source, run_date)
         n_of = warehouse.upsert_officers(con, of)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_officer",
                            n_of, "ok" if n_of else "empty", watermark=run_date,
                            notes=f"snapshot {run_date}")
-        print(f"raw_officer: {n_of} dòng (snapshot {run_date})")
+        _log(f"raw_officer: {n_of} dòng (snapshot {run_date})")
 
     # 5) BCTC chi tiết (B2) — quarter chạy CẢ weekly lẫn monthly, cùng lý
     # do sự kiện DN chạy cả hai (monthly là superset của weekly).
@@ -277,7 +283,7 @@ def main():
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_statement",
                            n_stmt_q, "ok" if n_stmt_q else "empty", watermark=run_date,
                            notes=f"period=quarter; {n_err_q}/{n_call_q} loi mang/API")
-        print(f"raw_financial_statement (quarter): {n_stmt_q} dòng")
+        _log(f"raw_financial_statement (quarter): {n_stmt_q} dòng")
 
     # 5b) BCTC chi tiết, period=year — CHỈ monthly (dữ liệu năm hiếm khi
     # đổi, không cần nhịp tuần; xếp cùng nhịp với company_info/shareholders
@@ -291,10 +297,10 @@ def main():
                            n_stmt_y, "ok" if n_stmt_y else "empty", watermark=run_date,
                            notes=(f"period=year; {n_err_y}/{n_call_y} loi mang/API; "
                                   f"fetch {len(year_symbols)}/{len(symbols)} ma"))
-        print(f"raw_financial_statement (year): {n_stmt_y} dòng")
+        _log(f"raw_financial_statement (year): {n_stmt_y} dòng")
 
     con.close()
-    print(f"Xong warehouse job ({args.mode}).")
+    _log(f"Xong warehouse job ({args.mode}).")
 
 
 if __name__ == "__main__":
