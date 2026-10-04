@@ -3,16 +3,20 @@ name: diagnose-api
 # Chẩn đoán độ trễ API vnstock từ máy chủ GitHub (chỉ đọc, không ghi warehouse).
 # So với cùng script chạy trên máy cá nhân ở VN để biết job tuần chậm do VỊ TRÍ
 # máy chạy hay do code/nguồn. Xem scripts/diagnose_api.py.
+#
+# CHỈ CHẠY TAY: bản đầu tự chạy khi đổi script, và lần merge PR #13 đã kích
+# hoạt nó chạy SONG SONG với job tuần trên cùng khoá API (04/10/2026). Không
+# chạy cùng lúc với job warehouse-*: hai bên chia nhau hạn mức 60 lần/phút.
 on:
   workflow_dispatch:
     inputs:
       n:
         description: "Số mã trong mẫu (tối đa 30)"
         default: "30"
-  push:
-    paths:
-      - "scripts/diagnose_api.py"
-      - ".github/workflows/diagnose-api.yml"
+      parallel:
+        description: "Đo thêm BCTC gọi song song 5 luồng (nguồn CHẶN — chỉ bật khi cần đo lại)"
+        type: boolean
+        default: false
 
 jobs:
   diagnose:
@@ -34,6 +38,7 @@ jobs:
           DIAG_WHERE: "GitHub Actions (ubuntu-latest)"
         run: python -m scripts.diagnose_api --n "${{ github.event.inputs.n || '30' }}" --max-minutes 45 --out diag.json
       - name: Đo BCTC quý gọi song song 5 luồng (cùng hạn mức 60 lần/phút)
+        if: ${{ github.event.inputs.parallel == 'true' }}
         env:
           VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
           VNSTOCK_MIN_INTERVAL: "1.05"
