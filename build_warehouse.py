@@ -96,10 +96,27 @@ def _skip_for_budget(con, mode, table, deadline, run_date) -> bool:
 
 
 def _phase_status(breaker, n_rows) -> str:
-    """'partial' nếu giai đoạn dừng sớm (hết ngân sách / nguồn treo)."""
-    if breaker.stopped:
+    """'partial' nếu giai đoạn dừng sớm vì sự cố (hết ngân sách / nguồn treo).
+    Đủ hạn mức mã của lần chạy ("du_han_muc") là dừng BÌNH THƯỜNG → 'ok'."""
+    if breaker.stopped and breaker.reason != "du_han_muc":
         return "partial"
     return "ok" if n_rows else "empty"
+
+
+def _env_int(name):
+    raw = os.getenv(name)
+    return int(raw) if raw else None
+
+
+def _order_by_fetch_age(con, dataset, symbols):
+    """Mã CHƯA TỪNG nạp trước (theo chữ cái), rồi theo lần nạp gần nhất tăng dần.
+    Dùng cho sự kiện DN khi nạp rải: mỗi lần chạy chỉ gọi một ít mã, nên phải
+    xoay vòng để mọi mã lần lượt được làm mới (05/10/2026)."""
+    st = warehouse.fetch_status(con, dataset)
+    st = st[st["symbol"].isin(set(symbols))]
+    seen = set(st["symbol"])
+    never = sorted(s for s in symbols if s not in seen)
+    return never + st.sort_values(["fetched_at", "symbol"], kind="mergesort")["symbol"].tolist()
 
 
 def _portfolio_symbols() -> list[str]:
@@ -162,7 +179,7 @@ def _weekly_event_symbols(con, symbols, min_market_cap_vnd, portfolio):
 
 
 def _ingest_statements_chunked(con, symbols, source, period, deadline=None,
-                               selective=False, stats=None):
+                               selective=False, stats=None, max_calls=None):
     """Fetch + ghi BCTC theo TỪNG LÔ STATEMENT_CHUNK_SIZE mã (fix trần 360
     phút CI — xem STATEMENT_CHUNK_SIZE).
 
@@ -197,6 +214,11 @@ def _ingest_statements_chunked(con, symbols, source, period, deadline=None,
     if deadline is not None:
         extra["deadline"] = deadline
     for i in range(0, len(symbols), STATEMENT_CHUNK_SIZE):
+        if max_calls is not None:
+            if total_calls >= max_calls:
+                stats.update(stopped_early=True, stop_reason="du_han_muc")
+                break
+            extra["max_calls"] = max_calls - total_calls
         if deadline is not None and time.monotonic() > deadline:
             stats.update(stopped_early=True, stop_reason="het_ngan_sach")
             break
@@ -386,15 +408,18 @@ def main():
     # có lý do bỏ sót sự kiện DN riêng ở lần chạy tháng.
     if args.mode in ("weekly", "monthly") and _want(only, "events") and not _skip_for_budget(
             con, args.mode, "raw_corporate_event", deadline, run_date):
-        _log(f"Bắt đầu fetch sự kiện DN ({len(symbols)} mã)...")
         ev_symbols = symbols
         if args.mode == "weekly":
             ev_symbols = _weekly_event_symbols(
                 con, symbols, cfg.get("weekly_events_min_market_cap_vnd", 500_000_000_000),
                 _portfolio_symbols())
-            _log(f"Sự kiện DN tuần: {len(ev_symbols)}/{len(symbols)} mã (vốn hoá đủ lớn + danh mục)")
-        br_ev = ingest.SourceBreaker("events", deadline=deadline)
+        ev_symbols = _order_by_fetch_age(con, "events", ev_symbols)
+        ev_cap = _env_int("EVENTS_MAX_SYMBOLS")
+        _log(f"Bắt đầu fetch sự kiện DN ({len(ev_symbols)}/{len(symbols)} mã, cũ nhất trước"
+             + (f", tối đa {ev_cap} mã lần này" if ev_cap else "") + ")...")
+        br_ev = ingest.SourceBreaker("events", deadline=deadline, max_symbols=ev_cap)
         events = ingest_market.fetch_corporate_events(ev_symbols, source, breaker=br_ev)
+        warehouse.record_fetches(con, "events", br_ev.fetched)
         n_ev = warehouse.insert_corporate_events(con, events)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_corporate_event",
                            n_ev, _phase_status(br_ev, n_ev), watermark=run_date,
@@ -459,8 +484,10 @@ def main():
             con, args.mode, "raw_financial_statement", deadline, run_date):
         st_q: dict = {}
         n_stmt_q, n_err_q, n_call_q = _ingest_statements_chunked(
-            con, symbols, source, "quarter", deadline=deadline, selective=True, stats=st_q)
-        status_q = "partial" if st_q["stopped_early"] else ("ok" if n_stmt_q else "empty")
+            con, symbols, source, "quarter", deadline=deadline, selective=True, stats=st_q,
+            max_calls=_env_int("STATEMENTS_MAX_CALLS"))
+        status_q = ("partial" if st_q["stopped_early"] and st_q["stop_reason"] != "du_han_muc"
+                    else ("ok" if n_stmt_q or st_q["n_symbols_done"] else "empty"))
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_financial_statement",
                            n_stmt_q, status_q, watermark=run_date,
                            notes=(f"period=quarter; {n_err_q}/{n_call_q} loi mang/API; "

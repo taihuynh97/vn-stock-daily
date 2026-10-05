@@ -381,7 +381,7 @@ def fetch_financials(symbols: list[str], source: str = "VCI",
             print(f"[financials] {symbol}: {e}")
             br.record(False)
             continue
-        br.record(True)
+        br.record(True, symbol=symbol)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
@@ -453,7 +453,7 @@ def fetch_company_info(symbols: list[str], source: str = "VCI",
             print(f"[company_info] {symbol}: {e}")
             br.record(False)
             continue
-        br.record(True)
+        br.record(True, symbol=symbol)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
@@ -634,7 +634,7 @@ def fetch_corporate_events(symbols: list[str], source: str = "VCI",
             print(f"[events] {symbol}: {e}")
             br.record(False)
             continue
-        br.record(True)
+        br.record(True, symbol=symbol)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
@@ -753,7 +753,7 @@ def fetch_shareholders(symbols: list[str], source: str = "VCI",
             print(f"[shareholders] {symbol}: {e}")
             br.record(False)
             continue
-        br.record(True)
+        br.record(True, symbol=symbol)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
@@ -826,7 +826,7 @@ def fetch_officers(symbols: list[str], source: str = "VCI",
             print(f"[officers] {symbol}: {e}")
             br.record(False)
             continue
-        br.record(True)
+        br.record(True, symbol=symbol)
         if df is None or len(df) == 0:
             continue
         df.columns = [str(c).lower() for c in df.columns]
@@ -928,7 +928,8 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
                                now: datetime | None = None,
                                pause_after: int | None = None,
                                pause_seconds: float | None = None,
-                               max_pauses: int = 3) -> pd.DataFrame:
+                               max_pauses: int = 3,
+                               max_calls: int | None = None) -> pd.DataFrame:
     """Chi tiết BCTC (income_statement + balance_sheet + cash_flow) qua
     Company.Finance(symbol, source, period).
 
@@ -1012,6 +1013,11 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
     for symbol in symbols:
         if deadline is not None and time.monotonic() > deadline:
             st["stopped"], st["reason"] = True, "het_ngan_sach"
+            break
+        # Hạn mức lần gọi mỗi lần chạy (nạp rải, 05/10/2026). Kiểm TRƯỚC mỗi mã
+        # nên có thể vượt tối đa 2 lần gọi (một mã tải đủ = 3 lần).
+        if max_calls is not None and total_calls >= max_calls:
+            st["stopped"], st["reason"] = True, "du_han_muc"
             break
         if known is None:
             for statement_type in _STATEMENT_TYPES:

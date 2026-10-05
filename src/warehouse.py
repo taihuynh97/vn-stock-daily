@@ -433,6 +433,20 @@ def init_warehouse(con):
         );
         """
     )
+    # --- Nhật ký nạp theo mã cho dữ liệu KHÔNG có mốc riêng (05/10/2026) ---
+    # raw_corporate_event chỉ có ingested_at cho dòng MỚI, không biết lần cuối
+    # gọi nguồn cho một mã là khi nào → không xếp được "mã cũ nhất trước". Ghi
+    # lần nạp THÀNH CÔNG gần nhất của từng mã.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_fetch_log (
+            dataset    VARCHAR,
+            symbol     VARCHAR,
+            fetched_at TIMESTAMP,
+            PRIMARY KEY (dataset, symbol)
+        );
+        """
+    )
 
 
 def upsert_symbols(con, df, run_date) -> int:
@@ -948,5 +962,28 @@ def statement_probe_status(con, period_type: str) -> pd.DataFrame:
     return con.execute(
         "SELECT symbol, result, probed_at FROM statement_probe WHERE period_type = ?",
         [period_type],
+    ).df()
+
+
+def record_fetches(con, dataset: str, symbols, fetched_at=None) -> int:
+    """Ghi lần nạp thành công gần nhất cho từng mã của `dataset`."""
+    symbols = list(symbols)
+    if not symbols:
+        return 0
+    df = pd.DataFrame({"dataset": dataset, "symbol": symbols,
+                       "fetched_at": pd.Timestamp(fetched_at or datetime.now())})
+    con.register("df_fetch", df)
+    con.execute("""
+        INSERT OR REPLACE INTO source_fetch_log (dataset, symbol, fetched_at)
+        SELECT dataset, symbol, fetched_at FROM df_fetch
+    """)
+    con.unregister("df_fetch")
+    return len(symbols)
+
+
+def fetch_status(con, dataset: str) -> pd.DataFrame:
+    """[symbol, fetched_at] — lần nạp thành công gần nhất của từng mã."""
+    return con.execute(
+        "SELECT symbol, fetched_at FROM source_fetch_log WHERE dataset = ?", [dataset]
     ).df()
 

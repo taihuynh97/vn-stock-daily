@@ -1,0 +1,47 @@
+name: warehouse-trickle
+
+# Nạp RẢI sự kiện DN + BCTC quý (05/10/2026).
+#
+# Nguồn iq.vietcap.com.vn chỉ chịu ~100–150 lệnh mỗi đợt cho hai loại dữ liệu
+# này rồi bắt đầu treo từng lệnh (đo 04–05/10, kể cả sau một đêm nghỉ). Job
+# tuần gọi dồn ~4.000+ lệnh nên luôn bị bóp. Thay vào đó: 3 lần/ngày, mỗi lần
+# ≤50 mã sự kiện + ≤70 lệnh BCTC, cách nhau 5 giây, mã cũ nhất trước — vòng
+# 599 mã sự kiện xong trong ~4 ngày, vòng dò BCTC trong ~1–2 tuần.
+# Không chạy dbt ở đây: job warehouse (hằng ngày 15:30) build lại cả DAG.
+on:
+  schedule:
+    - cron: "7 23 * * *"   # 06:07 giờ VN
+    - cron: "7 4 * * *"    # 11:07 giờ VN
+    - cron: "7 12 * * *"   # 19:07 giờ VN
+  workflow_dispatch: {}
+
+# Nhóm riêng: hai lần nạp rải không chồng nhau. KHÔNG dùng chung nhóm với job
+# ngày/tuần/tháng — GitHub chỉ giữ 1 lần chạy chờ mỗi nhóm, lần chờ mới huỷ lần
+# chờ cũ, nên job tháng đang chờ job tuần (ngày 1 rơi vào thứ 7) sẽ bị huỷ.
+concurrency:
+  group: warehouse-trickle
+  cancel-in-progress: false
+
+jobs:
+  trickle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Nạp rải sự kiện DN + BCTC quý
+        env:
+          WAREHOUSE_DB: "md:vn_market"
+          motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+          VNSTOCK_MIN_INTERVAL: "5"
+          EVENTS_MAX_SYMBOLS: "50"
+          STATEMENTS_MAX_CALLS: "70"
+          INGEST_BUDGET_MINUTES: "35"
+        run: python build_warehouse.py --mode weekly --only events,statements
