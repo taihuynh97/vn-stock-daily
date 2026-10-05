@@ -337,9 +337,18 @@ def main():
                                "skipped", notes=f"holiday (board trading_date {board_date})")
         else:
             n_px = warehouse.upsert_prices(con, prices)
+            failed = prices.attrs.get("failed_symbols", [])
+            notes = None
+            if failed:
+                # Mã lỗi cả sau khi thử lại: ghi rõ để nạp bù (scripts/backfill_missing_days.py
+                # --missing-only), không được báo ok như 05/10/2026.
+                notes = (f"{len(failed)} ma loi nguon sau khi thu lai: "
+                         + " ".join(failed[:60]) + (" …" if len(failed) > 60 else ""))
+            status = "partial" if failed else ("ok" if n_px else "empty")
             warehouse.log_load(con, f"warehouse_{args.mode}", "raw_price_daily", n_px,
-                               "ok" if n_px else "empty", watermark=run_date)
-            _log(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}")
+                               status, watermark=run_date, notes=notes)
+            _log(f"raw_price_daily: {n_px}/{len(symbols)} mã có giá cho {run_date}"
+                 + (f" — {len(failed)} mã lỗi nguồn, cần nạp bù" if failed else ""))
 
     # 2b) Chỉ số thị trường — mọi mode
     if _want(only, "index") and ingest_market.is_trading_day(date.today()):

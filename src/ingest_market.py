@@ -87,8 +87,28 @@ def fetch_industries_icb(source: str = "VCI") -> pd.DataFrame:
     return out.drop_duplicates("icb_code").reset_index(drop=True)
 
 
+def _price_board_batch(batch, source):
+    """Một lần gọi price_board. Trả DataFrame cột đã làm phẳng, None nếu lỗi."""
+    global _printed_cols
+    ingest._throttle()
+    try:
+        df = Trading(source=source).price_board(symbols_list=batch)
+    except Exception as e:
+        print(f"[price_board] {batch[0]}…{batch[-1]} ({len(batch)} mã): {e}")
+        return None
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    df.columns = ['.'.join(map(str, c)).lower() if isinstance(c, tuple) else str(c).lower()
+                  for c in df.columns]
+    if not _printed_cols:
+        print(f"[price_board] cột thật: {list(df.columns)}")
+        _printed_cols = True
+    return df
+
+
 def fetch_eod_prices(symbols, source: str = "VCI", batch_size: int = 50,
-                     run_date: str | None = None) -> pd.DataFrame:
+                     run_date: str | None = None, retry_batch_size: int = 10,
+                     retry_pause_seconds: float = 30) -> pd.DataFrame:
     """Giá EOD cho danh sách mã qua bulk price_board. Trả DataFrame raw_price_daily.
 
     `trade_date` lấy từ NGÀY GIAO DỊCH của chính bảng giá (xem
@@ -96,33 +116,44 @@ def fetch_eod_prices(symbols, source: str = "VCI", batch_size: int = 50,
     mang phiên gần nhất — tầng gọi so `out.attrs["market_trading_date"]` với
     ngày chạy để bỏ qua (đó là cách phiên ma 31/08–02/09/2026 đã sinh ra).
 
+    Lô lỗi (nguồn treo — 05/10/2026 hai lô 50 mã gồm MBB, LPB bị mất mà job
+    vẫn báo ok) được thử lại sau `retry_pause_seconds`, chia nhỏ thành lô
+    `retry_batch_size` mã. Mã vẫn lỗi nằm ở `out.attrs["failed_symbols"]` để
+    tầng gọi ghi `partial` và nạp bù bằng scripts/backfill_missing_days.py.
+
     Ném `dq.SchemaError` nếu kết quả vi phạm hợp đồng OHLC — xem
     `dq.assert_ohlc_consistent`."""
-    global _printed_cols
     run_date = run_date or date.today().isoformat()
-    frames = []
+    frames, failed = [], []
     for i in range(0, len(symbols), batch_size):
-        batch = symbols[i:i + batch_size]
-        ingest._throttle()
-        try:
-            df = Trading(source=source).price_board(symbols_list=batch)
-        except Exception as e:
-            print(f"[price_board] batch {i//batch_size}: {e}")
-            continue
-        if df is None or len(df) == 0:
-            continue
-        df.columns = ['.'.join(map(str, c)).lower() if isinstance(c, tuple) else str(c).lower()
-                      for c in df.columns]
-        if not _printed_cols:
-            print(f"[price_board] cột thật: {list(df.columns)}")
-            _printed_cols = True
-        frames.append(df)
+        batch = list(symbols[i:i + batch_size])
+        df = _price_board_batch(batch, source)
+        if df is None:
+            failed.extend(batch)
+        elif len(df):
+            frames.append(df)
+
+    if failed:
+        print(f"[price_board] thử lại {len(failed)} mã lỗi sau {retry_pause_seconds}s, "
+              f"lô {retry_batch_size} mã...")
+        time.sleep(retry_pause_seconds)
+        still_failed = []
+        for i in range(0, len(failed), retry_batch_size):
+            batch = failed[i:i + retry_batch_size]
+            df = _price_board_batch(batch, source)
+            if df is None:
+                still_failed.extend(batch)
+            elif len(df):
+                frames.append(df)
+        failed = still_failed
 
     if not frames:
-        return pd.DataFrame()
-    raw = pd.concat(frames, ignore_index=True)
-    out = _normalize_board(raw, run_date)
-    dq.assert_ohlc_consistent(out, f"Trading({source}).price_board")
+        out = pd.DataFrame()
+    else:
+        raw = pd.concat(frames, ignore_index=True)
+        out = _normalize_board(raw, run_date)
+        dq.assert_ohlc_consistent(out, f"Trading({source}).price_board")
+    out.attrs["failed_symbols"] = failed
     return out
 
 
