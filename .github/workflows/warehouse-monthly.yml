@@ -40,7 +40,9 @@ jobs:
           # Bước nạp tự dừng có kiểm soát sau 270 phút (spec 2026-10-04-bctc-chon-loc)
           # để còn thời gian cho dbt trong trần 350 phút của job.
           INGEST_BUDGET_MINUTES: "270"
-        run: python build_warehouse.py --mode monthly
+          # Sự kiện DN + BCTC quý chuyển sang warehouse-trickle (nạp rải 3 lần/ngày,
+          # 05/10/2026) — gọi dồn ở đây luôn bị nguồn bóp sau ~100–150 lệnh.
+        run: python build_warehouse.py --mode monthly --only prices,index,fx,news,ratios,company,statements_year
 
       - name: Đối chiếu chéo warehouse
         env:

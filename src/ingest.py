@@ -55,9 +55,14 @@ class SourceBreaker:
 
     def __init__(self, name: str, deadline: float | None = None,
                  pause_after: int | None = None, pause_seconds: float | None = None,
-                 max_pauses: int | None = None):
+                 max_pauses: int | None = None, max_symbols: int | None = None):
         self.name = name
         self.deadline = deadline
+        # Hạn mức mã mỗi lần chạy (nạp rải, 05/10/2026): nguồn chỉ chịu ~100–150
+        # lệnh mỗi đợt nên mỗi lần chạy chỉ gọi một ít. Đủ hạn mức = dừng BÌNH
+        # THƯỜNG ("du_han_muc"), không phải sự cố.
+        self.max_symbols = max_symbols
+        self.fetched: list[str] = []
         self.pause_after = pause_after if pause_after is not None else int(_os.getenv("SOURCE_PAUSE_AFTER", "3"))
         self.pause_seconds = pause_seconds if pause_seconds is not None else float(_os.getenv("SOURCE_PAUSE_SECONDS", "180"))
         self.max_pauses = max_pauses if max_pauses is not None else int(_os.getenv("SOURCE_MAX_PAUSES", "2"))
@@ -67,16 +72,22 @@ class SourceBreaker:
     def before(self) -> bool:
         if self.stopped:
             return False
+        if self.max_symbols is not None and self.n_done >= self.max_symbols:
+            self.stopped, self.reason = True, "du_han_muc"
+            print(f"[{self.name}] đủ hạn mức {self.max_symbols} mã cho lần chạy này.", flush=True)
+            return False
         if self.deadline is not None and time.monotonic() > self.deadline:
             self.stopped, self.reason = True, "het_ngan_sach"
             print(f"[{self.name}] hết ngân sách sau {self.n_done} mã — dừng.", flush=True)
             return False
         return True
 
-    def record(self, ok: bool) -> None:
+    def record(self, ok: bool, symbol: str | None = None) -> None:
         self.n_done += 1
         if ok:
             self.consecutive = 0
+            if symbol is not None:
+                self.fetched.append(symbol)
             return
         self.n_errors += 1
         self.consecutive += 1
