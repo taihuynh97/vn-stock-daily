@@ -9,10 +9,15 @@
 -- (trước thưởng) làm mã trông rẻ giả — PHR ngày 12/09/2026.
 --
 -- Cách tính không cần số cổ phiếu hiện tại:
---   price_ratio = adj_close(phiên mới nhất) / adj_close(phiên cuối ≤ ngày chốt)
---   pe_current  = pe_ngày_chốt × price_ratio   (tương tự pb, market_cap)
+--   price_ratio = adj_close(phiên mới nhất) / adj_close(phiên cuối ≤ ngày NẠP tỷ số)
+--   pe_current  = pe_nguồn × price_ratio   (tương tự pb, market_cap)
+-- Mốc là ngày NẠP, không phải ngày chốt quý: nguồn tính pe/pb/market_cap của
+-- quý mới nhất theo giá tại lúc nạp (market_cap / số CP = giá đóng cửa phiên
+-- cuối trước loaded_at ở 1.388/1.568 mã; chỉ 237 mã khớp giá ngày chốt — đo
+-- 2026-10-11). Neo ở ngày chốt từng quy đổi giá HAI lần: LPB báo P/E 7,99
+-- trong khi đúng là 10,63 (test assert_pe_current_matches_source_eps).
 -- adj_close của hai mốc cùng một hệ điều chỉnh nên thưởng/chia cổ phiếu sau
--- ngày chốt tự triệt tiêu. Quy ước: cổ tức tiền sau ngày chốt cũng nằm trong
+-- ngày nạp tự triệt tiêu. Quy ước: cổ tức tiền sau ngày nạp cũng nằm trong
 -- hệ số → P/E hiện tại hơi CAO hơn (thận trọng), lệch cỡ tỷ suất cổ tức.
 --
 -- GROUP BY + arg_max thay vì row_number()/QUALIFY: tránh lỗi ánh xạ cột của
@@ -34,14 +39,21 @@ latest_period as (
 
 ratio_latest as (
     select f.symbol, f.period_end_date, f.year, f.quarter,
-           f.pe, f.pb, f.market_cap, f.pe_meaningful, f.pb_meaningful
+           f.pe, f.pb, f.market_cap, f.pe_meaningful, f.pb_meaningful,
+           cast(src.loaded_at as date) as ratio_loaded_date
     from {{ ref('stg_financial_ratio') }} f
     join latest_period l using (symbol, period_end_date)
+    -- stg không mang loaded_at; lấy thẳng từ nguồn theo đúng khoá kỳ.
+    left join {{ source('warehouse', 'raw_financial_ratio') }} src
+      on src.symbol = f.symbol
+     and src.year = f.year
+     and src.quarter = f.quarter
+     and src.period_type = f.period_type
     where f.quarter between 1 and 4
 ),
 
--- Phiên cuối cùng ≤ ngày chốt, trong vòng 15 ngày (cùng ngưỡng tạm ngừng giao
--- dịch của int_price_features). Không có phiên nào → không quy đổi được → NULL.
+-- Phiên cuối cùng ≤ ngày nạp tỷ số, trong vòng 15 ngày (cùng ngưỡng tạm ngừng
+-- giao dịch của int_price_features). Không có phiên nào → không quy đổi được → NULL.
 px_at_period as (
     select r.symbol,
            max(p.trade_date)                as period_price_date,
@@ -49,8 +61,8 @@ px_at_period as (
     from ratio_latest r
     join {{ ref('int_price_features') }} p
       on p.symbol = r.symbol
-     and p.trade_date <= r.period_end_date
-     and p.trade_date >  r.period_end_date - interval 15 day
+     and p.trade_date <= r.ratio_loaded_date
+     and p.trade_date >  r.ratio_loaded_date - interval 15 day
     group by 1
 ),
 
