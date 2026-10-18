@@ -49,7 +49,8 @@ def _log(msg: str) -> None:
     print(f"[{datetime.now(timezone.utc):%H:%M:%S}Z] {msg}", flush=True)
 
 
-PHASES = ['prices', 'index', 'fx', 'news', 'ratios', 'events', 'company', 'statements', 'statements_year']
+PHASES = ['prices', 'index', 'fx', 'news', 'ratios', 'events', 'company', 'company_missing',
+          'statements', 'statements_year']
 
 
 class _Skip(Exception):
@@ -117,6 +118,26 @@ def _order_by_fetch_age(con, dataset, symbols):
     seen = set(st["symbol"])
     never = sorted(s for s in symbols if s not in seen)
     return never + st.sort_values(["fetched_at", "symbol"], kind="mergesort")["symbol"].tolist()
+
+
+COMPANY_MISSING_RETRY_DAYS = 7
+
+
+def _symbols_missing_profile(con, symbols, now=None,
+                             retry_days=COMPANY_MISSING_RETRY_DAYS):
+    """Mã chưa có dòng nào trong raw_company_info, chưa từng dò trước, rồi dò cũ nhất.
+
+    Hồ sơ DN chỉ nạp đủ ở job monthly, nên mã mới lên sàn không có ngành tới
+    đầu tháng sau — lâu hơn nữa nếu monthly hỏng (huỷ vì quá giờ 01/09 + 01/10;
+    DTR/KAI/GTX lên sàn 09/2026 làm test not_null của mart_sector_snapshot fail
+    17/10/2026). Mã đã dò trong `retry_days` ngày bị bỏ qua: DPD/PYU/TAC nguồn
+    trả rỗng thật, gọi lại mỗi lần trickle là phí lệnh của nguồn đang bị bóp."""
+    have = {r[0] for r in con.execute("SELECT symbol FROM raw_company_info").fetchall()}
+    missing = [s for s in symbols if s not in have]
+    now = now or datetime.now()
+    st = warehouse.fetch_status(con, "company_missing")
+    recent = set(st.loc[st["fetched_at"] > now - timedelta(days=retry_days), "symbol"])
+    return [s for s in _order_by_fetch_age(con, "company_missing", missing) if s not in recent]
 
 
 def _portfolio_symbols() -> list[str]:
@@ -410,6 +431,26 @@ def main():
                            notes=br_fin.notes())
         _log(f"raw_financial_ratio: {n_fin} dòng")
 
+    # 3a) Hồ sơ DN cho mã CHƯA CÓ hồ sơ — chỉ weekly (trickle chạy --mode weekly;
+    # monthly đã có khối 4 nạp đủ). Đặt trước sự kiện/BCTC: vài lệnh, gọi khi
+    # nguồn chưa bị bóp. Xem _symbols_missing_profile.
+    if args.mode == "weekly" and _want(only, "company_missing") and not _skip_for_budget(
+            con, args.mode, "raw_company_info", deadline, run_date):
+        miss = _symbols_missing_profile(con, symbols)
+        cap = _env_int("COMPANY_MISSING_MAX_SYMBOLS") or 10
+        _log(f"Hồ sơ DN mã chưa có hồ sơ: {len(miss)} mã cần dò, tối đa {cap} mã lần này")
+        if miss:
+            br_miss = ingest.SourceBreaker("company_missing", deadline=deadline, max_symbols=cap)
+            info = ingest_market.fetch_company_info(miss, source, breaker=br_miss)
+            warehouse.record_fetches(con, "company_missing", br_miss.fetched)
+            n_info = warehouse.upsert_company_info(con, info)
+            warehouse.log_load(con, f"warehouse_{args.mode}", "raw_company_info", n_info,
+                               _phase_status(br_miss, n_info), watermark=run_date,
+                               notes=f"chi ma chua co ho so; {br_miss.notes()}")
+            _log(f"raw_company_info (mã chưa có hồ sơ): {n_info}/{len(br_miss.fetched)} mã có hồ sơ")
+            if n_info:
+                warehouse.update_symbol_exchanges(con)
+
     # 3b) Sự kiện doanh nghiệp (B1) — chạy CẢ weekly lẫn monthly.
     # Weekly vì GDKHQ có ngày cụ thể, chạy tháng dễ lỡ sự kiện vừa công bố
     # vừa chốt quyền trong cùng tháng. Monthly cũng chạy vì nó là superset
@@ -444,9 +485,14 @@ def main():
                            "ok" if n_ind else "empty", watermark=run_date)
         _log(f"dim_industry: {n_ind} ngành ICB")
 
-        _log(f"Bắt đầu fetch company info ({len(symbols)} mã)...")
+        # Mã chưa nạp / nạp cũ nhất đi trước (18/10/2026): monthly bị huỷ giữa
+        # chừng 01/09 + 01/10, mỗi lần lại bắt đầu từ chữ A — mã cuối bảng
+        # chữ cái không bao giờ được làm mới. Xoay vòng như sự kiện DN.
+        _log(f"Bắt đầu fetch company info ({len(symbols)} mã, cũ nhất trước)...")
         br_info = ingest.SourceBreaker("company_info", deadline=deadline)
-        info = ingest_market.fetch_company_info(symbols, source, breaker=br_info)
+        info = ingest_market.fetch_company_info(
+            _order_by_fetch_age(con, "company_info", symbols), source, breaker=br_info)
+        warehouse.record_fetches(con, "company_info", br_info.fetched)
         n_info = warehouse.upsert_company_info(con, info)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_company_info", n_info,
                            _phase_status(br_info, n_info), watermark=run_date,
@@ -460,7 +506,9 @@ def main():
 
         _log(f"Bắt đầu fetch cơ cấu sở hữu ({len(symbols)} mã)...")
         br_sh = ingest.SourceBreaker("shareholders", deadline=deadline)
-        sh = ingest_market.fetch_shareholders(symbols, source, run_date, breaker=br_sh)
+        sh = ingest_market.fetch_shareholders(
+            _order_by_fetch_age(con, "shareholders", symbols), source, run_date, breaker=br_sh)
+        warehouse.record_fetches(con, "shareholders", br_sh.fetched)
         n_sh = warehouse.upsert_shareholders(con, sh)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_shareholder",
                            n_sh, _phase_status(br_sh, n_sh), watermark=run_date,
@@ -468,7 +516,9 @@ def main():
         _log(f"raw_shareholder: {n_sh} dòng (snapshot {run_date})")
 
         br_of = ingest.SourceBreaker("officers", deadline=deadline)
-        of = ingest_market.fetch_officers(symbols, source, run_date, breaker=br_of)
+        of = ingest_market.fetch_officers(
+            _order_by_fetch_age(con, "officers", symbols), source, run_date, breaker=br_of)
+        warehouse.record_fetches(con, "officers", br_of.fetched)
         n_of = warehouse.upsert_officers(con, of)
         warehouse.log_load(con, f"warehouse_{args.mode}", "raw_officer",
                            n_of, _phase_status(br_of, n_of), watermark=run_date,

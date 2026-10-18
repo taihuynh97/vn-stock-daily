@@ -7,6 +7,8 @@ name: warehouse-trickle
 # tuần gọi dồn ~4.000+ lệnh nên luôn bị bóp. Thay vào đó: 3 lần/ngày, mỗi lần
 # ≤50 mã sự kiện + ≤70 lệnh BCTC, cách nhau 5 giây, mã cũ nhất trước — vòng
 # 599 mã sự kiện xong trong ~4 ngày, vòng dò BCTC trong ~1–2 tuần.
+# Thêm (18/10/2026): hồ sơ DN cho mã CHƯA CÓ hồ sơ (≤10 mã/lần, dò lại sau 7
+# ngày) — mã mới lên sàn có ngành sau vài giờ thay vì chờ job monthly.
 # Không chạy dbt ở đây: job warehouse (hằng ngày 15:30) build lại cả DAG.
 on:
   schedule:
@@ -35,7 +37,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Nạp rải sự kiện DN + BCTC quý
+      - name: Nạp rải sự kiện DN + BCTC quý + hồ sơ mã mới
         env:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
@@ -43,5 +45,6 @@ jobs:
           VNSTOCK_MIN_INTERVAL: "5"
           EVENTS_MAX_SYMBOLS: "50"
           STATEMENTS_MAX_CALLS: "70"
+          COMPANY_MISSING_MAX_SYMBOLS: "10"
           INGEST_BUDGET_MINUTES: "35"
-        run: python build_warehouse.py --mode weekly --only events,statements
+        run: python build_warehouse.py --mode weekly --only company_missing,events,statements
