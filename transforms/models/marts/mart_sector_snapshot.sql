@@ -13,6 +13,12 @@ with ratios as (
     from {{ ref('stg_financial_ratio') }} f
     join {{ ref('dim_stock') }} d using (symbol)
     where f.quarter between 1 and 4
+      -- Mã chưa có hồ sơ DN (thường là mã mới niêm yết, hồ sơ chỉ nạp ở job
+      -- monthly) không có ngành → không thuộc nhóm ngành nào để so. Giữ lại thì
+      -- sinh một "ngành" NULL gộp mã lạ với nhau: DTR/KAI/GTX (lên sàn 09/2026)
+      -- làm test not_null fail ở run weekly 17/10/2026. Cùng quy tắc
+      -- int_metric_percentile loại com_class 'UNKNOWN'.
+      and d.icb_code_lv2 is not null
 ),
 
 lp as (select max(period_end_date) as max_period from ratios),
