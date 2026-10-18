@@ -31,7 +31,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Warehouse monthly (giá + ratios + sự kiện DN + hồ sơ DN + sở hữu + BCTC chi tiết)
+      - name: Warehouse monthly (giá + hồ sơ DN + sở hữu + BCTC năm)
         env:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
@@ -42,7 +42,9 @@ jobs:
           INGEST_BUDGET_MINUTES: "270"
           # Sự kiện DN + BCTC quý chuyển sang warehouse-trickle (nạp rải 3 lần/ngày,
           # 05/10/2026) — gọi dồn ở đây luôn bị nguồn bóp sau ~100–150 lệnh.
-        run: python build_warehouse.py --mode monthly --only prices,index,fx,news,ratios,company,statements_year
+          # Bỏ ratios (18/10/2026): job weekly thứ 7 đã nạp — ~1.600 lệnh, ~30
+          # phút gọi trùng, ngay TRƯỚC khối hồ sơ DN nên đẩy hồ sơ về cuối hạn mức.
+        run: python build_warehouse.py --mode monthly --only prices,index,fx,news,company,statements_year
 
       - name: Đối chiếu chéo warehouse
         env:
