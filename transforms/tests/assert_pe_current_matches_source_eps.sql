@@ -10,6 +10,13 @@
 -- P/E đúng = pe × last_close / giá ngầm định. Chỉ xét mã có thanh khoản
 -- (≥ 1 tỷ/phiên) và nguồn thật sự dùng giá phiên gần ngày nạp (lệch < 2%) —
 -- mã gần như không giao dịch có giá ngầm định lệch giá đóng cửa vì lý do khác.
+--
+-- Bỏ mã có GDKHQ SAU ngày nạp (2026-10-18): khi đó model quy đổi theo
+-- adj_close (đúng ý đồ — thưởng/chia/quyền mua làm loãng EPS nguồn), còn
+-- pe_expected ở đây dùng giá THÔ nên lệch đúng bằng hệ số điều chỉnh. MZG GDKHQ
+-- quyền mua 14/10/2026 (tham chiếu 11.550 vs đóng cửa 11.900, lệch 2,94%) làm
+-- test fail 3 ngày dù pe_current đúng. Lần nạp tỷ số kế tiếp sau GDKHQ đưa mã
+-- trở lại tập kiểm.
 with lp as (
     select symbol, max(year * 10 + quarter) as yq
     from {{ source('warehouse', 'raw_financial_ratio') }}
@@ -34,6 +41,13 @@ px_load as (
     group by 1
 ),
 
+adjusted_after_load as (
+    select distinct s.symbol
+    from src s
+    join {{ ref('int_price_adjustment') }} e
+      on e.symbol = s.symbol and e.ex_date > s.load_date
+),
+
 checked as (
     select sc.symbol, sc.pe_current, sc.last_close, s.pe, s.implied_price,
            s.pe * sc.last_close / s.implied_price as pe_expected
@@ -43,6 +57,7 @@ checked as (
     where sc.pe_current is not null
       and sc.avg_turnover_20d >= 1e9
       and abs(s.implied_price / pl.close_at_load - 1) < 0.02
+      and sc.symbol not in (select symbol from adjusted_after_load)
 )
 
 select *
