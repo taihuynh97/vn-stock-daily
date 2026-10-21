@@ -13,11 +13,23 @@ def send(text: str):
 
     chunks = [text[i:i + LIMIT] for i in range(0, len(text), LIMIT)] or ["(rỗng)"]
     for chunk in chunks:
-        r = requests.post(url, data={
-            "chat_id": chat_id,
-            "text": chunk,
-            "disable_web_page_preview": True,
-        }, timeout=30)
+        # Không để URL (chứa token) lọt vào log: lỗi của requests in nguyên URL,
+        # bản mã hoá ":" → "%3A" GitHub không che được (repo public 21/10/2026).
+        try:
+            r = requests.post(url, data={
+                "chat_id": chat_id,
+                "text": chunk,
+                "disable_web_page_preview": True,
+            }, timeout=30)
+        except requests.RequestException as e:
+            raise RuntimeError(f"[telegram] lỗi mạng: {type(e).__name__}") from None
         if r.status_code != 200:
-            print(f"[telegram] lỗi {r.status_code}: {r.text}")
-            r.raise_for_status()
+            msg = f"[telegram] lỗi {r.status_code}: {_scrub(r.text, token)}"
+            print(msg)
+            raise RuntimeError(msg)
+
+
+def _scrub(s: str, token: str) -> str:
+    for t in (token, requests.utils.quote(token, safe="")):
+        s = s.replace(t, "***")
+    return s

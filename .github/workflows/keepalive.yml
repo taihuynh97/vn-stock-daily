@@ -1,0 +1,31 @@
+name: keepalive
+
+# Repo public (21/10/2026): GitHub TỰ TẮT workflow theo lịch khi repo không có
+# hoạt động (commit) trong 60 ngày. Job nạp dữ liệu ghi vào MotherDuck, không
+# commit gì, nên nếu ngừng code 2 tháng thì warehouse-daily âm thầm dừng →
+# thủng dữ liệu giá. Gọi API "enable" cho từng workflow đặt lại bộ đếm đó
+# (cách của gautamkrishnar/keepalive-workflow, chế độ API) — không cần commit.
+# Gồm cả chính file này, để keepalive không tự bị tắt.
+on:
+  schedule:
+    - cron: "17 2 1,15 * *"   # 09:17 giờ VN ngày 1 và 15 hằng tháng
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Bật lại các workflow theo lịch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for wf in warehouse.yml warehouse-trickle.yml warehouse-weekly.yml \
+                    warehouse-monthly.yml event-alerts.yml keepalive.yml; do
+            gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$wf/enable"
+            echo "enabled $wf"
+          done
