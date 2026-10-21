@@ -12,10 +12,9 @@
 Nền tảng dữ liệu chứng khoán Việt Nam, gồm **2 pipeline độc lập** dùng chung
 nguồn dữ liệu vnstock:
 
-1. **News pipeline** (`main.py`) — đã chạy ổn định, KHÔNG sửa trừ khi Phase 2B.
-   Mỗi ngày sau giờ đóng cửa: lấy giá + tin + chỉ số tài chính cho danh mục
-   (`config/portfolio.yml`) và quét mã tiềm năng theo tiêu chí value+momentum
-   (`config/screener.yml`), nhờ Claude diễn giải thành bản tin tiếng Việt, gửi Telegram.
+1. **News pipeline** (`main.py`) — **ĐÃ GỠ 2026-10-21** (không dùng Claude API nữa).
+   Từng lấy giá + tin cho danh mục, lọc value+momentum, nhờ Claude viết bản tin,
+   gửi Telegram. Code còn trong lịch sử git (trước commit gỡ `chore/bo-luong-ban-tin-ai`).
 
 2. **Warehouse pipeline** (`build_warehouse.py`) — đang phát triển (Phase 1–1.5 done,
    Phase 2A đã có code nhưng chưa có dữ liệu thật). Thu thập dữ liệu **toàn thị trường**
@@ -29,17 +28,12 @@ nguồn dữ liệu vnstock:
 ## 2. Cấu trúc code
 
 ```
-main.py                 # entry point pipeline bản tin (KHÔNG sửa — xem mục 5)
 build_warehouse.py      # entry point pipeline warehouse (--mode daily|weekly|monthly)
 backfill.py             # entry point backfill lịch sử giá 1 lần (resumable)
 
 src/
-  ingest.py             # vnstock wrapper cho news pipeline (giá, tin, chỉ số TC, danh sách mã)
-  signals.py            # RSI, MA20/50, P/L vs giá vốn, khối lượng đột biến (logic thuần)
-  screener.py           # lọc value + momentum, chấm điểm & xếp hạng
-  digest.py             # gọi Claude API diễn giải dữ liệu -> bản tin (KHÔNG bịa số)
-  notify.py             # gửi Telegram
-  storage.py            # SQLite: log bản tin + chống lặp tin (news pipeline)
+  ingest.py             # vnstock wrapper dùng chung (throttle, SourceBreaker, giá, tin)
+  notify.py             # gửi Telegram (alert_events.py)
 
   ingest_market.py      # vnstock wrapper cho warehouse: universe, giá EOD bulk,
                          # fetch_history_one (backfill), financials, company info,
@@ -49,7 +43,6 @@ src/
 
 config/
   portfolio.yml         # danh mục đang giữ (mã, giá vốn, số lượng)
-  screener.yml          # tiêu chí lọc value/momentum cho news pipeline
   warehouse.yml         # sàn cần thu (HOSE, HNX), nguồn (VCI), batch size
 
 scripts/                # migration một lần (guard qua etl_load_log, an toàn chạy lại)
@@ -58,7 +51,6 @@ scripts/                # migration một lần (guard qua etl_load_log, an toà
 
 tests/                  # pytest, 43 test, TDD-first
 .github/workflows/
-  daily.yml                 # news pipeline, cron T2-T6 09:00 UTC, đọc warehouse MotherDuck
   warehouse.yml              # warehouse daily, cron T2-T6 08:30 UTC, ghi MotherDuck
   warehouse-weekly.yml        # --mode weekly, cron T7
   warehouse-monthly.yml       # --mode monthly, cron ngày 1 hằng tháng
@@ -70,7 +62,7 @@ tests/                  # pytest, 43 test, TDD-first
 
 ```
 INGESTION (theo cadence)              WAREHOUSE                 CONSUMERS
-  job_daily    ──┐                    raw_*  (immutable)        ├─ digest/Telegram
+  job_daily    ──┐                    raw_*  (immutable)        ├─ alert_events/Telegram
   job_weekly   ──┼──►  upsert/append ─► stg_*  (dbt — CHƯA CÓ) ──► ├─ Streamlit (CHƯA CÓ)
   job_monthly  ──┘                     mart_* (dbt — CHƯA CÓ) ─► ├─ DBeaver ad-hoc
   job_backfill (1 lần, đã chạy)        control: dim_symbols,    └─ báo cáo / backtest
@@ -117,7 +109,7 @@ INGESTION (theo cadence)              WAREHOUSE                 CONSUMERS
 | Phase 1 — Warehouse nền (dim_symbols, raw_price_daily, etl_load_log) | ✅ Done, chạy production trên MotherDuck |
 | Phase 1.5 — Backfill lịch sử giá (3 năm+, resumable) | ✅ Done — 1594/1594 mã `done`, dữ liệu từ 2016 |
 | Phase 2A — ingestion weekly (financials) + monthly (company info) | ⚠️ Code đã có (`fetch_financials`, `fetch_company_info`, bảng đã tạo), **nhưng chưa chạy thật** — `raw_financial_ratio`/`raw_company_info` đang rỗng |
-| Phase 2B — refactor news pipeline đọc từ warehouse | ❌ Chưa bắt đầu — `ingest.py`/`screener.py` vẫn gọi API trực tiếp |
+| Phase 2B — refactor news pipeline đọc từ warehouse | ⛔ Bỏ — news pipeline đã gỡ 2026-10-21 |
 | Phase 3 — dbt staging/mart + Streamlit dashboard | ❌ Chưa bắt đầu (không có thư mục `transforms/`, không có `app.py`) |
 | Phase 4 — Prefect orchestration | ❌ Chưa bắt đầu |
 
@@ -125,9 +117,8 @@ INGESTION (theo cadence)              WAREHOUSE                 CONSUMERS
 
 ## 5. Ràng buộc quan trọng khi làm việc trên repo
 
-- **KHÔNG sửa** `main.py`, `src/ingest.py`, `src/signals.py`, `src/screener.py`,
-  `src/digest.py`, `src/notify.py`, `src/storage.py` — trừ khi đang làm Phase 2B
-  (refactor nguồn dữ liệu, giữ nguyên logic).
+- Không còn luồng gọi AI/LLM trả phí trong repo (gỡ 2026-10-21) — đừng thêm lại
+  khi chưa hỏi người dùng.
 - Mọi ingestion mới: in cột thật lần đầu (`_printed_*_cols` pattern), map mềm qua
   `_find()`, bọc try/except, 1 mã lỗi không làm vỡ job.
 - Mọi ghi DB: upsert idempotent (`INSERT OR REPLACE`) + ghi `etl_load_log`.
@@ -154,8 +145,6 @@ INGESTION (theo cadence)              WAREHOUSE                 CONSUMERS
 - Chạy thật `build_warehouse.py --mode weekly` và `--mode monthly` để có dữ liệu
   cho `raw_financial_ratio` / `raw_company_info` (Phase 2A đang dở).
 - Cân nhắc thêm lịch nghỉ lễ VN vào `is_trading_day()` (hiện chỉ check thứ trong tuần).
-- Phase 2B: refactor `ingest.py`/`screener.py` đọc từ warehouse thay vì gọi API
-  trực tiếp mỗi lần chạy `main.py`.
 - Một số thay đổi git chưa commit cần xử lý: `.env.example` bị xoá,
   `.github/workflows/daily.yml` có sửa đổi (pin version actions) — kiểm tra có
   cố ý không trước khi commit/revert.

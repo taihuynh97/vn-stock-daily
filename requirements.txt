@@ -3,7 +3,6 @@
 # Finance/Quote khớp 4.0.4. Mọi gói khác vẫn lấy từ PyPI.
 --extra-index-url https://vnstocks.com/api/simple
 vnstock==4.0.9
-anthropic>=0.40
 requests>=2.31
 pandas>=2.0
 PyYAML>=6.0
