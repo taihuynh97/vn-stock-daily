@@ -65,6 +65,7 @@ cd transforms && dbt build --profiles-dir .
 | `warehouse-weekly.yml` | 15:30 T7 | tỷ số tài chính, dbt build |
 | `warehouse-monthly.yml` | 16:00 ngày 1 | hồ sơ DN, sở hữu, BCTC năm |
 | `event-alerts.yml` | 16:00 T2–T6 | cảnh báo sự kiện DN cho danh mục |
+| `keepalive.yml` | 09:17 ngày 1 và 15 | bật lại các workflow theo lịch — repo public bị GitHub tự tắt lịch sau 60 ngày không commit |
 
 Cần khai báo secrets trong repo (Settings → Secrets and variables → Actions):
 
