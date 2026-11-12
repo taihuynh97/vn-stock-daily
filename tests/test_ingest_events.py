@@ -88,7 +88,7 @@ def test_gia_tri_so_giu_dung_kieu():
     assert out.loc[0, "value_per_share"] == pytest.approx(500.0)
 
 
-# --- Test wrapper fetch_corporate_events (mock Company(...).events()) ---
+# --- Test wrapper fetch_corporate_events (mock vci_company.events()) ---
 # Finding review round 1: _normalize_events (hàm chuẩn hoá thuần) đã có 6 test
 # ở trên, nhưng fetch_corporate_events — vòng lặp bắt dq.SchemaError theo
 # từng mã, raise lại nếu vượt ngưỡng dq.status_for, và drop_duplicates("id")
@@ -109,15 +109,12 @@ def test_fetch_corporate_events_mot_ma_loi_giua_nhieu_ma_tot_bi_bo_qua():
     ~1.600 mã không được phép xoá sổ cả job đang chạy (~28 phút fetch)."""
     good_symbols = [f"S{i:03d}" for i in range(1, 21)]
 
-    def side_effect_factory(symbol, source):
-        mock = MagicMock()
+    def fake_events(symbol):
         if symbol == "BAD":
-            mock.events.return_value = pd.DataFrame([{"category": "DIVIDEND"}])
-        else:
-            mock.events.return_value = _raw_df(id=f"{symbol}-1")
-        return mock
+            return pd.DataFrame([{"category": "DIVIDEND"}])
+        return _raw_df(id=f"{symbol}-1")
 
-    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_company.events", side_effect=fake_events), \
          patch("src.ingest_market.ingest._throttle"):
         result = fetch_corporate_events(["BAD"] + good_symbols)
     assert len(result) == 20
@@ -128,15 +125,12 @@ def test_fetch_corporate_events_mot_ma_loi_giua_nhieu_ma_tot_bi_bo_qua():
 def test_fetch_corporate_events_da_so_ma_loi_raise():
     """Đa số mã (3/4 = 75%) sai schema -> nguồn có thể đã đổi -> raise to,
     KHÔNG âm thầm trả về 1 mã tốt còn lại."""
-    def side_effect_factory(symbol, source):
-        mock = MagicMock()
+    def fake_events(symbol):
         if symbol == "GOOD":
-            mock.events.return_value = _raw_df(id="good-1")
-        else:
-            mock.events.return_value = pd.DataFrame([{"category": "DIVIDEND"}])
-        return mock
+            return _raw_df(id="good-1")
+        return pd.DataFrame([{"category": "DIVIDEND"}])
 
-    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_company.events", side_effect=fake_events), \
          patch("src.ingest_market.ingest._throttle"):
         with pytest.raises(dq.SchemaError) as exc:
             fetch_corporate_events(["BAD1", "BAD2", "BAD3", "GOOD"])
@@ -156,9 +150,8 @@ def test_fetch_corporate_events_khu_trung_id_noi_bo_me():
         ignore_index=True,
     )
 
-    with patch("src.ingest_market.Company") as MockCo, \
+    with patch("src.ingest_market.vci_company.events", return_value=dup), \
          patch("src.ingest_market.ingest._throttle"):
-        MockCo.return_value.events.return_value = dup
         result = fetch_corporate_events(["AAA"])
     assert len(result) == 1
     assert result.iloc[0]["id"] == "dup-1"
