@@ -4,6 +4,9 @@ requests>=2.31
 # StringDtype, NaN đổi hành vi — tests/test_alert_events.py đỏ). Nâng pandas 3
 # là việc riêng.
 pandas>=2.0,<3
+# Cùng lý do: CI xanh gần nhất (07/11/2026) chạy numpy 2.2.6; numpy 2.5 + pandas
+# 2.3 phát DeprecationWarning ở Timestamp + Timedelta ("sẽ thành lỗi").
+numpy<2.3
 openpyxl>=3.1
 PyYAML>=6.0
 python-dotenv>=1.0
