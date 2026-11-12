@@ -1,6 +1,6 @@
 """Lô bảng giá lỗi nguồn được thử lại và không bị báo ok (05/10/2026: hai lô 50
 mã gồm MBB, LPB bị mất, etl_load_log vẫn ghi ok)."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import duckdb
 import pandas as pd
@@ -15,18 +15,13 @@ def _board(batch):
 def _run(fail_calls, symbols, **kw):
     calls = []
 
-    def factory(source):
-        m = MagicMock()
+    def pb(symbols_list):
+        calls.append(list(symbols_list))
+        if len(calls) in fail_calls:
+            raise ConnectionError("Read timed out")
+        return _board(symbols_list)
 
-        def pb(symbols_list):
-            calls.append(list(symbols_list))
-            if len(calls) in fail_calls:
-                raise ConnectionError("Read timed out")
-            return _board(symbols_list)
-        m.price_board.side_effect = pb
-        return m
-
-    with patch("src.ingest_market.Trading", side_effect=factory), \
+    with patch("src.ingest_market.vci.price_board", side_effect=pb), \
          patch("src.ingest_market.ingest._throttle"), \
          patch("src.ingest_market.time.sleep") as sl, \
          patch("src.ingest_market._normalize_board", side_effect=lambda raw, d: raw.copy()), \

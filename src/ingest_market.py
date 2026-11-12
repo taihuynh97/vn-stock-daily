@@ -1,8 +1,8 @@
 """Ingestion toàn thị trường (Phase 1): danh sách mã + giá EOD bulk.
 
-Dùng:
-  - Listing.all_symbols()          → refresh universe (dim_symbols)
-  - Trading.price_board(symbols)   → giá EOD nhiều mã / 1 call (bulk, rẻ)
+Dùng (gọi thẳng nguồn qua src/sources, không qua vnstock từ 11/2026):
+  - vci.all_symbols()              → refresh universe (dim_symbols)
+  - vci.price_board(symbols)       → giá EOD nhiều mã / 1 call (bulk, rẻ)
 
 Mọi call đi qua ingest._throttle() để dùng chung ngân sách rate limit với job digest.
 Vì cấu trúc cột của price_board tuỳ nguồn, phần chuẩn hoá cột được tách riêng và
@@ -14,12 +14,11 @@ import time
 from datetime import date, datetime, timedelta
 import pandas as pd
 
-from vnstock.api.listing import Listing
-from vnstock.api.trading import Trading
 from vnstock.api.quote import Quote
 from vnstock.api.company import Company
 from vnstock.api.financial import Finance
 from vnstock.explorer.misc.exchange_rate import vcb_exchange_rate
+from .sources import vci
 from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
@@ -36,7 +35,7 @@ def refresh_universe(exchanges, source: str = "VCI") -> pd.DataFrame:
     """Trả DataFrame [symbol, exchange, company_name] đã lọc theo sàn & chỉ cổ phiếu."""
     ingest._throttle()
     try:
-        df = Listing(source=source).all_symbols()
+        df = vci.all_symbols()
     except Exception as e:
         print(f"[universe] {e}")
         return pd.DataFrame()
@@ -67,7 +66,7 @@ def fetch_industries_icb(source: str = "VCI") -> pd.DataFrame:
     """Bảng phân ngành ICB 4 cấp (bảng tĩnh, ~177 dòng, tên ngành tiếng Việt)."""
     ingest._throttle()
     try:
-        df = Listing(source=source).industries_icb()
+        df = vci.industries_icb()
     except Exception as e:
         print(f"[industries_icb] {e}")
         return pd.DataFrame()
@@ -92,7 +91,7 @@ def _price_board_batch(batch, source):
     global _printed_cols
     ingest._throttle()
     try:
-        df = Trading(source=source).price_board(symbols_list=batch)
+        df = vci.price_board(batch)
     except Exception as e:
         print(f"[price_board] {batch[0]}…{batch[-1]} ({len(batch)} mã): {e}")
         return None

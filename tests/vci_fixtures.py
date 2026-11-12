@@ -95,6 +95,17 @@ def load_http(label: str) -> list[dict]:
         return json.load(g)
 
 
+def block_network(monkeypatch) -> None:
+    """Mọi requests thật (kể cả qua thư viện bên thứ ba) → lỗi. fake_http
+    thay `_send` nên không đi qua đây."""
+    import requests
+
+    def _blocked(self, method, url, *a, **k):
+        raise AssertionError(f"test không được gọi mạng: {method} {url}")
+
+    monkeypatch.setattr(requests.Session, "request", _blocked)
+
+
 def fake_http(monkeypatch, *labels: str) -> list[tuple]:
     """Vá src.sources.http._send. Trả danh sách khoá các yêu cầu đã gửi."""
     from src.sources import http
