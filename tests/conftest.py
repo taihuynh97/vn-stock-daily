@@ -47,3 +47,13 @@ def _khong_goi_mang(request, monkeypatch):
         return
     from tests.vci_fixtures import block_network
     block_network(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _gia_dinh_co_vnstock(monkeypatch):
+    """TẠM tới PR 3: build_warehouse bỏ qua giai đoạn còn cần vnstock khi máy
+    không cài (ingest_market.VNSTOCK_CO_SAN). Test cũ kiểm hành vi chọn giai
+    đoạn như trước, nên mặc định coi như có vnstock để kết quả không phụ thuộc
+    máy chạy; tests/test_giai_doan_chua_chuyen.py tự đặt giá trị."""
+    from src import ingest_market
+    monkeypatch.setattr(ingest_market, "VNSTOCK_CO_SAN", True)
