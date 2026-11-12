@@ -83,7 +83,7 @@ def test_fetch_news_tra_dung_cot(monkeypatch):
             self.symbol = symbol
         def news(self):
             return _fake_news_df(["n1", "n2"])
-    monkeypatch.setattr("src.ingest_market.Company", FakeCompany)
+    monkeypatch.setattr("src.ingest_market.vci_company.news", lambda s: FakeCompany(s, "VCI").news())
     out = fetch_news(["HPG"])
     assert list(out.columns) == NEWS_COLS
     assert (out["symbol"] == "HPG").all()
@@ -97,7 +97,7 @@ def test_fetch_news_mot_ma_loi_giua_nhieu_ma_tot_bi_bo_qua(monkeypatch):
             if self.symbol == "BAD":
                 raise Exception("API lỗi")
             return _fake_news_df([f"{self.symbol}-n1"])
-    monkeypatch.setattr("src.ingest_market.Company", FakeCompany)
+    monkeypatch.setattr("src.ingest_market.vci_company.news", lambda s: FakeCompany(s, "VCI").news())
     out = fetch_news(["HPG", "BAD", "VNR"])
     assert set(out["symbol"]) == {"HPG", "VNR"}
 
@@ -111,6 +111,6 @@ def test_fetch_news_id_none_bi_loai_qua_dq_schema_error(monkeypatch):
         def news(self):
             df = _fake_news_df(["n1"])
             return df.drop(columns=["id"])  # thiếu cột bắt buộc
-    monkeypatch.setattr("src.ingest_market.Company", FakeCompany)
+    monkeypatch.setattr("src.ingest_market.vci_company.news", lambda s: FakeCompany(s, "VCI").news())
     out = fetch_news(["HPG"])
     assert len(out) == 0

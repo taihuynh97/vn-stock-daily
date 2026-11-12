@@ -48,6 +48,30 @@ def test_events_vcb_khong_mat_ngay_cong_bo(monkeypatch):
     assert "2022-01-28" in out["public_date"].tolist()  # nguồn: 2022-01-28T17:47:09.067
 
 
+@pytest.mark.parametrize("symbol", SYMS)
+def test_news_khop_mau(monkeypatch, symbol):
+    fake_http(monkeypatch, f"company_news_{symbol}")
+    assert_same(ingest_market.fetch_news([symbol]), load_expected(f"news_{symbol}"))
+
+
+@pytest.mark.parametrize("symbol", SYMS)
+def test_company_info_khop_mau(monkeypatch, symbol):
+    """Khớp tuyệt đối, trừ lỗi cũ đã sửa: vnstock trả 4 cột trùng tên
+    issue_share nên pipeline cũ luôn ghi NULL. Giờ = issueShare của nguồn."""
+    import json
+
+    from tests.vci_fixtures import load_http
+    fake_http(monkeypatch, f"company_overview_{symbol}")
+    out = ingest_market.fetch_company_info([symbol])
+    exp = load_expected(f"company_{symbol}")
+    raw = json.loads(load_http(f"company_overview_{symbol}")[0]["body"])["data"]
+    assert exp["issue_share"].isna().all()                  # lỗi cũ
+    assert out["issue_share"].iloc[0] == float(raw["issueShare"])
+    fixed = exp.copy()
+    fixed["issue_share"] = out["issue_share"]
+    assert_same(out, fixed)
+
+
 def test_events_nguon_loi_ghi_breaker(monkeypatch):
     from src.sources import http
     from tests.vci_fixtures import FakeResponse

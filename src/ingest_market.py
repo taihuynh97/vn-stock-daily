@@ -30,8 +30,7 @@ except ImportError:  # vnstock đã gỡ khỏi requirements.txt (11/2026)
 
 # TẠM: giai đoạn của build_warehouse còn gọi vnstock — bị bỏ qua khi máy không
 # có vnstock (CI) để khỏi gọi lỗi rồi nghỉ theo cầu chì. Xoá dần khi chuyển.
-GIAI_DOAN_CAN_VNSTOCK = frozenset({"news", "ratios", "company", "company_missing",
-                                   "statements", "statements_year"})
+GIAI_DOAN_CAN_VNSTOCK = frozenset({"ratios", "company", "statements", "statements_year"})
 from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
@@ -486,7 +485,7 @@ def fetch_company_info(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).overview()
+            df = vci_company.overview(symbol)
         except Exception as e:
             print(f"[company_info] {symbol}: {e}")
             br.record(False)
@@ -1237,7 +1236,7 @@ def fetch_news(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
     for symbol in symbols:
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).news()
+            df = vci_company.news(symbol)
         except Exception as e:
             print(f"[news] {symbol}: {e}")
             continue
