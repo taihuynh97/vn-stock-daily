@@ -45,18 +45,21 @@ def session() -> requests.Session:
 
 
 def _send(method: str, url: str, *, params: dict | None = None,
-          json: Any = None) -> requests.Response:
-    """Điểm I/O mạng DUY NHẤT — test vá hàm này."""
-    return session().request(method, url, params=params, json=json, timeout=TIMEOUT)
+          json: Any = None, headers: dict | None = None) -> requests.Response:
+    """Điểm I/O mạng DUY NHẤT — test vá hàm này. `headers` đè header của
+    session cho riêng yêu cầu này; giá trị None = bỏ header đó."""
+    return session().request(method, url, params=params, json=json, headers=headers,
+                             timeout=TIMEOUT)
 
 
-def _request(method: str, url: str, *, params: dict | None = None, json: Any = None) -> Any:
+def _request(method: str, url: str, *, params: dict | None = None, json: Any = None,
+             headers: dict | None = None) -> Any:
     last = None
     for attempt in range(len(RETRY_WAITS) + 1):
         if attempt:
             time.sleep(RETRY_WAITS[attempt - 1])
         try:
-            resp = _send(method, url, params=params, json=json)
+            resp = _send(method, url, params=params, json=json, headers=headers)
         except (requests.ConnectionError, requests.Timeout) as e:
             last = f"{type(e).__name__}: {e}"
             continue
@@ -72,8 +75,8 @@ def _request(method: str, url: str, *, params: dict | None = None, json: Any = N
     raise SourceError(f"{method} {url}: hết lượt thử lại ({last})")
 
 
-def get_json(url: str, params: dict | None = None) -> Any:
-    return _request("GET", url, params=params)
+def get_json(url: str, params: dict | None = None, headers: dict | None = None) -> Any:
+    return _request("GET", url, params=params, headers=headers)
 
 
 def post_json(url: str, body: dict) -> Any:

@@ -19,12 +19,19 @@ from .sources import vcb, vci, vci_company
 try:  # TẠM (PR 1/3): các bước công ty/BCTC còn gọi vnstock, chuyển ở PR 2–3.
     from vnstock.api.company import Company
     from vnstock.api.financial import Finance
+    VNSTOCK_CO_SAN = True
 except ImportError:  # vnstock đã gỡ khỏi requirements.txt (11/2026)
     class _ChuaChuyenKhoiVnstock:
         def __init__(self, *args, **kwargs):
             raise RuntimeError("bước này chưa chuyển khỏi vnstock (sẽ chuyển ở PR tiếp theo)")
 
     Company = Finance = _ChuaChuyenKhoiVnstock
+    VNSTOCK_CO_SAN = False
+
+# TẠM: giai đoạn của build_warehouse còn gọi vnstock — bị bỏ qua khi máy không
+# có vnstock (CI) để khỏi gọi lỗi rồi nghỉ theo cầu chì. Xoá dần khi chuyển.
+GIAI_DOAN_CAN_VNSTOCK = frozenset({"news", "ratios", "company", "company_missing",
+                                   "statements", "statements_year"})
 from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái

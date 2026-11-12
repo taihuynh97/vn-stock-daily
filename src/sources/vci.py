@@ -56,6 +56,10 @@ def price_board(symbols: list[str]) -> pd.DataFrame:
     data = post_json(f"{TRADING}/price/symbols/getList", {"symbols": list(symbols)})
     if not isinstance(data, list):
         raise SourceError(f"getList: phản hồi không phải danh sách ({type(data).__name__})")
+    if symbols and not data:
+        # Rỗng cho một lô có mã = nguồn trục trặc, không phải "không có giá":
+        # ném lỗi để lô được thử lại và vào failed_symbols (sự cố 05/10/2026).
+        raise SourceError(f"getList: nguồn trả danh sách rỗng cho {len(symbols)} mã")
     rows = []
     for item in data:
         row = {}

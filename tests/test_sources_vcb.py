@@ -29,6 +29,28 @@ def test_fx_gach_ngang_la_null(monkeypatch):
     assert out.loc[out["currency_code"].isin(codes), "buy_cash"].isna().all()
 
 
+def test_vcb_khong_mang_header_cua_vietcap(monkeypatch):
+    """VCB không nhận Origin/Referer của trading.vietcap.com.vn (vnstock gọi
+    VCB bằng header mặc định của requests)."""
+    from src.sources import http, vcb
+    from tests.vci_fixtures import FakeResponse
+
+    seen = {}
+
+    def _send(method, url, *, params=None, json=None, headers=None):
+        seen["headers"] = headers
+        return FakeResponse(500, "")
+
+    monkeypatch.setattr(http, "_send", _send)
+    monkeypatch.setattr(http.time, "sleep", lambda s: None)
+    try:
+        vcb.exchange_rate("2026-11-11")
+    except http.SourceError:
+        pass
+    h = seen["headers"]
+    assert h["Origin"] is None and h["Referer"] is None  # None = bỏ header của session
+
+
 def test_fx_nguon_loi_tra_bang_rong_dung_cot(monkeypatch):
     from src import warehouse
     from src.sources import http

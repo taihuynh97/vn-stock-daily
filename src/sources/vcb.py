@@ -19,6 +19,8 @@ from .http import SourceError, get_json
 URL = "https://www.vietcombank.com.vn/api/exchangerates/exportexcel"
 COLUMNS = ["currency_code", "currency_name", "buy_cash", "buy_transfer", "sell"]
 _CODE = re.compile(r"^[A-Z]{3}$")
+# Bỏ các header riêng của web Vietcap mà session dùng chung đang mang.
+_HEADERS = {"Origin": None, "Referer": None, "Content-Type": None}
 
 
 def exchange_rate(rate_date: str) -> pd.DataFrame:
@@ -26,7 +28,7 @@ def exchange_rate(rate_date: str) -> pd.DataFrame:
 
     Giữ nguyên chuỗi của nguồn ('17,180.25', '-'); fetch_exchange_rate của
     ingest_market chuẩn hoá ('-' → NULL, không phải 0)."""
-    doc = get_json(URL, {"date": rate_date})
+    doc = get_json(URL, {"date": rate_date}, headers=_HEADERS)
     if not isinstance(doc, dict) or not doc.get("Data"):
         raise SourceError(f"VCB {rate_date}: phản hồi không có trường Data")
     try:

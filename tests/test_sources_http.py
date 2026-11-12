@@ -13,7 +13,7 @@ def calls(monkeypatch):
     """Vá _send bằng hàng đợi phản hồi; ghi lại các lời gọi và các lần ngủ."""
     state = {"queue": [], "sent": [], "slept": []}
 
-    def _send(method, url, *, params=None, json=None):
+    def _send(method, url, *, params=None, json=None, headers=None):
         state["sent"].append((method, url, params, json))
         item = state["queue"].pop(0)
         if isinstance(item, Exception):

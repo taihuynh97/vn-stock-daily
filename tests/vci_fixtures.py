@@ -117,7 +117,7 @@ def fake_http(monkeypatch, *labels: str) -> list[tuple]:
             table.setdefault(k, r)
     sent: list[tuple] = []
 
-    def _send(method, url, *, params=None, json=None):
+    def _send(method, url, *, params=None, json=None, headers=None):
         k = _key(method, url, params, json)
         sent.append(k)
         if k not in table:
