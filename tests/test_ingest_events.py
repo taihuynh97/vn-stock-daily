@@ -235,7 +235,7 @@ def test_fetch_shareholders_mot_ma_loi_giua_nhieu_ma_tot_bi_bo_qua():
             mock.shareholders.return_value = _sh_raw(symbol)
         return mock
 
-    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_company.shareholders", side_effect=lambda s: side_effect_factory(s, "VCI").shareholders()), \
          patch("src.ingest_market.ingest._throttle"):
         result = fetch_shareholders(["BAD"] + good_symbols, snapshot_date="2026-08-01")
     assert len(result) == 20
@@ -254,7 +254,7 @@ def test_fetch_shareholders_da_so_ma_loi_raise():
             mock.shareholders.return_value = pd.DataFrame([{"quantity": 1.0}])
         return mock
 
-    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_company.shareholders", side_effect=lambda s: side_effect_factory(s, "VCI").shareholders()), \
          patch("src.ingest_market.ingest._throttle"):
         with pytest.raises(dq.SchemaError) as exc:
             fetch_shareholders(["BAD1", "BAD2", "BAD3", "GOOD"], snapshot_date="2026-08-01")
@@ -283,7 +283,7 @@ def test_fetch_officers_mot_ma_loi_giua_nhieu_ma_tot_bi_bo_qua():
             mock.officers.return_value = _of_raw(symbol)
         return mock
 
-    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_company.officers", side_effect=lambda s: side_effect_factory(s, "VCI").officers()), \
          patch("src.ingest_market.ingest._throttle"):
         result = fetch_officers(["BAD"] + good_symbols, snapshot_date="2026-08-01")
     assert len(result) == 20
@@ -302,7 +302,7 @@ def test_fetch_officers_da_so_ma_loi_raise():
             mock.officers.return_value = pd.DataFrame([{"officer_own_percent": 0.05}])
         return mock
 
-    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_company.officers", side_effect=lambda s: side_effect_factory(s, "VCI").officers()), \
          patch("src.ingest_market.ingest._throttle"):
         with pytest.raises(dq.SchemaError) as exc:
             fetch_officers(["BAD1", "BAD2", "BAD3", "GOOD"], snapshot_date="2026-08-01")

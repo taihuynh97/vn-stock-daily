@@ -91,3 +91,48 @@ def overview(symbol: str) -> pd.DataFrame:
         row[_OVERVIEW_RENAME.get(col, col)] = v
     row.setdefault("symbol", symbol)
     return pd.DataFrame([row])
+
+
+def _owners(symbol: str) -> list[dict]:
+    """/company/{symbol}/shareholder: cổ đông và người nội bộ chung một danh sách
+    (người nội bộ có positionName)."""
+    data = iq_data(f"/v1/company/{symbol}/shareholder")
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise SourceError(f"shareholder {symbol}: phản hồi không phải danh sách")
+    return data
+
+
+def shareholders(symbol: str) -> pd.DataFrame:
+    """[symbol, share_holder, quantity, share_own_percent, update_date]."""
+    rows = [{"symbol": symbol, "share_holder": r.get("ownerName"), "quantity": r.get("quantity"),
+             "share_own_percent": r.get("percentage"), "update_date": r.get("updateDate")}
+            for r in _owners(symbol)]
+    return pd.DataFrame(rows, columns=["symbol", "share_holder", "quantity",
+                                       "share_own_percent", "update_date"])
+
+
+def officers(symbol: str) -> pd.DataFrame:
+    """Người nội bộ (dòng có chức vụ): [symbol, officer_name, officer_position,
+    officer_own_percent, officer_own_quantity, update_date]."""
+    rows = [{"symbol": symbol, "officer_name": r.get("ownerName"),
+             "officer_position": r.get("positionName"), "officer_own_percent": r.get("percentage"),
+             "officer_own_quantity": r.get("quantity"), "update_date": r.get("updateDate")}
+            for r in _owners(symbol) if r.get("positionName")]
+    return pd.DataFrame(rows, columns=["symbol", "officer_name", "officer_position",
+                                       "officer_own_percent", "officer_own_quantity",
+                                       "update_date"])
+
+
+def ratio_summary(symbol: str) -> pd.DataFrame:
+    """Chỉ số tài chính theo kỳ (TTM theo quý + năm): symbol, year, quarter,
+    ratio_type, pe, pb, roe, … (snake_case của trường nguồn)."""
+    data = iq_data(f"/v1/company/{symbol}/statistics-financial")
+    if data is None:
+        return pd.DataFrame()
+    if not isinstance(data, list):
+        raise SourceError(f"statistics-financial {symbol}: phản hồi không phải danh sách")
+    df = _frame(data)
+    df.insert(0, "symbol", symbol)
+    return df

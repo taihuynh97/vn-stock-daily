@@ -32,9 +32,9 @@ def _mock_ratio_summary():
 
 
 def test_fetch_financials_returns_expected_schema():
-    with patch("src.ingest_market.Company") as MockCo, \
+    with patch("src.ingest_market.vci_company.ratio_summary") as mock_ratio_summary, \
          patch("src.ingest_market.ingest._throttle"):
-        MockCo.return_value.ratio_summary.return_value = _mock_ratio_summary()
+        mock_ratio_summary.return_value = _mock_ratio_summary()
         result = fetch_financials(["AAA"])
     assert set(result.columns) >= {
         "symbol", "year", "quarter", "period_type",
@@ -48,26 +48,26 @@ def test_fetch_financials_returns_expected_schema():
 
 
 def test_fetch_financials_multiple_periods():
-    with patch("src.ingest_market.Company") as MockCo, \
+    with patch("src.ingest_market.vci_company.ratio_summary") as mock_ratio_summary, \
          patch("src.ingest_market.ingest._throttle"):
-        MockCo.return_value.ratio_summary.return_value = _mock_ratio_summary()
+        mock_ratio_summary.return_value = _mock_ratio_summary()
         result = fetch_financials(["AAA"])
     assert len(result) == 2
     assert set(result["year"].tolist()) == {2024, 2025}
 
 
 def test_fetch_financials_empty_on_exception():
-    with patch("src.ingest_market.Company") as MockCo, \
+    with patch("src.ingest_market.vci_company.ratio_summary") as mock_ratio_summary, \
          patch("src.ingest_market.ingest._throttle"):
-        MockCo.return_value.ratio_summary.side_effect = Exception("API error")
+        mock_ratio_summary.side_effect = Exception("API error")
         result = fetch_financials(["AAA"])
     assert result.empty
 
 
 def test_fetch_financials_empty_on_empty_response():
-    with patch("src.ingest_market.Company") as MockCo, \
+    with patch("src.ingest_market.vci_company.ratio_summary") as mock_ratio_summary, \
          patch("src.ingest_market.ingest._throttle"):
-        MockCo.return_value.ratio_summary.return_value = pd.DataFrame()
+        mock_ratio_summary.return_value = pd.DataFrame()
         result = fetch_financials(["AAA"])
     assert result.empty
 
@@ -81,7 +81,8 @@ def test_fetch_financials_skips_failed_symbol_continues():
             mock.ratio_summary.return_value = _mock_ratio_summary()
         return mock
 
-    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_company.ratio_summary",
+               side_effect=lambda s: side_effect_factory(s, "VCI").ratio_summary()), \
          patch("src.ingest_market.ingest._throttle"):
         result = fetch_financials(["BAD", "AAA"])
     assert len(result) > 0
@@ -364,9 +365,9 @@ def test_ratio_column_constants_have_expected_sizes():
 
 
 def test_fetch_financials_keeps_bank_metrics():
-    with patch("src.ingest_market.Company") as MockCo, \
+    with patch("src.ingest_market.vci_company.ratio_summary") as mock_ratio_summary, \
          patch("src.ingest_market.ingest._throttle"):
-        MockCo.return_value.ratio_summary.return_value = _mock_bank_ratio_summary()
+        mock_ratio_summary.return_value = _mock_bank_ratio_summary()
         result = fetch_financials(["VCB"])
     row = result.iloc[0]
     assert row["net_interest_margin"] == pytest.approx(0.025)
@@ -378,9 +379,9 @@ def test_fetch_financials_keeps_bank_metrics():
 
 
 def test_fetch_financials_returns_all_ratio_columns():
-    with patch("src.ingest_market.Company") as MockCo, \
+    with patch("src.ingest_market.vci_company.ratio_summary") as mock_ratio_summary, \
          patch("src.ingest_market.ingest._throttle"):
-        MockCo.return_value.ratio_summary.return_value = _mock_bank_ratio_summary()
+        mock_ratio_summary.return_value = _mock_bank_ratio_summary()
         result = fetch_financials(["VCB"])
     assert list(result.columns) == wh.RATIO_ALL_COLS
 
@@ -389,9 +390,9 @@ def test_fetch_financials_missing_year_column_raises():
     """1/1 mã sai schema = 100% > ngưỡng degraded (5%) -> raise. Thông báo giờ
     là thông báo TỔNG HỢP (tỉ lệ mã lỗi) — xem C2/finding review cuối."""
     bad = pd.DataFrame([{"symbol": "AAA", "quarter": 1, "pe": 10.0}])
-    with patch("src.ingest_market.Company") as MockCo, \
+    with patch("src.ingest_market.vci_company.ratio_summary") as mock_ratio_summary, \
          patch("src.ingest_market.ingest._throttle"):
-        MockCo.return_value.ratio_summary.return_value = bad
+        mock_ratio_summary.return_value = bad
         with pytest.raises(dq.SchemaError) as exc:
             fetch_financials(["AAA"])
     assert "1/1" in str(exc.value)
@@ -415,7 +416,7 @@ def test_fetch_financials_one_bad_symbol_among_many_is_skipped_not_raised():
             mock.ratio_summary.return_value = df
         return mock
 
-    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_company.ratio_summary", side_effect=lambda s: side_effect_factory(s, "VCI").ratio_summary()), \
          patch("src.ingest_market.ingest._throttle"):
         result = fetch_financials(["BAD"] + good_symbols)
     assert "BAD" not in set(result["symbol"])
@@ -437,7 +438,7 @@ def test_fetch_financials_majority_bad_symbols_raises():
             )
         return mock
 
-    with patch("src.ingest_market.Company", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_company.ratio_summary", side_effect=lambda s: side_effect_factory(s, "VCI").ratio_summary()), \
          patch("src.ingest_market.ingest._throttle"):
         with pytest.raises(dq.SchemaError) as exc:
             fetch_financials(["BAD1", "BAD2", "BAD3", "GOOD"])
@@ -448,9 +449,9 @@ def test_upsert_financial_ratios_roundtrip(tmp_path):
     import duckdb
     con = duckdb.connect(str(tmp_path / "fin.duckdb"))
     wh.init_warehouse(con)
-    with patch("src.ingest_market.Company") as MockCo, \
+    with patch("src.ingest_market.vci_company.ratio_summary") as mock_ratio_summary, \
          patch("src.ingest_market.ingest._throttle"):
-        MockCo.return_value.ratio_summary.return_value = _mock_bank_ratio_summary()
+        mock_ratio_summary.return_value = _mock_bank_ratio_summary()
         df = fetch_financials(["VCB"])
     n = wh.upsert_financial_ratios(con, df)
     stored = con.execute(

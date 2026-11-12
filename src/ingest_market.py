@@ -30,7 +30,7 @@ except ImportError:  # vnstock đã gỡ khỏi requirements.txt (11/2026)
 
 # TẠM: giai đoạn của build_warehouse còn gọi vnstock — bị bỏ qua khi máy không
 # có vnstock (CI) để khỏi gọi lỗi rồi nghỉ theo cầu chì. Xoá dần khi chuyển.
-GIAI_DOAN_CAN_VNSTOCK = frozenset({"ratios", "company", "statements", "statements_year"})
+GIAI_DOAN_CAN_VNSTOCK = frozenset({"statements", "statements_year"})
 from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
@@ -413,7 +413,7 @@ def fetch_financials(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).ratio_summary()
+            df = vci_company.ratio_summary(symbol)
         except Exception as e:
             print(f"[financials] {symbol}: {e}")
             br.record(False)
@@ -785,7 +785,7 @@ def fetch_shareholders(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).shareholders()
+            df = vci_company.shareholders(symbol)
         except Exception as e:
             print(f"[shareholders] {symbol}: {e}")
             br.record(False)
@@ -858,7 +858,7 @@ def fetch_officers(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).officers()
+            df = vci_company.officers(symbol)
         except Exception as e:
             print(f"[officers] {symbol}: {e}")
             br.record(False)

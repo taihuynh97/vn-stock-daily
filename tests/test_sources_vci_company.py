@@ -72,6 +72,26 @@ def test_company_info_khop_mau(monkeypatch, symbol):
     assert_same(out, fixed)
 
 
+@pytest.mark.parametrize("symbol", SYMS)
+def test_shareholders_khop_mau(monkeypatch, symbol):
+    fake_http(monkeypatch, f"company_shareholders_{symbol}")
+    assert_same(ingest_market.fetch_shareholders([symbol], snapshot_date="2026-11-12"),
+                load_expected(f"shareholders_{symbol}"))
+
+
+@pytest.mark.parametrize("symbol", SYMS)
+def test_officers_khop_mau(monkeypatch, symbol):
+    fake_http(monkeypatch, f"company_officers_{symbol}")
+    assert_same(ingest_market.fetch_officers([symbol], snapshot_date="2026-11-12"),
+                load_expected(f"officers_{symbol}"))
+
+
+@pytest.mark.parametrize("symbol", SYMS)
+def test_ratio_summary_khop_mau(monkeypatch, symbol):
+    fake_http(monkeypatch, f"company_ratio_summary_{symbol}")
+    assert_same(ingest_market.fetch_financials([symbol]), load_expected(f"ratio_summary_{symbol}"))
+
+
 def test_events_nguon_loi_ghi_breaker(monkeypatch):
     from src.sources import http
     from tests.vci_fixtures import FakeResponse
