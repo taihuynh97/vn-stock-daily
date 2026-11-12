@@ -312,9 +312,12 @@ def main():
     only = _parse_only(args.only)
 
     key = os.getenv("VNSTOCK_API_KEY")
-    if key:
-        from vnstock import vnai
-        vnai.setup_api_key(key)
+    if key:  # TẠM tới PR 3: bước công ty/BCTC còn dùng vnstock nếu máy có cài
+        try:
+            from vnstock import vnai
+            vnai.setup_api_key(key)
+        except ImportError:
+            pass
 
     cfg = yaml.safe_load(open(ROOT / "config" / "warehouse.yml", encoding="utf-8"))
     source = cfg.get("source", "VCI")

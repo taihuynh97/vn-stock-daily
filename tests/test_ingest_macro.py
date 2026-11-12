@@ -26,7 +26,7 @@ def test_fetch_exchange_rate_tra_dung_cot(monkeypatch):
         df.columns = ["currency_code", "currency_name", "buy_cash",
                      "buy_transfer", "sell", "date"]
         return df
-    monkeypatch.setattr("src.ingest_market.vcb_exchange_rate", _fake)
+    monkeypatch.setattr("src.ingest_market.vcb.exchange_rate", _fake)
     out = fetch_exchange_rate("2026-08-20")
     assert list(out.columns) == EXCHANGE_RATE_COLS
 
@@ -37,7 +37,7 @@ def test_fetch_exchange_rate_dash_thanh_null(monkeypatch):
         df.columns = ["currency_code", "currency_name", "buy_cash",
                      "buy_transfer", "sell", "date"]
         return df
-    monkeypatch.setattr("src.ingest_market.vcb_exchange_rate", _fake)
+    monkeypatch.setattr("src.ingest_market.vcb.exchange_rate", _fake)
     out = fetch_exchange_rate("2026-08-20")
     dkk = out[out["currency_code"] == "DKK"].iloc[0]
     assert pd.isna(dkk["buy_cash"])
@@ -50,7 +50,7 @@ def test_fetch_exchange_rate_dau_phay_hang_nghin_khong_thanh_null(monkeypatch):
         df.columns = ["currency_code", "currency_name", "buy_cash",
                      "buy_transfer", "sell", "date"]
         return df
-    monkeypatch.setattr("src.ingest_market.vcb_exchange_rate", _fake)
+    monkeypatch.setattr("src.ingest_market.vcb.exchange_rate", _fake)
     out = fetch_exchange_rate("2026-08-20")
     usd = out[out["currency_code"] == "USD"].iloc[0]
     assert usd["buy_cash"] == 25900.0
@@ -61,7 +61,7 @@ def test_fetch_exchange_rate_dau_phay_hang_nghin_khong_thanh_null(monkeypatch):
 def test_fetch_exchange_rate_nguon_loi_tra_df_rong(monkeypatch):
     def _fake(date):
         raise Exception("network error")
-    monkeypatch.setattr("src.ingest_market.vcb_exchange_rate", _fake)
+    monkeypatch.setattr("src.ingest_market.vcb.exchange_rate", _fake)
     out = fetch_exchange_rate("2026-08-20")
     assert list(out.columns) == EXCHANGE_RATE_COLS
     assert len(out) == 0

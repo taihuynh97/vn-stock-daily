@@ -243,9 +243,12 @@ def main():
     # VNSTOCK_MIN_INTERVAL=1.05 (khuyến nghị ở docstring trên) mà thiếu khối
     # này sẽ vượt rate limit ngay (step_reload gọi fetch_financials rất nhiều).
     key = os.getenv("VNSTOCK_API_KEY")
-    if key:
-        from vnstock import vnai
-        vnai.setup_api_key(key)
+    if key:  # TẠM tới PR 3 (vnstock đã gỡ khỏi requirements.txt)
+        try:
+            from vnstock import vnai
+            vnai.setup_api_key(key)
+        except ImportError:
+            pass
 
     db_target = os.getenv("WAREHOUSE_DB", warehouse.DEFAULT_DB)
     print(f"Đang kết nối tới: {db_target}")

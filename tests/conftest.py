@@ -27,5 +27,10 @@ chỉ trả về module đã cache, không init/in lại.
 """
 import warnings
 
+# TẠM tới PR 3: vnstock đã gỡ khỏi requirements.txt (11/2026); máy dev có thể
+# còn cài nên vẫn mồi nếu có.
 with warnings.catch_warnings(record=True):
-    import vnstock  # noqa: F401
+    try:
+        import vnstock  # noqa: F401
+    except ImportError:
+        pass

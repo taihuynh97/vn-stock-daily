@@ -14,11 +14,17 @@ import time
 from datetime import date, datetime, timedelta
 import pandas as pd
 
-from vnstock.api.quote import Quote
-from vnstock.api.company import Company
-from vnstock.api.financial import Finance
-from vnstock.explorer.misc.exchange_rate import vcb_exchange_rate
-from .sources import vci
+from .sources import vcb, vci
+
+try:  # TẠM (PR 1/3): các bước công ty/BCTC còn gọi vnstock, chuyển ở PR 2–3.
+    from vnstock.api.company import Company
+    from vnstock.api.financial import Finance
+except ImportError:  # vnstock đã gỡ khỏi requirements.txt (11/2026)
+    class _ChuaChuyenKhoiVnstock:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("bước này chưa chuyển khỏi vnstock (sẽ chuyển ở PR tiếp theo)")
+
+    Company = Finance = _ChuaChuyenKhoiVnstock
 from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
@@ -1142,21 +1148,21 @@ _printed_news_cols = False
 
 
 def fetch_exchange_rate(rate_date: str) -> pd.DataFrame:
-    """Tỷ giá VCB 1 ngày, qua vcb_exchange_rate() — API export thật của
+    """Tỷ giá VCB 1 ngày, qua vcb.exchange_rate() — API export thật của
     Vietcombank, không phải scrape HTML.
 
     buy_cash/buy_transfer/sell = '-' từ nguồn (loại tiền không áp dụng
     giao dịch đó) -> NULL, KHÔNG PHẢI 0.0 (missing != wrong, xem dq.py).
     """
     try:
-        df = vcb_exchange_rate(date=rate_date)
+        df = vcb.exchange_rate(rate_date)
     except Exception as e:
         print(f"[exchange_rate] {rate_date}: {e}")
         return pd.DataFrame(columns=warehouse.EXCHANGE_RATE_COLS)
     if df is None or len(df) == 0:
         return pd.DataFrame(columns=warehouse.EXCHANGE_RATE_COLS)
     df.columns = [str(c).lower() for c in df.columns]
-    dq.assert_columns(df, ["currency_code", "currency_name"], "vcb_exchange_rate")
+    dq.assert_columns(df, ["currency_code", "currency_name"], "vcb.exchange_rate")
 
     def num(col):
         # '-' và các chuỗi không parse được -> NaN qua errors='coerce'.
