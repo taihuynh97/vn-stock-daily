@@ -291,11 +291,11 @@ _printed_info_cols = False
 
 
 def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") -> pd.DataFrame:
-    """Lịch sử OHLCV một mã qua Quote.history. Trả DataFrame schema raw_price_daily."""
+    """Lịch sử OHLCV một mã qua vci.ohlc_history (giá ĐỒNG). Trả DataFrame schema raw_price_daily."""
     global _printed_hist_cols
     ingest._throttle()
     try:
-        df = Quote(symbol=symbol, source=source).history(start=start, end=end, interval="1D")
+        df = vci.ohlc_history(symbol, start, end)
     except Exception as e:
         print(f"[history] {symbol}: {e}")
         return pd.DataFrame()
@@ -331,12 +331,9 @@ def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") ->
         "volume":     pd.to_numeric(df[vol_col], errors="coerce") if vol_col else None,
         "value":      _col(df, val_col),
     })
-    # vnstock (VCI) trả OHLC của Quote.history theo đơn vị nghìn đồng,
-    # trong khi Trading.price_board (daily ingestion) trả VND. Nhân lại 1000
-    # để raw_price_daily đồng nhất đơn vị giữa backfill và daily.
-    for col in ("open", "high", "low", "close"):
-        if pd.api.types.is_numeric_dtype(out[col]):
-            out[col] = out[col] * 1000
+    # Đơn vị ĐỒNG như bảng giá (vci.ohlc_history trả đúng đơn vị nguồn). Thời
+    # vnstock, Quote.history trả nghìn đồng (đã làm tròn 2 chữ số) nên ở đây
+    # từng nhân lại 1000 — đừng thêm lại phép nhân đó.
     return out.dropna(subset=["close"]).drop_duplicates(["symbol", "trade_date"]).reset_index(drop=True)
 
 
@@ -354,9 +351,7 @@ def fetch_index_history(
     """
     ingest._throttle()
     try:
-        df = Quote(symbol=index_code, source=source).history(
-            start=start, end=end, interval="1D"
-        )
+        df = vci.ohlc_history(index_code, start, end)
     except Exception as e:
         print(f"[index] {index_code}: {e}")
         return pd.DataFrame()
