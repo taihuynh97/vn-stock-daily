@@ -14,7 +14,7 @@ import time
 from datetime import date, datetime, timedelta
 import pandas as pd
 
-from .sources import vcb, vci
+from .sources import vcb, vci, vci_company
 
 try:  # TẠM (PR 1/3): các bước công ty/BCTC còn gọi vnstock, chuyển ở PR 2–3.
     from vnstock.api.company import Company
@@ -660,7 +660,7 @@ def fetch_corporate_events(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).events()
+            df = vci_company.events(symbol)
         except Exception as e:
             print(f"[events] {symbol}: {e}")
             br.record(False)
