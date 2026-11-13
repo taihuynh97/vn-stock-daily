@@ -50,6 +50,47 @@ def test_item_id(title, expected):
     assert vci_finance.item_id(title) == expected
 
 
+def _fake_iq(monkeypatch, section_data, metrics):
+    """Giả iq_data: trả `section_data` cho section, `metrics` cho /metrics."""
+    from src.sources import vci_finance as vf
+
+    def fake(path, params=None):
+        return metrics if path.endswith("/metrics") else section_data
+    monkeypatch.setattr(vf, "iq_data", fake)
+
+
+_MET = {"INCOME_STATEMENT": [{"field": "isa1", "titleVi": "Doanh thu", "titleEn": "Sales"}]}
+
+
+def test_data_null_la_loi_khong_phai_rong(monkeypatch):
+    """data: null (nguồn trục trặc/bóp lưu lượng) → "error" để thử lại; nếu
+    thành "empty", mã mới niêm yết bị bỏ qua 30 ngày (EMPTY_PROBE_SKIP_DAYS).
+    vnstock cũ cũng ném lỗi khi data là None."""
+    _fake_iq(monkeypatch, None, _MET)
+    _, status = ingest_market._fetch_statement_one("FPT", "income_statement", "VCI", "quarter")
+    assert status == "error"
+
+
+def test_danh_sach_ky_rong_la_empty(monkeypatch):
+    """Mã thật sự chưa có BCTC: nguồn trả danh sách kỳ rỗng → "empty"."""
+    _fake_iq(monkeypatch, {"quarters": [], "years": []}, _MET)
+    _, status = ingest_market._fetch_statement_one("FPT", "income_statement", "VCI", "quarter")
+    assert status == "empty"
+
+
+def test_chi_tieu_thieu_ten_khong_ra_null(monkeypatch):
+    """Chỉ tiêu không có titleVi/titleEn: item/item_id không được NULL
+    (stg_financial_statement có not_null trên item_id, item_vi → cả dbt build đỏ).
+    vnstock cũ fillna(0) cả cột tên."""
+    met = {"INCOME_STATEMENT": [{"field": "isa1", "titleVi": "Doanh thu", "titleEn": "Sales"},
+                                {"field": "isa2", "titleVi": None, "titleEn": None}]}
+    rec = {"yearReport": 2026, "lengthReport": 3, "isa1": 10.0, "isa2": 5.0}
+    _fake_iq(monkeypatch, {"quarters": [rec], "years": []}, met)
+    df = vci_finance.statement("FPT", "income_statement", "quarter")
+    assert df[["item", "item_en", "item_id"]].notna().all().all()
+    assert (df[["item", "item_en", "item_id"]] != "").all().all()
+
+
 def test_nguon_loi_tra_error(monkeypatch):
     from src.sources import http
     from tests.vci_fixtures import FakeResponse

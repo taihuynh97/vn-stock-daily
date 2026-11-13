@@ -67,7 +67,13 @@ def _metrics(symbol: str) -> dict[str, tuple]:
         for items in data.values():
             for it in items or []:
                 if isinstance(it, dict) and it.get("field"):
-                    names[it["field"]] = (it.get("titleVi"), it.get("titleEn"))
+                    f = it["field"]
+                    vi = (it.get("titleVi") or "").strip() or None
+                    en = (it.get("titleEn") or "").strip() or None
+                    # Tên không bao giờ rỗng: stg_financial_statement có not_null
+                    # trên item_vi/item_id (một chỉ tiêu thiếu tên sẽ làm cả dbt
+                    # build đỏ). Thiếu thì lấy tên kia, cuối cùng là mã trường.
+                    names[f] = (vi or en or f, en or vi or f)
         _metrics_cache[symbol] = names
     return _metrics_cache[symbol]
 
@@ -94,7 +100,9 @@ def statement(symbol: str, statement_type: str, period: str) -> pd.DataFrame:
     data = iq_data(f"/v1/company/{symbol}/financial-statement",
                    {"section": SECTIONS[statement_type]})
     if data is None:
-        return pd.DataFrame()
+        # Nguồn trục trặc, KHÔNG phải "mã chưa có BCTC" (mã đó trả danh sách kỳ
+        # rỗng). Coi là rỗng thì mã bị bỏ qua 30 ngày (EMPTY_PROBE_SKIP_DAYS).
+        raise SourceError(f"financial-statement {symbol}: phản hồi data null")
     if not isinstance(data, dict):
         raise SourceError(f"financial-statement {symbol}: phản hồi không phải object")
     records = data.get("years" if period == "year" else "quarters") or []
@@ -120,7 +128,7 @@ def statement(symbol: str, statement_type: str, period: str) -> pd.DataFrame:
     out = pd.DataFrame({
         "item": [names[f][0] for f in fields],
         "item_en": [names[f][1] for f in fields],
-        "item_id": [item_id(names[f][1]) for f in fields],
+        "item_id": [item_id(names[f][1]) or f for f in fields],
     })
     for col in keep:
         out[col] = wide[col].to_numpy()

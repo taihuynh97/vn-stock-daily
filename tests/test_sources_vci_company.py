@@ -92,6 +92,21 @@ def test_ratio_summary_khop_mau(monkeypatch, symbol):
     assert_same(ingest_market.fetch_financials([symbol]), load_expected(f"ratio_summary_{symbol}"))
 
 
+def test_officers_chi_ca_nhan_co_chuc_vu(monkeypatch):
+    """Bộ lọc như vnstock cũ: ownerType INDIVIDUAL và positionName khác null
+    (chuỗi rỗng vẫn tính). Tổ chức có chức vụ (vd đại diện vốn) không phải
+    người nội bộ. 7 mã mẫu không có ca nào như vậy nên cần test tổng hợp."""
+    owners = [
+        {"ownerName": "A", "positionName": "Chủ tịch", "ownerType": "INDIVIDUAL", "quantity": 1, "percentage": 0.1},
+        {"ownerName": "B", "positionName": "Cổ đông lớn", "ownerType": "CORPORATE", "quantity": 2, "percentage": 0.2},
+        {"ownerName": "C", "positionName": "", "ownerType": "INDIVIDUAL", "quantity": 3, "percentage": 0.3},
+        {"ownerName": "D", "positionName": None, "ownerType": "INDIVIDUAL", "quantity": 4, "percentage": 0.4},
+    ]
+    monkeypatch.setattr(vci_company, "iq_data", lambda path, params=None: owners)
+    assert vci_company.officers("XYZ")["officer_name"].tolist() == ["A", "C"]
+    assert vci_company.shareholders("XYZ")["share_holder"].tolist() == ["A", "B", "C", "D"]
+
+
 def test_events_nguon_loi_ghi_breaker(monkeypatch):
     from src.sources import http
     from tests.vci_fixtures import FakeResponse

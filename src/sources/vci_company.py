@@ -114,12 +114,15 @@ def shareholders(symbol: str) -> pd.DataFrame:
 
 
 def officers(symbol: str) -> pd.DataFrame:
-    """Người nội bộ (dòng có chức vụ): [symbol, officer_name, officer_position,
+    """Người nội bộ (cá nhân có chức vụ): [symbol, officer_name, officer_position,
     officer_own_percent, officer_own_quantity, update_date]."""
     rows = [{"symbol": symbol, "officer_name": r.get("ownerName"),
              "officer_position": r.get("positionName"), "officer_own_percent": r.get("percentage"),
              "officer_own_quantity": r.get("quantity"), "update_date": r.get("updateDate")}
-            for r in _owners(symbol) if r.get("positionName")]
+            # Như vnstock cũ: cá nhân có chức vụ (khác null; chuỗi rỗng vẫn tính).
+            # Tổ chức có chức vụ (đại diện vốn) không phải người nội bộ.
+            for r in _owners(symbol)
+            if r.get("positionName") is not None and r.get("ownerType", "INDIVIDUAL") == "INDIVIDUAL"]
     return pd.DataFrame(rows, columns=["symbol", "officer_name", "officer_position",
                                        "officer_own_percent", "officer_own_quantity",
                                        "update_date"])
