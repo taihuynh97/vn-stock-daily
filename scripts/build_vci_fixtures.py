@@ -1,7 +1,8 @@
 """Dựng fixture test cho src/sources từ đáp án mẫu chụp vnstock 4.0.9 (12/11/2026).
 
-Chạy MỘT LẦN, trên máy có thư mục đáp án mẫu (ngoài git) và code ingest_market
-CŨ (còn gọi lớp vnstock):
+Đã chạy MỘT LẦN (12/11/2026) để tạo tests/fixtures/vci; giữ lại làm hồ sơ cách
+dựng đáp án. Chỉ chạy lại được trên code ingest_market CŨ còn gọi lớp vnstock
+(commit ad69811 trở về trước) và máy có thư mục đáp án mẫu (ngoài git):
 
     python -m scripts.build_vci_fixtures data/vnstock_golden_2026-11-12
 

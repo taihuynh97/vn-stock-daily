@@ -1,4 +1,4 @@
-"""Chẩn đoán độ trễ API vnstock (VCI) — chạy được trên máy cá nhân và trên GitHub.
+"""Chẩn đoán độ trễ API nguồn Vietcap (gọi qua src/sources) — chạy được trên máy cá nhân và trên GitHub.
 
 Câu hỏi cần trả lời (xem docs/Q-ket-qua-va-no-ky-thuat.md + thảo luận 04/10/2026):
 job warehouse-weekly không chạy xong trong 350 phút. Trên máy cá nhân ở VN, một lần
@@ -72,9 +72,9 @@ def summarize(records: list[dict]) -> list[dict]:
 
 def to_markdown(summary: list[dict], meta: dict) -> str:
     lines = [
-        f"### Độ trễ API vnstock — {meta['where']}",
+        f"### Độ trễ API nguồn (Vietcap) — {meta['where']}",
         "",
-        f"vnstock {meta['vnstock']} · Python {meta['python']} · "
+        f"Python {meta['python']} · "
         f"{meta['n_symbols']} mã · giãn cách {meta['min_interval']} giây · "
         f"bắt đầu {meta['started_utc']} UTC · {meta['elapsed_min']} phút"
         + (" · **DỪNG SỚM do hết ngân sách thời gian**" if meta["stopped_early"] else ""),
@@ -107,7 +107,7 @@ def _call(records, endpoint, fn, throttle):
     print(f"  {endpoint:<17} {dt:6.2f}s {'ok' if ok else 'LỖI ' + err}", flush=True)
 
 
-def _parallel_statements(args, symbols, started, Finance, ingest):
+def _parallel_statements(args, symbols, started, vci_finance, ingest):
     """Đo BCTC quý gọi song song: thông lượng thật (lần gọi/phút) và lỗi.
 
     Câu hỏi: gọi song song có đưa thông lượng lên sát hạn mức 60 lần/phút
@@ -118,8 +118,7 @@ def _parallel_statements(args, symbols, started, Finance, ingest):
 
     def one(sym, st):
         recs: list[dict] = []
-        _call(recs, st, lambda: getattr(Finance(symbol=sym, source="VCI", period="quarter"), st)(),
-              ingest._throttle)
+        _call(recs, st, lambda: vci_finance.statement(sym, st, "quarter"), ingest._throttle)
         with lock:
             records.extend(recs)
 
@@ -130,7 +129,6 @@ def _parallel_statements(args, symbols, started, Finance, ingest):
     elapsed = time.monotonic() - t0
     meta = {
         "where": f"{args.where} — BCTC song song {args.statements_workers} luồng",
-        "vnstock": __import__("importlib.metadata").metadata.version("vnstock"),
         "python": platform.python_version(),
         "n_symbols": len(symbols),
         "min_interval": os.getenv("VNSTOCK_MIN_INTERVAL", "3.1"),
@@ -153,7 +151,7 @@ def _parallel_statements(args, symbols, started, Finance, ingest):
 
 def main():
     load_dotenv()
-    ap = argparse.ArgumentParser(description="Đo độ trễ API vnstock (chỉ đọc)")
+    ap = argparse.ArgumentParser(description="Đo độ trễ API nguồn Vietcap (chỉ đọc)")
     ap.add_argument("--n", type=int, default=len(DEFAULT_SYMBOLS), help="Số mã trong mẫu")
     ap.add_argument("--max-minutes", type=float, default=40,
                     help="Ngân sách thời gian; hết thì dừng và báo kết quả dở dang")
@@ -163,50 +161,38 @@ def main():
                     help="Chỉ đo BCTC quý, gọi song song N luồng (dùng chung nhịp giãn cách)")
     args = ap.parse_args()
 
-    key = os.getenv("VNSTOCK_API_KEY")
-    if key:
-        from vnstock import vnai
-        vnai.setup_api_key(key)
-
-    from importlib.metadata import version
-    from vnstock.api.company import Company
-    from vnstock.api.financial import Finance
-    from vnstock.api.quote import Quote
-    from vnstock.api.trading import Trading
     from src import ingest  # dùng chung _throttle với job thật
+    from src.sources import vci, vci_company, vci_finance
 
     symbols = DEFAULT_SYMBOLS[: args.n]
     started = datetime.now(timezone.utc)
     if args.statements_workers:
-        return _parallel_statements(args, symbols, started, Finance, ingest)
+        return _parallel_statements(args, symbols, started, vci_finance, ingest)
     deadline = time.monotonic() + args.max_minutes * 60
     end = started.date().isoformat()
     start = (started.date() - timedelta(days=14)).isoformat()
     records: list[dict] = []
     stopped_early = False
 
-    _call(records, "price_board", lambda: Trading(source="VCI").price_board(symbols_list=symbols),
-          ingest._throttle)
+    _call(records, "price_board", lambda: vci.price_board(symbols), ingest._throttle)
     for i, sym in enumerate(symbols, 1):
         if time.monotonic() > deadline:
             stopped_early = True
             print(f"Hết ngân sách {args.max_minutes} phút sau {i - 1} mã — dừng.", flush=True)
             break
         print(f"[{i}/{len(symbols)}] {sym}", flush=True)
-        _call(records, "ratio_summary",
-              lambda: Company(symbol=sym, source="VCI").ratio_summary(), ingest._throttle)
-        _call(records, "events", lambda: Company(symbol=sym, source="VCI").events(), ingest._throttle)
+        _call(records, "ratio_summary", lambda: vci_company.ratio_summary(sym), ingest._throttle)
+        _call(records, "events", lambda: vci_company.events(sym), ingest._throttle)
         for st in ("income_statement", "balance_sheet", "cash_flow"):
             _call(records, st,
-                  lambda st=st: getattr(Finance(symbol=sym, source="VCI", period="quarter"), st)(),
+                  lambda st=st: vci_finance.statement(sym, st, "quarter"),
                   ingest._throttle)
         _call(records, "history",
-              lambda: Quote(symbol=sym, source="VCI").history(start=start, end=end, interval="1D"),
+              lambda: vci.ohlc_history(sym, start, end),
               ingest._throttle)
 
     meta = {
         "where": args.where,
-        "vnstock": version("vnstock"),
         "python": platform.python_version(),
         "n_symbols": len({r for r in symbols}),
         "min_interval": os.getenv("VNSTOCK_MIN_INTERVAL", "3.1"),

@@ -10,7 +10,6 @@ trong trường hợp đó để không mất dữ liệu 10 năm một cách â
 
     export WAREHOUSE_DB=md:vn_market
     export motherduck_token=<token>
-    export VNSTOCK_API_KEY=<key>          # nếu có, nâng rate limit lên 60 req/phút
     export VNSTOCK_MIN_INTERVAL=1.05      # nếu có key Community
     python -m scripts.migrate_financial_ratio_v2 --step rename
     python -m scripts.migrate_financial_ratio_v2 --step reload
@@ -238,17 +237,6 @@ def main():
                         choices=["rename", "reload", "verify", "cleanup"],
                         required=True)
     args = parser.parse_args()
-
-    # Không đăng ký key thì chạy ở bậc Guest 20 req/phút — đặt
-    # VNSTOCK_MIN_INTERVAL=1.05 (khuyến nghị ở docstring trên) mà thiếu khối
-    # này sẽ vượt rate limit ngay (step_reload gọi fetch_financials rất nhiều).
-    key = os.getenv("VNSTOCK_API_KEY")
-    if key:  # TẠM tới PR 3 (vnstock đã gỡ khỏi requirements.txt)
-        try:
-            from vnstock import vnai
-            vnai.setup_api_key(key)
-        except ImportError:
-            pass
 
     db_target = os.getenv("WAREHOUSE_DB", warehouse.DEFAULT_DB)
     print(f"Đang kết nối tới: {db_target}")

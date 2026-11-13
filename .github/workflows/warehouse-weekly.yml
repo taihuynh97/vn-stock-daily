@@ -35,7 +35,6 @@ jobs:
         env:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
-          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
           VNSTOCK_MIN_INTERVAL: "1.05"
           # Bước nạp tự dừng có kiểm soát sau 270 phút (spec 2026-10-04-bctc-chon-loc)
           # để còn thời gian cho dbt trong trần 350 phút của job.

@@ -245,16 +245,6 @@ def main():
     parser.add_argument("--sample", type=int, default=5)
     args = parser.parse_args()
 
-    # check_against_source gọi lại ingest_market.fetch_financials — không đăng
-    # ký key thì chạy ở bậc Guest 20 req/phút (xem migrate_financial_ratio_v2.py).
-    key = os.getenv("VNSTOCK_API_KEY")
-    if key:  # TẠM tới PR 3 (vnstock đã gỡ khỏi requirements.txt)
-        try:
-            from vnstock import vnai
-            vnai.setup_api_key(key)
-        except ImportError:
-            pass
-
     db_target = os.getenv("WAREHOUSE_DB", warehouse.DEFAULT_DB)
     print(f"Đang kết nối tới: {db_target}")
 
