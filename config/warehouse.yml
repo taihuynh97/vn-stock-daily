@@ -1,6 +1,6 @@
 # Cấu hình job thu thập warehouse (Phase 1).
 
-# Sàn cần thu. vnstock có thể trả mã sàn là HOSE hoặc HSX — code đã chuẩn hoá cả hai.
+# Sàn cần thu. Nguồn có thể trả mã sàn là HOSE hoặc HSX — code đã chuẩn hoá cả hai.
 #
 # LƯU Ý (xác minh 2026-08-10): danh sách này HIỆN KHÔNG ĐƯỢC THỰC THI.
 # Listing(source='VCI').all_symbols() thật chỉ trả 2 cột [symbol, organ_name]

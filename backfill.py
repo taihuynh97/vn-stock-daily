@@ -9,7 +9,6 @@ Chạy nhiều lần để hoàn tất (resumable nhờ backfill_status):
 Biến môi trường:
   WAREHOUSE_DB       (tuỳ chọn) mặc định data/warehouse.duckdb
   motherduck_token   (nếu dùng MotherDuck)
-  VNSTOCK_API_KEY    (khuyến nghị) nâng rate limit lên 60 req/phút
 """
 import argparse
 import os
@@ -30,14 +29,6 @@ def main():
     parser.add_argument("--years", type=int, default=3, help="Số năm lịch sử (mặc định 3)")
     parser.add_argument("--limit", type=int, default=100, help="Số mã tối đa mỗi lần chạy (mặc định 100)")
     args = parser.parse_args()
-
-    key = os.getenv("VNSTOCK_API_KEY")
-    if key:  # TẠM tới PR 3: bước công ty/BCTC còn dùng vnstock nếu máy có cài
-        try:
-            from vnstock import vnai
-            vnai.setup_api_key(key)
-        except ImportError:
-            pass
 
     cfg = yaml.safe_load(open(ROOT / "config" / "warehouse.yml", encoding="utf-8"))
     source = cfg.get("source", "VCI")

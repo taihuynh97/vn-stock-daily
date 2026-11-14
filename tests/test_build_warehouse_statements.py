@@ -183,7 +183,7 @@ def test_fetch_dem_loi_mang_va_dinh_kem_vao_attrs():
         mock.cash_flow.return_value = _good_report()
         return mock
 
-    with patch("src.ingest_market.Finance", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_finance.statement", side_effect=lambda s, t, p: getattr(side_effect_factory(s, "VCI", p), t)()), \
          patch("src.ingest_market.ingest._throttle"):
         out = fetch_financial_statements(["NETFAIL", "OK1", "OK2"])
 
@@ -203,7 +203,7 @@ def test_fetch_khong_loi_thi_n_errors_bang_khong():
         mock.cash_flow.return_value = _good_report()
         return mock
 
-    with patch("src.ingest_market.Finance", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_finance.statement", side_effect=lambda s, t, p: getattr(side_effect_factory(s, "VCI", p), t)()), \
          patch("src.ingest_market.ingest._throttle"):
         out = fetch_financial_statements(["AAA"])
 

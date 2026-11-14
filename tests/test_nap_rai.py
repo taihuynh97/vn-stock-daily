@@ -52,7 +52,7 @@ def test_bctc_dừng_khi_đủ_hạn_mức_lần_gọi():
         m = MagicMock()
         m.income_statement.return_value = pd.DataFrame()   # dò rỗng: 1 lần gọi/mã
         return m
-    with patch("src.ingest_market.Finance", side_effect=factory), \
+    with patch("src.ingest_market.vci_finance.statement", side_effect=lambda s, t, p: getattr(factory(s, "VCI", p), t)()), \
          patch("src.ingest_market.ingest._throttle"):
         out = ingest_market.fetch_financial_statements(
             [f"S{i}" for i in range(10)], known={}, max_calls=4)

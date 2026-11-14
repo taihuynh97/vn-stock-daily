@@ -22,7 +22,7 @@ Mỗi mục có bốn phần: hạn chế, bằng chứng, ảnh hưởng tới 
 | 5 | Sở hữu chụp hằng tháng; cửa sổ 50 sự kiện | Bán ra của nội bộ giữa hai lần chụp có thể bị sót | Một phần: cờ đăng ký bán |
 | 6 | Không có vĩ mô ngoài tỷ giá | Không neo được ngưỡng E/P, không đọc được chu kỳ lãi suất | Không |
 | 7 | Không có dự phóng, kế hoạch kinh doanh, đồng thuận | Không biết doanh nghiệp tự dự báo gì | Không |
-| 8 | Một nguồn duy nhất (VCI qua vnstock) | Lỗi nguồn đi thẳng vào phân tích | Một phần: hợp đồng OHLC, test dữ liệu |
+| 8 | Một nguồn duy nhất (Vietcap, gọi thẳng API) | Lỗi nguồn đi thẳng vào phân tích | Một phần: hợp đồng OHLC, test dữ liệu |
 | 9 | Giá điều chỉnh phụ thuộc giá tham chiếu | Sót sự kiện nếu kho thiếu phiên quanh ngày GDKHQ | Mới thêm ở mảng Q |
 | 10 | Khối ngoại chưa có lịch sử | Không phân tích được dòng vốn ngoại | Bắt đầu lưu từ ngày merge |
 | 11 | CAR ngân hàng NULL toàn kho | Không đánh giá được an toàn vốn ngân hàng | Không |
@@ -114,14 +114,17 @@ chỉnh kế hoạch gần đây của mã vòng cuối.
 
 ## 8. Một nguồn dữ liệu duy nhất
 
-**Bằng chứng.** Mọi dữ liệu đi qua vnstock (VCI). vnstock bị gỡ khỏi PyPI khoảng 25/09/2026, chuyển
-sang index riêng. Lỗi ánh xạ cột bảng giá (mảng Q) làm 52–63% dòng giá hằng ngày sai suốt 4 tháng
+**Bằng chứng.** Mọi dữ liệu (trừ tỷ giá VCB) lấy từ API công khai của web Vietcap. Trước 11/2026
+đi qua thư viện vnstock: bị gỡ khỏi PyPI khoảng 25/09/2026, rồi ngừng phát hành hẳn 10/11/2026 làm
+mọi job hỏng ở bước cài đặt — từ đó gọi thẳng nguồn (`src/sources/`). API web không có cam kết
+ổn định: Vietcap đổi schema là job lỗi. Lỗi ánh xạ cột bảng giá (mảng Q) làm 52–63% dòng giá hằng ngày sai suốt 4 tháng
 mà không job nào báo.
 
 **Ảnh hưởng.** Không có nguồn thứ hai để đối chiếu. Lỗi nguồn hoặc lỗi ánh xạ đi thẳng vào phân tích.
 
 **Đã giảm nhẹ.** Hợp đồng OHLC ở tầng ingest làm đỏ job khi >5% dòng có close ngoài [low, high];
-hai test dbt dạng cảnh báo theo dõi bước nhảy giá và OHLC.
+hai test dbt dạng cảnh báo theo dõi bước nhảy giá và OHLC. `pytest -m network` gọi nguồn thật
+để phát hiện nguồn đổi schema.
 
 ## 9. Giá điều chỉnh dựa vào giá tham chiếu
 

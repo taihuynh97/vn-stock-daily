@@ -10,7 +10,6 @@ raw_company_info, và đồng bộ dim_symbols.exchange.
 
     export WAREHOUSE_DB=md:vn_market
     export motherduck_token=<token>
-    export VNSTOCK_API_KEY=<key>          # nếu có, nâng rate limit lên 60 req/phút
     python -m scripts.backfill_reference_data
     python -m scripts.backfill_reference_data --limit 20   # chạy thử
 """
@@ -35,14 +34,6 @@ def main():
     parser.add_argument("--limit", type=int, default=None,
                         help="Giới hạn số mã nạp hồ sơ doanh nghiệp (chạy thử)")
     args = parser.parse_args()
-
-    key = os.getenv("VNSTOCK_API_KEY")
-    if key:  # TẠM tới PR 3 (vnstock đã gỡ khỏi requirements.txt)
-        try:
-            from vnstock import vnai
-            vnai.setup_api_key(key)
-        except ImportError:
-            pass
 
     db_target = os.getenv("WAREHOUSE_DB", warehouse.DEFAULT_DB)
     print(f"Đang kết nối tới: {db_target}")

@@ -4,7 +4,7 @@ Pipeline dữ liệu chứng khoán Việt Nam: mỗi ngày sau giờ đóng c�
 
 > Luồng bản tin AI (`main.py` gọi Claude API tóm tắt, gửi Telegram) đã gỡ ngày 21/10/2026 — xem lịch sử git nếu cần khôi phục.
 
-> ⚠️ **Miễn trừ trách nhiệm:** đây là công cụ tổng hợp thông tin và phát tín hiệu để tham khảo, **không phải lời khuyên đầu tư**. Mọi quyết định mua/bán là của bạn. Dữ liệu vnstock là cuối phiên/có độ trễ, không dùng cho giao dịch trong ngày.
+> ⚠️ **Miễn trừ trách nhiệm:** đây là công cụ tổng hợp thông tin và phát tín hiệu để tham khảo, **không phải lời khuyên đầu tư**. Mọi quyết định mua/bán là của bạn. Dữ liệu là cuối phiên/có độ trễ, không dùng cho giao dịch trong ngày.
 
 ## Kiến trúc
 
@@ -74,14 +74,13 @@ Cần khai báo secrets trong repo (Settings → Secrets and variables → Actio
 | `MOTHERDUCK_TOKEN` | app.motherduck.com → Settings → Access tokens |
 | `TELEGRAM_BOT_TOKEN` | nhắn **@BotFather** → `/newbot` |
 | `TELEGRAM_CHAT_ID` | nhắn cho bot 1 tin, rồi mở `https://api.telegram.org/bot<token>/getUpdates` lấy `chat.id` |
-| `VNSTOCK_API_KEY` | (tuỳ chọn) đăng ký miễn phí ở vnstocks.com nếu nguồn dữ liệu yêu cầu |
 
 Bấm **Run workflow** ở tab Actions để chạy tay kiểm tra trước khi để chạy tự động.
 
 ## Những điểm cần biết
 
-- **Nguồn hợp lệ:** giá, báo cáo TC, chỉ số, tin doanh nghiệp đều qua API vnstock. Job **không** scrape báo cáo phân tích có bản quyền của các CTCK.
-- **vnstock đổi API:** mọi lời gọi vnstock gói trong `src/ingest.py`; thư viện cập nhật thì chỉ sửa 1 file. Một số nguồn dữ liệu/mã có thể cần API key vnstock miễn phí.
+- **Nguồn dữ liệu:** giá, chỉ số, BCTC, sự kiện, tin, hồ sơ doanh nghiệp lấy thẳng từ API công khai của web Vietcap (`trading.vietcap.com.vn`, `iq.vietcap.com.vn`), tỷ giá từ API xuất Excel của Vietcombank; không cần API key. Mọi lời gọi nằm trong `src/sources/` (một HTTP client dùng chung, có timeout và thử lại). Job **không** scrape báo cáo phân tích có bản quyền của các CTCK.
+- **Bỏ vnstock (11/2026):** vnstocks.com ngừng phát hành vnstock 4.x từ 10/11/2026 (HTTP 410), làm mọi workflow hỏng ở bước cài đặt. Nguồn đổi schema thì sửa ở `src/sources/`; `pytest -m network` gọi nguồn thật để phát hiện sớm.
 - **Chi phí:** không gọi API trả phí nào. GitHub Actions: repo private có 2.000 phút/tháng (gói Free) — các job trên cần ~2.000–2.200 phút/tháng; repo public thì không giới hạn.
 - **Cron GHA** chạy theo UTC và đôi khi trễ vài phút lúc cao điểm — không sao với job cuối phiên.
 - **Hạn chế nền tảng của phân tích** (tin tức chỉ 5 mã, BCTC gốc 8 quý/8 năm, tỷ số trễ, không có vĩ mô ngoài tỷ giá, một nguồn VCI...): xem `docs/han-che-nen-tang.md`.
