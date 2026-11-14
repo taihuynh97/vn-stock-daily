@@ -44,7 +44,7 @@ class _Source:
 
 
 def _run(symbols, known, src, **kw):
-    with patch("src.ingest_market.Finance", side_effect=src), \
+    with patch("src.ingest_market.vci_finance.statement", side_effect=lambda s, t, p: getattr(src(s, "VCI", p), t)()), \
          patch("src.ingest_market.ingest._throttle"):
         return ingest_market.fetch_financial_statements(
             symbols, known=known, now=NOW, **kw)
@@ -99,7 +99,7 @@ def test_dò_lỗi_thì_không_gọi_tiếp_2_báo_cáo_còn_lại():
 
 def test_known_none_giữ_hành_vi_cũ():
     src = _Source()
-    with patch("src.ingest_market.Finance", side_effect=src), \
+    with patch("src.ingest_market.vci_finance.statement", side_effect=lambda s, t, p: getattr(src(s, "VCI", p), t)()), \
          patch("src.ingest_market.ingest._throttle"):
         out = ingest_market.fetch_financial_statements(["A", "B"])
     assert len(src.calls) == 6 and out.attrs["total_calls"] == 6
@@ -239,7 +239,7 @@ def test_mã_mới_mà_nguồn_không_có_bctc_chỉ_dò_1_lần():
             getattr(m, st).side_effect = f
         return m
 
-    with patch("src.ingest_market.Finance", side_effect=empty_factory), \
+    with patch("src.ingest_market.vci_finance.statement", side_effect=lambda s, t, p: getattr(empty_factory(s, "VCI", p), t)()), \
          patch("src.ingest_market.ingest._throttle"):
         out = ingest_market.fetch_financial_statements(["NODATA"], known={}, now=NOW)
     assert _calls(src, "NODATA") == ["income_statement"]

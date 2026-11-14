@@ -24,10 +24,11 @@ def test_summarize_giữ_thứ_tự_endpoint_như_job_thật():
 
 def test_markdown_báo_dừng_sớm_và_lỗi():
     recs = [_r("events", 1), _r("events", 30, False, "rỗng")]
-    meta = {"where": "github", "vnstock": "4.0.9", "python": "3.12", "n_symbols": 1,
+    meta = {"where": "github", "python": "3.12", "n_symbols": 1,
             "min_interval": "1.05", "started_utc": "2026-10-04 10:00", "elapsed_min": 1.0,
             "stopped_early": True}
     md = d.to_markdown(d.summarize(recs), meta)
+    assert "Vietcap" in md and "vnstock" not in md
     assert "DỪNG SỚM" in md
     assert "events: rỗng ×1" in md
     assert "| events | 2 | 1 |" in md

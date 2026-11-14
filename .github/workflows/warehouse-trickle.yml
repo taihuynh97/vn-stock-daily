@@ -41,7 +41,6 @@ jobs:
         env:
           WAREHOUSE_DB: "md:vn_market"
           motherduck_token: ${{ secrets.MOTHERDUCK_TOKEN }}
-          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
           VNSTOCK_MIN_INTERVAL: "5"
           EVENTS_MAX_SYMBOLS: "50"
           STATEMENTS_MAX_CALLS: "70"

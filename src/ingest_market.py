@@ -14,24 +14,7 @@ import time
 from datetime import date, datetime, timedelta
 import pandas as pd
 
-from .sources import vcb, vci, vci_company
-
-try:  # TẠM (PR 1/3): các bước công ty/BCTC còn gọi vnstock, chuyển ở PR 2–3.
-    from vnstock.api.company import Company
-    from vnstock.api.financial import Finance
-    VNSTOCK_CO_SAN = True
-except ImportError:  # vnstock đã gỡ khỏi requirements.txt (11/2026)
-    class _ChuaChuyenKhoiVnstock:
-        def __init__(self, *args, **kwargs):
-            raise RuntimeError("bước này chưa chuyển khỏi vnstock (sẽ chuyển ở PR tiếp theo)")
-
-    Company = Finance = _ChuaChuyenKhoiVnstock
-    VNSTOCK_CO_SAN = False
-
-# TẠM: giai đoạn của build_warehouse còn gọi vnstock — bị bỏ qua khi máy không
-# có vnstock (CI) để khỏi gọi lỗi rồi nghỉ theo cầu chì. Xoá dần khi chuyển.
-GIAI_DOAN_CAN_VNSTOCK = frozenset({"news", "ratios", "company", "company_missing",
-                                   "statements", "statements_year"})
+from .sources import vcb, vci, vci_company, vci_finance
 from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
@@ -87,7 +70,7 @@ def fetch_industries_icb(source: str = "VCI") -> pd.DataFrame:
         return pd.DataFrame()
 
     df.columns = [str(c).lower() for c in df.columns]
-    dq.assert_columns(df, ["icb_code", "icb_name", "level"], "Listing.industries_icb")
+    dq.assert_columns(df, ["icb_code", "icb_name", "level"], "vci.industries_icb")
 
     out = pd.DataFrame({
         "icb_code":    df["icb_code"].astype(str).str.strip(),
@@ -164,7 +147,7 @@ def fetch_eod_prices(symbols, source: str = "VCI", batch_size: int = 50,
     else:
         raw = pd.concat(frames, ignore_index=True)
         out = _normalize_board(raw, run_date)
-        dq.assert_ohlc_consistent(out, f"Trading({source}).price_board")
+        dq.assert_ohlc_consistent(out, "vci.price_board")
     out.attrs["failed_symbols"] = failed
     return out
 
@@ -286,7 +269,7 @@ def _find(cols, *keys):
     """Cột ĐẦU TIÊN (theo thứ tự cột) chứa BẤT KỲ từ khoá nào — khớp chuỗi con.
 
     CẢNH BÁO: không ưu tiên theo thứ tự từ khoá. Chỉ an toàn khi tên cột của
-    nguồn đơn giản và không chồng lấn (Quote.history: time/open/high/...).
+    nguồn đơn giản và không chồng lấn (vci.ohlc_history: time/open/high/...).
     Đã gây lỗi giá đóng cửa sai 4 tháng ở bảng giá — bảng giá dùng `_pick`."""
     for c in cols:
         if any(k in c for k in keys):
@@ -355,12 +338,12 @@ def fetch_index_history(
 ) -> pd.DataFrame:
     """Lịch sử chỉ số (VNINDEX/VN30/HNXINDEX).
 
-    KHÁC fetch_history_one: chỉ số KHÔNG nhân ×1000. fetch_history_one nhân
-    OHLC với 1000 vì Quote.history của VCI trả giá CỔ PHIẾU theo đơn vị nghìn
-    đồng. Chỉ số thì không — xác minh 2026-08-07:
-    Quote.history('VNINDEX').close = 1768.06, đã đúng đơn vị điểm chỉ số
-    (nhân 1000 sẽ ra 1.768.060, sai hoàn toàn). Vì vậy hàm này viết riêng,
-    không tái dùng/sửa fetch_history_one.
+    Đơn vị: điểm chỉ số, như nguồn trả (vci.ohlc_history('VNINDEX').close ≈
+    1.7xx). Cả hàm này lẫn fetch_history_one đều KHÔNG nhân/chia 1000 — từ
+    11/2026 vci.ohlc_history trả đúng đơn vị nguồn (giá cổ phiếu là ĐỒNG).
+    Thời vnstock, giá cổ phiếu về dạng nghìn đồng nên fetch_history_one từng
+    nhân 1000; đừng thêm lại phép nhân nào ở đây (1.768.060 điểm là sai).
+    Viết riêng vì schema đích khác (index_code, lọc khoảng hợp lệ).
     """
     ingest._throttle()
     try:
@@ -372,11 +355,11 @@ def fetch_index_history(
         return pd.DataFrame()
 
     df.columns = [str(c).lower() for c in df.columns]
-    dq.assert_columns(df, ["close"], f"Quote.history({index_code})")
+    dq.assert_columns(df, ["close"], f"vci.ohlc_history({index_code})")
     date_col = _find(list(df.columns), "trading_date", "time", "date")
     if date_col is None:
         raise dq.SchemaError(
-            f"[Quote.history({index_code})] không tìm thấy cột ngày. "
+            f"[vci.ohlc_history({index_code})] không tìm thấy cột ngày. "
             f"Cột thật: {list(df.columns)}"
         )
 
@@ -398,9 +381,9 @@ def fetch_index_history(
 
 def fetch_financials(symbols: list[str], source: str = "VCI",
         breaker=None) -> pd.DataFrame:
-    """Tỷ số tài chính theo quý (TTM) + cả năm qua Company.ratio_summary().
+    """Tỷ số tài chính theo quý (TTM) + cả năm qua vci_company.ratio_summary().
 
-    Company.ratio_summary() trả mỗi dòng = 1 quý, quarter 1-4 = TTM kết thúc
+    vci_company.ratio_summary() trả mỗi dòng = 1 quý, quarter 1-4 = TTM kết thúc
     tại quý đó (ratio_type=RATIO_TTM), quarter=5 = tổng cả năm (RATIO_YEAR).
     """
     global _printed_fin_cols
@@ -414,7 +397,7 @@ def fetch_financials(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).ratio_summary()
+            df = vci_company.ratio_summary(symbol)
         except Exception as e:
             print(f"[financials] {symbol}: {e}")
             br.record(False)
@@ -443,7 +426,7 @@ def fetch_financials(symbols: list[str], source: str = "VCI",
             frames.append(row)
     if rejected and dq.status_for(len(frames), rejected) == "degraded":
         raise dq.SchemaError(
-            f"[Company.ratio_summary] {rejected}/{len(symbols)} mã sai schema "
+            f"[vci_company.ratio_summary] {rejected}/{len(symbols)} mã sai schema "
             "— nguồn có thể đã đổi"
         )
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -486,7 +469,7 @@ def fetch_company_info(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).overview()
+            df = vci_company.overview(symbol)
         except Exception as e:
             print(f"[company_info] {symbol}: {e}")
             br.record(False)
@@ -511,7 +494,7 @@ def fetch_company_info(symbols: list[str], source: str = "VCI",
             frames.append(row)
     if rejected and dq.status_for(len(frames), rejected) == "degraded":
         raise dq.SchemaError(
-            f"[Company.overview] {rejected}/{len(symbols)} mã sai schema — "
+            f"[vci_company.overview] {rejected}/{len(symbols)} mã sai schema — "
             "nguồn có thể đã đổi"
         )
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -519,7 +502,7 @@ def fetch_company_info(symbols: list[str], source: str = "VCI",
 
 _COMPANY_REQUIRED = ["symbol", "com_group_code", "icb_code_lv2"]
 
-# com_group_code của Company.overview() trả TÊN CHỈ SỐ ("VNINDEX", "HNXIndex",
+# com_group_code của vci_company.overview() trả TÊN CHỈ SỐ ("VNINDEX", "HNXIndex",
 # "UpcomIndex"), không phải mã sàn thô — xác minh lại bằng API thật ngày
 # 2026-08-10 với HPG/VCB/SSI (đều "VNINDEX"), SHS/PVS/MBS ("HNXIndex"), VGT
 # ("UpcomIndex"), BSR ("VNINDEX", khớp việc BSR chuyển từ UPCOM sang HOSE
@@ -590,7 +573,7 @@ def _to_date_str(v):
 def _normalize_company(df, symbol) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
-    dq.assert_columns(df, _COMPANY_REQUIRED, f"Company.overview({symbol})")
+    dq.assert_columns(df, _COMPANY_REQUIRED, f"vci_company.overview({symbol})")
     row = df.iloc[0]
 
     def num(col):
@@ -631,7 +614,7 @@ def _normalize_company(df, symbol) -> pd.DataFrame:
 
 _printed_event_cols = False
 
-# Tám cột ngày của Company.events(). Ép về chuỗi ISO ở tầng normalize để
+# Tám cột ngày của vci_company.events(). Ép về chuỗi ISO ở tầng normalize để
 # DuckDB nhận đúng kiểu DATE, thay vì để pandas Timestamp đi thẳng vào
 # INSERT (đúng lớp lỗi 'NaT' đã sửa ở A3 fix round 1).
 EVENT_DATE_COLS = [
@@ -645,7 +628,7 @@ _EVENT_REQUIRED = ["id", "event_code", "event_title_vi"]
 def fetch_corporate_events(symbols: list[str], source: str = "VCI",
         breaker=None) -> pd.DataFrame:
     """Sự kiện DN (cổ tức, phát hành, ĐHCĐ, giao dịch cổ đông lớn) qua
-    Company.events().
+    vci_company.events().
 
     Nguồn chỉ trả 50 SỰ KIỆN GẦN NHẤT mỗi mã, không có tham số mở rộng, và
     cửa sổ đó TRƯỢT theo thời gian — xem docstring
@@ -687,7 +670,7 @@ def fetch_corporate_events(symbols: list[str], source: str = "VCI",
             continue
     if rejected and dq.status_for(len(frames), rejected) == "degraded":
         raise dq.SchemaError(
-            f"[Company.events] {rejected}/{len(symbols)} mã sai schema "
+            f"[vci_company.events] {rejected}/{len(symbols)} mã sai schema "
             "— nguồn có thể đã đổi"
         )
     if not frames:
@@ -701,7 +684,7 @@ def fetch_corporate_events(symbols: list[str], source: str = "VCI",
 
 
 def _normalize_events(df, symbol) -> pd.DataFrame:
-    dq.assert_columns(df, _EVENT_REQUIRED, f"Company.events({symbol})")
+    dq.assert_columns(df, _EVENT_REQUIRED, f"vci_company.events({symbol})")
 
     def text(col):
         if col not in df.columns:
@@ -762,7 +745,7 @@ _OFFICER_REQUIRED = ["officer_name", "officer_position"]
 def fetch_shareholders(symbols: list[str], source: str = "VCI",
                        snapshot_date: str = None,
         breaker=None) -> pd.DataFrame:
-    """Cơ cấu cổ đông đã công bố qua Company.shareholders().
+    """Cơ cấu cổ đông đã công bố qua vci_company.shareholders().
 
     LƯU Ý về ngữ nghĩa dữ liệu (đo 2026-08-16): tổng share_own_percent
     KHÔNG bằng 100% — HPG 51,9% (66 dòng), VNM 81,0% (93), VCB 91,0% (29),
@@ -786,7 +769,7 @@ def fetch_shareholders(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).shareholders()
+            df = vci_company.shareholders(symbol)
         except Exception as e:
             print(f"[shareholders] {symbol}: {e}")
             br.record(False)
@@ -806,7 +789,7 @@ def fetch_shareholders(symbols: list[str], source: str = "VCI",
             continue
     if rejected and dq.status_for(len(frames), rejected) == "degraded":
         raise dq.SchemaError(
-            f"[Company.shareholders] {rejected}/{len(symbols)} mã sai schema "
+            f"[vci_company.shareholders] {rejected}/{len(symbols)} mã sai schema "
             "— nguồn có thể đã đổi"
         )
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -814,7 +797,7 @@ def fetch_shareholders(symbols: list[str], source: str = "VCI",
 
 def _normalize_shareholders(df, symbol, snapshot_date: str) -> pd.DataFrame:
     dq.assert_columns(df, _SHAREHOLDER_REQUIRED,
-                      f"Company.shareholders({symbol})")
+                      f"vci_company.shareholders({symbol})")
 
     # text() (M1, fix round cuối, cùng định nghĩa như trong _normalize_events):
     # astype(str) biến None thật thành CHUỖI 'None' — where(notna) giữ None
@@ -846,7 +829,7 @@ def _normalize_shareholders(df, symbol, snapshot_date: str) -> pd.DataFrame:
 def fetch_officers(symbols: list[str], source: str = "VCI",
                    snapshot_date: str = None,
         breaker=None) -> pd.DataFrame:
-    """Ban lãnh đạo + tỉ lệ sở hữu qua Company.officers(). Cùng cơ chế
+    """Ban lãnh đạo + tỉ lệ sở hữu qua vci_company.officers(). Cùng cơ chế
     snapshot như fetch_shareholders."""
     global _printed_officer_cols
     snap = snapshot_date or date.today().isoformat()
@@ -859,7 +842,7 @@ def fetch_officers(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).officers()
+            df = vci_company.officers(symbol)
         except Exception as e:
             print(f"[officers] {symbol}: {e}")
             br.record(False)
@@ -879,14 +862,14 @@ def fetch_officers(symbols: list[str], source: str = "VCI",
             continue
     if rejected and dq.status_for(len(frames), rejected) == "degraded":
         raise dq.SchemaError(
-            f"[Company.officers] {rejected}/{len(symbols)} mã sai schema "
+            f"[vci_company.officers] {rejected}/{len(symbols)} mã sai schema "
             "— nguồn có thể đã đổi"
         )
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def _normalize_officers(df, symbol, snapshot_date: str) -> pd.DataFrame:
-    dq.assert_columns(df, _OFFICER_REQUIRED, f"Company.officers({symbol})")
+    dq.assert_columns(df, _OFFICER_REQUIRED, f"vci_company.officers({symbol})")
 
     # text() (M1, fix round cuối) — cùng lý do như _normalize_shareholders:
     # officer_name là cột khoá (PRIMARY KEY (symbol, officer_name,
@@ -927,7 +910,7 @@ _STATEMENT_REQUIRED = ["item_id", "item", "item_en"]
 
 
 def _unpivot_statement(df, symbol: str, statement_type: str, period_type: str) -> pd.DataFrame:
-    """Ép DataFrame wide (item x kỳ) từ Company.Finance.*_statement() thành
+    """Ép DataFrame wide (item x kỳ) từ vci_finance.statement() thành
     dạng dài (một dòng = một ô).
 
     row_seq = vị trí dòng TRONG DataFrame gốc (0-based, reset_index trước
@@ -939,7 +922,7 @@ def _unpivot_statement(df, symbol: str, statement_type: str, period_type: str) -
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=warehouse.STATEMENT_COLS)
-    dq.assert_columns(df, _STATEMENT_REQUIRED, f"Finance.{statement_type}({symbol})")
+    dq.assert_columns(df, _STATEMENT_REQUIRED, f"vci_finance.statement({symbol}, {statement_type})")
 
     df = df.reset_index(drop=True)
     df = df.assign(row_seq=df.index)
@@ -969,7 +952,7 @@ def fetch_financial_statements(symbols: list[str], source: str = "VCI",
                                max_pauses: int = 3,
                                max_calls: int | None = None) -> pd.DataFrame:
     """Chi tiết BCTC (income_statement + balance_sheet + cash_flow) qua
-    Company.Finance(symbol, source, period).
+    vci_finance.statement(symbol, statement_type, period).
 
     `period="quarter"` trả 8 quý gần nhất (~2 năm); `period="year"` trả 8
     năm gần nhất — KHÔNG có tham số nào mở rộng quá 8 kỳ (đã kiểm cả 2 chế
@@ -1129,8 +1112,7 @@ def _fetch_statement_one(symbol: str, statement_type: str, source: str, period: 
     "rejected" như I4 của B2 — xem docstring fetch_financial_statements."""
     ingest._throttle()
     try:
-        fin = Finance(symbol=symbol, source=source, period=period)
-        df = getattr(fin, statement_type)()
+        df = vci_finance.statement(symbol, statement_type, period)
     except Exception as e:
         print(f"[statements] {symbol}/{statement_type}: {e}", flush=True)
         return None, "error"
@@ -1196,7 +1178,7 @@ def fetch_exchange_rate(rate_date: str) -> pd.DataFrame:
 
 
 def _normalize_news(df, symbol) -> pd.DataFrame:
-    dq.assert_columns(df, _NEWS_REQUIRED, f"Company.news({symbol})")
+    dq.assert_columns(df, _NEWS_REQUIRED, f"vci_company.news({symbol})")
 
     def text(col):
         if col not in df.columns:
@@ -1224,7 +1206,7 @@ def _normalize_news(df, symbol) -> pd.DataFrame:
 
 
 def fetch_news(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
-    """Tin tức 5 mã portfolio qua Company.news().
+    """Tin tức 5 mã portfolio qua vci_company.news().
 
     Nguồn chỉ trả 50 TIN GẦN NHẤT mỗi mã, cửa sổ trượt theo thời gian
     (xác nhận Task 1, D) — xem docstring warehouse.insert_news.
@@ -1237,7 +1219,7 @@ def fetch_news(symbols: list[str], source: str = "VCI") -> pd.DataFrame:
     for symbol in symbols:
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).news()
+            df = vci_company.news(symbol)
         except Exception as e:
             print(f"[news] {symbol}: {e}")
             continue

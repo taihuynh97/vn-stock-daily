@@ -115,7 +115,7 @@ def test_fetch_financial_statements_mot_bao_cao_loi_giua_nhieu_bao_cao_tot_bi_bo
             mock.cash_flow.return_value = _good_report_df()
         return mock
 
-    with patch("src.ingest_market.Finance", side_effect=side_effect_factory), \
+    with patch("src.ingest_market.vci_finance.statement", side_effect=lambda s, t, p: getattr(side_effect_factory(s, "VCI", p), t)()), \
          patch("src.ingest_market.ingest._throttle"):
         result = fetch_financial_statements(["BAD"] + good_symbols)
 

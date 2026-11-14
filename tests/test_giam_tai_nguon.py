@@ -50,7 +50,7 @@ def test_fetch_chọn_lọc_trả_kết_quả_dò_từng_mã():
             m.cash_flow.return_value = m.income_statement.return_value
         return m
 
-    with patch("src.ingest_market.Finance", side_effect=factory), \
+    with patch("src.ingest_market.vci_finance.statement", side_effect=lambda s, t, p: getattr(factory(s, "VCI", p), t)()), \
          patch("src.ingest_market.ingest._throttle"):
         out = ingest_market.fetch_financial_statements(
             ["OK", "NODATA", "ERR"], known={}, pause_after=99)
