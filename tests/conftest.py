@@ -27,5 +27,33 @@ chỉ trả về module đã cache, không init/in lại.
 """
 import warnings
 
+# TẠM tới PR 3: vnstock đã gỡ khỏi requirements.txt (11/2026); máy dev có thể
+# còn cài nên vẫn mồi nếu có.
 with warnings.catch_warnings(record=True):
-    import vnstock  # noqa: F401
+    try:
+        import vnstock  # noqa: F401
+    except ImportError:
+        pass
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _khong_goi_mang(request, monkeypatch):
+    """Không test nào trong bộ mặc định được gọi mạng thật (12/11/2026: test cũ
+    còn vá lớp vnstock đã gọi thẳng iq.vietcap.com.vn và treo vì thử lại/nghỉ
+    của cầu chì). Test cần mạng đánh dấu @pytest.mark.network."""
+    if request.node.get_closest_marker("network"):
+        return
+    from tests.vci_fixtures import block_network
+    block_network(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _gia_dinh_co_vnstock(monkeypatch):
+    """TẠM tới PR 3: build_warehouse bỏ qua giai đoạn còn cần vnstock khi máy
+    không cài (ingest_market.VNSTOCK_CO_SAN). Test cũ kiểm hành vi chọn giai
+    đoạn như trước, nên mặc định coi như có vnstock để kết quả không phụ thuộc
+    máy chạy; tests/test_giai_doan_chua_chuyen.py tự đặt giá trị."""
+    from src import ingest_market
+    monkeypatch.setattr(ingest_market, "VNSTOCK_CO_SAN", True)

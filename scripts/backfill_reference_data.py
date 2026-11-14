@@ -37,9 +37,12 @@ def main():
     args = parser.parse_args()
 
     key = os.getenv("VNSTOCK_API_KEY")
-    if key:
-        from vnstock import vnai
-        vnai.setup_api_key(key)
+    if key:  # TẠM tới PR 3 (vnstock đã gỡ khỏi requirements.txt)
+        try:
+            from vnstock import vnai
+            vnai.setup_api_key(key)
+        except ImportError:
+            pass
 
     db_target = os.getenv("WAREHOUSE_DB", warehouse.DEFAULT_DB)
     print(f"Đang kết nối tới: {db_target}")

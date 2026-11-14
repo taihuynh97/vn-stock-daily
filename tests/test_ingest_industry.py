@@ -20,9 +20,9 @@ def _mock_icb():
 
 
 def test_fetch_industries_icb_schema():
-    with patch("src.ingest_market.Listing") as MockL, \
+    with patch("src.ingest_market.vci.industries_icb") as mock_icb, \
          patch("src.ingest_market.ingest._throttle"):
-        MockL.return_value.industries_icb.return_value = _mock_icb()
+        mock_icb.return_value = _mock_icb()
         df = fetch_industries_icb()
     assert list(df.columns) == ["icb_code", "icb_name", "en_icb_name", "level"]
     assert len(df) == 3
@@ -32,9 +32,9 @@ def test_fetch_industries_icb_schema():
 
 def test_fetch_industries_icb_raises_on_missing_column():
     bad = pd.DataFrame([{"icb_name": "X", "level": 1}])
-    with patch("src.ingest_market.Listing") as MockL, \
+    with patch("src.ingest_market.vci.industries_icb") as mock_icb, \
          patch("src.ingest_market.ingest._throttle"):
-        MockL.return_value.industries_icb.return_value = bad
+        mock_icb.return_value = bad
         with pytest.raises(dq.SchemaError) as exc:
             fetch_industries_icb()
     assert "icb_code" in str(exc.value)
@@ -46,9 +46,9 @@ def test_fetch_industries_icb_handles_missing_en_icb_name():
     no_en = pd.DataFrame([
         {"icb_name": "Dầu khí", "icb_code": "0001", "level": 1},
     ])
-    with patch("src.ingest_market.Listing") as MockL, \
+    with patch("src.ingest_market.vci.industries_icb") as mock_icb, \
          patch("src.ingest_market.ingest._throttle"):
-        MockL.return_value.industries_icb.return_value = no_en
+        mock_icb.return_value = no_en
         df = fetch_industries_icb()
     assert df.iloc[0]["en_icb_name"] is None
     assert df.iloc[0]["icb_code"] == "0001"
@@ -60,9 +60,9 @@ def test_fetch_industries_icb_handles_unparseable_level():
         {"icb_name": "Dầu khí", "en_icb_name": "Oil & Gas",
          "icb_code": "0001", "level": "abc"},
     ])
-    with patch("src.ingest_market.Listing") as MockL, \
+    with patch("src.ingest_market.vci.industries_icb") as mock_icb, \
          patch("src.ingest_market.ingest._throttle"):
-        MockL.return_value.industries_icb.return_value = bad_level
+        mock_icb.return_value = bad_level
         df = fetch_industries_icb()
     assert pd.isna(df.iloc[0]["level"])
 
@@ -75,18 +75,18 @@ def test_fetch_industries_icb_drops_duplicate_icb_code():
         {"icb_name": "Dầu khí (trùng)", "en_icb_name": "Oil & Gas dup",
          "icb_code": "0001", "level": 1},
     ])
-    with patch("src.ingest_market.Listing") as MockL, \
+    with patch("src.ingest_market.vci.industries_icb") as mock_icb, \
          patch("src.ingest_market.ingest._throttle"):
-        MockL.return_value.industries_icb.return_value = dup
+        mock_icb.return_value = dup
         df = fetch_industries_icb()
     assert len(df) == 1
     assert df.iloc[0]["icb_name"] == "Dầu khí"
 
 
 def test_fetch_industries_icb_empty_on_api_error():
-    with patch("src.ingest_market.Listing") as MockL, \
+    with patch("src.ingest_market.vci.industries_icb") as mock_icb, \
          patch("src.ingest_market.ingest._throttle"):
-        MockL.return_value.industries_icb.side_effect = Exception("down")
+        mock_icb.side_effect = Exception("down")
         df = fetch_industries_icb()
     assert df.empty
 
@@ -94,9 +94,9 @@ def test_fetch_industries_icb_empty_on_api_error():
 def test_upsert_industries_is_idempotent(tmp_path):
     con = duckdb.connect(str(tmp_path / "ind.duckdb"))
     wh.init_warehouse(con)
-    with patch("src.ingest_market.Listing") as MockL, \
+    with patch("src.ingest_market.vci.industries_icb") as mock_icb, \
          patch("src.ingest_market.ingest._throttle"):
-        MockL.return_value.industries_icb.return_value = _mock_icb()
+        mock_icb.return_value = _mock_icb()
         df = fetch_industries_icb()
     assert wh.upsert_industries(con, df) == 3
     assert wh.upsert_industries(con, df) == 3          # chạy lại

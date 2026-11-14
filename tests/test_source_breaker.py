@@ -61,12 +61,12 @@ def test_fetch_corporate_events_dừng_khi_nguồn_chặn():
 
     calls = []
 
-    def blocked(symbol, source):
+    def blocked(symbol):
         calls.append(symbol)
         raise ConnectionError("Read timed out. (read timeout=30)")
 
     br = ingest.SourceBreaker("events", pause_after=3, pause_seconds=0, max_pauses=2)
-    with patch("src.ingest_market.Company", side_effect=blocked), \
+    with patch("src.ingest_market.vci_company.events", side_effect=blocked), \
          patch("src.ingest_market.ingest._throttle"), \
          patch("src.ingest.time.sleep"):
         out = ingest_market.fetch_corporate_events([f"S{i:04d}" for i in range(1603)], breaker=br)

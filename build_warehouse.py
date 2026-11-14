@@ -68,8 +68,20 @@ def _parse_only(raw):
     return chosen
 
 
+_skipped_announced: set[str] = set()
+
+
 def _want(only, phase) -> bool:
-    return only is None or phase in only
+    if not (only is None or phase in only):
+        return False
+    # TẠM (bỏ vnstock, PR 1–3): giai đoạn còn gọi vnstock mà máy không cài
+    # vnstock → bỏ qua có log, thay vì gọi lỗi liên tục rồi nghỉ theo cầu chì.
+    if phase in ingest_market.GIAI_DOAN_CAN_VNSTOCK and not ingest_market.VNSTOCK_CO_SAN:
+        if phase not in _skipped_announced:
+            print(f"[{phase}] BỎ QUA: giai đoạn chưa chuyển khỏi vnstock (chờ PR tiếp theo)")
+            _skipped_announced.add(phase)
+        return False
+    return True
 
 
 def _budget_deadline() -> float | None:
@@ -312,9 +324,12 @@ def main():
     only = _parse_only(args.only)
 
     key = os.getenv("VNSTOCK_API_KEY")
-    if key:
-        from vnstock import vnai
-        vnai.setup_api_key(key)
+    if key:  # TẠM tới PR 3: bước công ty/BCTC còn dùng vnstock nếu máy có cài
+        try:
+            from vnstock import vnai
+            vnai.setup_api_key(key)
+        except ImportError:
+            pass
 
     cfg = yaml.safe_load(open(ROOT / "config" / "warehouse.yml", encoding="utf-8"))
     source = cfg.get("source", "VCI")

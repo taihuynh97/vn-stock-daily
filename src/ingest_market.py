@@ -1,8 +1,8 @@
 """Ingestion toàn thị trường (Phase 1): danh sách mã + giá EOD bulk.
 
-Dùng:
-  - Listing.all_symbols()          → refresh universe (dim_symbols)
-  - Trading.price_board(symbols)   → giá EOD nhiều mã / 1 call (bulk, rẻ)
+Dùng (gọi thẳng nguồn qua src/sources, không qua vnstock từ 11/2026):
+  - vci.all_symbols()              → refresh universe (dim_symbols)
+  - vci.price_board(symbols)       → giá EOD nhiều mã / 1 call (bulk, rẻ)
 
 Mọi call đi qua ingest._throttle() để dùng chung ngân sách rate limit với job digest.
 Vì cấu trúc cột của price_board tuỳ nguồn, phần chuẩn hoá cột được tách riêng và
@@ -14,12 +14,24 @@ import time
 from datetime import date, datetime, timedelta
 import pandas as pd
 
-from vnstock.api.listing import Listing
-from vnstock.api.trading import Trading
-from vnstock.api.quote import Quote
-from vnstock.api.company import Company
-from vnstock.api.financial import Finance
-from vnstock.explorer.misc.exchange_rate import vcb_exchange_rate
+from .sources import vcb, vci, vci_company
+
+try:  # TẠM (PR 1/3): các bước công ty/BCTC còn gọi vnstock, chuyển ở PR 2–3.
+    from vnstock.api.company import Company
+    from vnstock.api.financial import Finance
+    VNSTOCK_CO_SAN = True
+except ImportError:  # vnstock đã gỡ khỏi requirements.txt (11/2026)
+    class _ChuaChuyenKhoiVnstock:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("bước này chưa chuyển khỏi vnstock (sẽ chuyển ở PR tiếp theo)")
+
+    Company = Finance = _ChuaChuyenKhoiVnstock
+    VNSTOCK_CO_SAN = False
+
+# TẠM: giai đoạn của build_warehouse còn gọi vnstock — bị bỏ qua khi máy không
+# có vnstock (CI) để khỏi gọi lỗi rồi nghỉ theo cầu chì. Xoá dần khi chuyển.
+GIAI_DOAN_CAN_VNSTOCK = frozenset({"news", "ratios", "company", "company_missing",
+                                   "statements", "statements_year"})
 from . import ingest, warehouse, dq  # tái dùng _throttle (chung ngân sách rate limit)
 
 _TICKER = re.compile(r"^[A-Z]{3}$")          # cổ phiếu VN: đúng 3 chữ cái
@@ -36,7 +48,7 @@ def refresh_universe(exchanges, source: str = "VCI") -> pd.DataFrame:
     """Trả DataFrame [symbol, exchange, company_name] đã lọc theo sàn & chỉ cổ phiếu."""
     ingest._throttle()
     try:
-        df = Listing(source=source).all_symbols()
+        df = vci.all_symbols()
     except Exception as e:
         print(f"[universe] {e}")
         return pd.DataFrame()
@@ -67,7 +79,7 @@ def fetch_industries_icb(source: str = "VCI") -> pd.DataFrame:
     """Bảng phân ngành ICB 4 cấp (bảng tĩnh, ~177 dòng, tên ngành tiếng Việt)."""
     ingest._throttle()
     try:
-        df = Listing(source=source).industries_icb()
+        df = vci.industries_icb()
     except Exception as e:
         print(f"[industries_icb] {e}")
         return pd.DataFrame()
@@ -92,7 +104,7 @@ def _price_board_batch(batch, source):
     global _printed_cols
     ingest._throttle()
     try:
-        df = Trading(source=source).price_board(symbols_list=batch)
+        df = vci.price_board(batch)
     except Exception as e:
         print(f"[price_board] {batch[0]}…{batch[-1]} ({len(batch)} mã): {e}")
         return None
@@ -292,11 +304,11 @@ _printed_info_cols = False
 
 
 def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") -> pd.DataFrame:
-    """Lịch sử OHLCV một mã qua Quote.history. Trả DataFrame schema raw_price_daily."""
+    """Lịch sử OHLCV một mã qua vci.ohlc_history (giá ĐỒNG). Trả DataFrame schema raw_price_daily."""
     global _printed_hist_cols
     ingest._throttle()
     try:
-        df = Quote(symbol=symbol, source=source).history(start=start, end=end, interval="1D")
+        df = vci.ohlc_history(symbol, start, end)
     except Exception as e:
         print(f"[history] {symbol}: {e}")
         return pd.DataFrame()
@@ -332,12 +344,9 @@ def fetch_history_one(symbol: str, start: str, end: str, source: str = "VCI") ->
         "volume":     pd.to_numeric(df[vol_col], errors="coerce") if vol_col else None,
         "value":      _col(df, val_col),
     })
-    # vnstock (VCI) trả OHLC của Quote.history theo đơn vị nghìn đồng,
-    # trong khi Trading.price_board (daily ingestion) trả VND. Nhân lại 1000
-    # để raw_price_daily đồng nhất đơn vị giữa backfill và daily.
-    for col in ("open", "high", "low", "close"):
-        if pd.api.types.is_numeric_dtype(out[col]):
-            out[col] = out[col] * 1000
+    # Đơn vị ĐỒNG như bảng giá (vci.ohlc_history trả đúng đơn vị nguồn). Thời
+    # vnstock, Quote.history trả nghìn đồng (đã làm tròn 2 chữ số) nên ở đây
+    # từng nhân lại 1000 — đừng thêm lại phép nhân đó.
     return out.dropna(subset=["close"]).drop_duplicates(["symbol", "trade_date"]).reset_index(drop=True)
 
 
@@ -355,9 +364,7 @@ def fetch_index_history(
     """
     ingest._throttle()
     try:
-        df = Quote(symbol=index_code, source=source).history(
-            start=start, end=end, interval="1D"
-        )
+        df = vci.ohlc_history(index_code, start, end)
     except Exception as e:
         print(f"[index] {index_code}: {e}")
         return pd.DataFrame()
@@ -660,7 +667,7 @@ def fetch_corporate_events(symbols: list[str], source: str = "VCI",
             break
         ingest._throttle()
         try:
-            df = Company(symbol=symbol, source=source).events()
+            df = vci_company.events(symbol)
         except Exception as e:
             print(f"[events] {symbol}: {e}")
             br.record(False)
@@ -1148,21 +1155,21 @@ _printed_news_cols = False
 
 
 def fetch_exchange_rate(rate_date: str) -> pd.DataFrame:
-    """Tỷ giá VCB 1 ngày, qua vcb_exchange_rate() — API export thật của
+    """Tỷ giá VCB 1 ngày, qua vcb.exchange_rate() — API export thật của
     Vietcombank, không phải scrape HTML.
 
     buy_cash/buy_transfer/sell = '-' từ nguồn (loại tiền không áp dụng
     giao dịch đó) -> NULL, KHÔNG PHẢI 0.0 (missing != wrong, xem dq.py).
     """
     try:
-        df = vcb_exchange_rate(date=rate_date)
+        df = vcb.exchange_rate(rate_date)
     except Exception as e:
         print(f"[exchange_rate] {rate_date}: {e}")
         return pd.DataFrame(columns=warehouse.EXCHANGE_RATE_COLS)
     if df is None or len(df) == 0:
         return pd.DataFrame(columns=warehouse.EXCHANGE_RATE_COLS)
     df.columns = [str(c).lower() for c in df.columns]
-    dq.assert_columns(df, ["currency_code", "currency_name"], "vcb_exchange_rate")
+    dq.assert_columns(df, ["currency_code", "currency_name"], "vcb.exchange_rate")
 
     def num(col):
         # '-' và các chuỗi không parse được -> NaN qua errors='coerce'.
