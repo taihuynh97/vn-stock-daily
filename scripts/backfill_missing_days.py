@@ -1,25 +1,58 @@
-"""Backfill giá EOD cho các ngày job daily bị lỗi (vd. CI fail do MotherDuck/DuckDB
-version mismatch ngày 17-18/6/2026).
+"""Backfill giá EOD, chỉ số và tỷ giá cho các ngày job daily bị lỗi (vd. CI fail do
+MotherDuck/DuckDB version mismatch 17-18/6/2026, vnstock bị khai tử 09–13/11/2026).
 
-build_warehouse.py dùng price_board (chỉ lấy giá realtime "hôm nay"), nên không thể
-backfill ngày đã qua bằng job đó. Script này dùng Quote.history (start/end tuỳ ý) cho
-từng mã, giống cơ chế của backfill.py nhưng không phụ thuộc backfill_status (vì mã đã
-"done" sẽ bị bỏ qua bởi get_pending_symbols).
+build_warehouse.py chỉ lấy dữ liệu NGÀY CHẠY (bảng giá realtime, chỉ số và tỷ giá
+của run_date), nên không thể lấp ngày đã qua bằng job đó. Script này dùng lịch sử
+giá (start/end tuỳ ý) cho từng mã, giống backfill.py nhưng không phụ thuộc
+backfill_status (mã đã "done" sẽ bị bỏ qua bởi get_pending_symbols); kèm chỉ số
+(config/warehouse.yml) và tỷ giá VCB từng ngày giao dịch. Khối ngoại theo mã KHÔNG
+lấy lại được (chỉ bảng giá trong ngày có).
 
-INSERT OR REPLACE trong upsert_prices nên chạy lại an toàn.
+INSERT OR REPLACE ở mọi bảng nên chạy lại an toàn.
 
 Chạy:
-    python scripts/backfill_missing_days.py --start 2026-06-17 --end 2026-06-18
+    # Cả phiên bị lỡ: giá mọi mã + chỉ số + tỷ giá.
+    python scripts/backfill_missing_days.py --start 2026-11-09 --end 2026-11-13
     # Chỉ mã bị thiếu (vd. lô bảng giá lỗi nguồn 05/10/2026), xem trước rồi mới ghi:
     python scripts/backfill_missing_days.py --start 2026-10-05 --end 2026-10-05 --missing-only --dry-run
 """
 import argparse
+from pathlib import Path
 
+import pandas as pd
+import yaml
 from dotenv import load_dotenv
 
 from src import ingest_market, warehouse
 
 load_dotenv()
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def backfill_index_fx(con, start: str, end: str, indices: list[str]) -> tuple[int, int]:
+    """Nạp bù chỉ số (một lần gọi mỗi mã chỉ số cho cả khoảng) và tỷ giá VCB
+    (một lần gọi mỗi ngày giao dịch). Job daily chỉ lấy ngày chạy nên phiên bị
+    lỡ không tự lấp (09–13/11/2026). Trả (số dòng chỉ số, số dòng tỷ giá).
+
+    Chỉ ghi dòng trong [start, end]; INSERT OR REPLACE nên chạy lại an toàn."""
+    n_idx = 0
+    for code in indices:
+        df = ingest_market.fetch_index_history(code, start, end)
+        if not df.empty:
+            df = df[(df["trade_date"] >= start) & (df["trade_date"] <= end)]
+        n_idx += warehouse.upsert_index_prices(con, df)
+        print(f"  chỉ số {code}: {len(df)} phiên")
+
+    n_fx = 0
+    for d in pd.date_range(start, end):
+        if not ingest_market.is_trading_day(d.date()):
+            continue
+        day = d.strftime("%Y-%m-%d")
+        n = warehouse.upsert_exchange_rate(con, ingest_market.fetch_exchange_rate(day))
+        n_fx += n
+        print(f"  tỷ giá {day}: {n} dòng" + ("" if n else " (nguồn rỗng/lỗi)"))
+    return n_idx, n_fx
 
 
 def missing_symbols(con, start: str, end: str) -> list[str]:
@@ -79,11 +112,25 @@ def main():
         symbols = missing_symbols(con, args.start, args.end)
     else:
         symbols = warehouse.get_active_symbols(con)
-    print(f"Backfill {args.start} → {args.end} cho {len(symbols)} mã...")
+    # Cả phiên bị lỡ (không phải --missing-only) thì chỉ số và tỷ giá cũng thiếu.
+    indices = [] if args.missing_only else yaml.safe_load(
+        open(ROOT / "config" / "warehouse.yml", encoding="utf-8")).get("indices", [])
+    print(f"Backfill {args.start} → {args.end} cho {len(symbols)} mã"
+          + (f" + chỉ số {', '.join(indices)} + tỷ giá VCB" if indices else "") + "...")
     if args.dry_run:
         print(" ".join(symbols))
         con.close()
         return
+
+    if indices:
+        n_idx, n_fx = backfill_index_fx(con, args.start, args.end, indices)
+        warehouse.log_load(con, "backfill_missing_days", "raw_index_daily", n_idx,
+                           "ok" if n_idx else "empty", watermark=args.end,
+                           notes=f"range={args.start}..{args.end}")
+        warehouse.log_load(con, "backfill_missing_days", "raw_exchange_rate", n_fx,
+                           "ok" if n_fx else "empty", watermark=args.end,
+                           notes=f"range={args.start}..{args.end}")
+        print(f"Chỉ số: {n_idx} dòng; tỷ giá: {n_fx} dòng")
 
     done = error = total_rows = 0
     for i, symbol in enumerate(symbols, 1):
