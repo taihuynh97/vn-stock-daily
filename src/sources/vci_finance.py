@@ -100,9 +100,11 @@ def statement(symbol: str, statement_type: str, period: str) -> pd.DataFrame:
     data = iq_data(f"/v1/company/{symbol}/financial-statement",
                    {"section": SECTIONS[statement_type]})
     if data is None:
-        # Nguồn trục trặc, KHÔNG phải "mã chưa có BCTC" (mã đó trả danh sách kỳ
-        # rỗng). Coi là rỗng thì mã bị bỏ qua 30 ngày (EMPTY_PROBE_SKIP_DAYS).
-        raise SourceError(f"financial-statement {symbol}: phản hồi data null")
+        # iq_data đã ném lỗi nếu status/code báo lỗi, nên tới đây là phản hồi
+        # thành công: nguồn trả data null cố định cho mã không có BCTC (quỹ
+        # đầu tư, mã huỷ niêm yết). Rỗng → ghi statement_probe "empty", bỏ qua
+        # 30 ngày thay vì đứng đầu lô và gây nghỉ 180 giây mọi lần chạy.
+        return pd.DataFrame()
     if not isinstance(data, dict):
         raise SourceError(f"financial-statement {symbol}: phản hồi không phải object")
     records = data.get("years" if period == "year" else "quarters") or []

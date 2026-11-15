@@ -62,13 +62,19 @@ def _fake_iq(monkeypatch, section_data, metrics):
 _MET = {"INCOME_STATEMENT": [{"field": "isa1", "titleVi": "Doanh thu", "titleEn": "Sales"}]}
 
 
-def test_data_null_la_loi_khong_phai_rong(monkeypatch):
-    """data: null (nguồn trục trặc/bóp lưu lượng) → "error" để thử lại; nếu
-    thành "empty", mã mới niêm yết bị bỏ qua 30 ngày (EMPTY_PROBE_SKIP_DAYS).
-    vnstock cũ cũng ném lỗi khi data là None."""
-    _fake_iq(monkeypatch, None, _MET)
-    _, status = ingest_market._fetch_statement_one("FPT", "income_statement", "VCI", "quarter")
-    assert status == "error"
+def test_data_null_la_khong_co_bctc(monkeypatch):
+    """Phản hồi thành công (status 200, code 0) với data: null là câu trả lời
+    cố định của nguồn cho mã không có BCTC: quỹ đầu tư (comTypeCode QU), mã
+    đã huỷ niêm yết. Trickle 14/11/2026: 19/19 mã null đều thuộc hai loại
+    này. Coi là lỗi thì chúng không bao giờ vào statement_probe, đứng đầu lô
+    mọi lần chạy và kích hoạt nghỉ 180 giây ba lần (~9 phút/lần chạy)."""
+    from src.sources import http
+    from tests.vci_fixtures import FakeResponse
+
+    monkeypatch.setattr(http, "_send", lambda *a, **k: FakeResponse(
+        200, '{"status":200,"code":0,"msg":"Successful","data":null}'))
+    _, status = ingest_market._fetch_statement_one("ANE", "income_statement", "VCI", "quarter")
+    assert status == "empty"
 
 
 def test_danh_sach_ky_rong_la_empty(monkeypatch):
